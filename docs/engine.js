@@ -768,9 +768,9 @@ class ClientGameManager {
     ClientStorage.saveBattle(battleRecord);
   }
 
-  toggleAutoPlay(enabled, delaySec = 0.02) {
+  toggleAutoPlay(enabled, delaySec = 0.01) {
     this.isAutoPlaying = enabled;
-    this.autoDelaySec = Math.max(0.005, delaySec);
+    this.autoDelaySec = 0.01; // Always fastest blitz speed (10ms)
     if (this.autoPlayTimer) { clearTimeout(this.autoPlayTimer); this.autoPlayTimer = null; }
 
     if (enabled) {
@@ -782,19 +782,9 @@ class ClientGameManager {
   scheduleNextStep() {
     if (!this.isAutoPlaying) return;
     if (this.status === "finished") {
-      if (this.hasHumanPlayer()) {
-        this.isAutoPlaying = false;
-        if (this.onStateChange) this.onStateChange(this.getState());
-        return;
-      }
-      // Auto-chain next battle after 3s
-      this.autoPlayTimer = setTimeout(() => {
-        if (!this.isAutoPlaying) return;
-        this.battleNumber++;
-        this.newGame();
-        this.status = "playing";
-        this.scheduleNextStep();
-      }, 3000);
+      // Always stop and require user confirmation before starting next battle
+      this.isAutoPlaying = false;
+      if (this.onStateChange) this.onStateChange(this.getState());
       return;
     }
 

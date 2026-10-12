@@ -39,33 +39,6 @@
       overflow: hidden !important;
     }
 
-    /* Championship Bar Guaranteed Styles */
-    .championship-bar {
-      display: flex !important; flex-direction: column !important; gap: 8px !important;
-      padding: 10px 16px !important; background: linear-gradient(135deg, #fffbeb 0%, #fef3c7 100%) !important;
-      border-bottom: 1.5px solid #fde68a !important; color: #92400e !important; font-size: 0.76rem !important;
-    }
-    .championship-info { display: flex !important; justify-content: space-between !important; align-items: center !important; }
-    .championship-title-wrap { display: flex !important; align-items: center !important; gap: 10px !important; }
-    .championship-title { font-weight: 800 !important; font-size: 0.82rem !important; }
-    .championship-status {
-      font-family: 'JetBrains Mono', monospace !important; font-size: 0.72rem !important;
-      color: #b45309 !important; background: #ffffff !important; padding: 2px 8px !important;
-      border-radius: 999px !important; border: 1px solid #fde68a !important;
-    }
-    .championship-actions { display: flex !important; gap: 6px !important; }
-    .championship-progress { display: flex !important; gap: 8px !important; flex-wrap: wrap !important; }
-    .series-pill {
-      display: inline-flex !important; align-items: center !important; gap: 6px !important;
-      background: #ffffff !important; padding: 4px 10px !important; border-radius: 999px !important;
-      border: 1px solid #fde68a !important; font-size: 0.72rem !important; font-weight: 700 !important;
-      box-shadow: 0 1px 3px rgba(0,0,0,0.04) !important;
-    }
-    .series-pts {
-      font-family: 'JetBrains Mono', monospace !important; color: #b45309 !important;
-      background: #fef3c7 !important; padding: 1px 6px !important; border-radius: 999px !important;
-    }
-
     /* Human turn bar is strictly HIDDEN unless human is actively in the match */
     .human-turn-bar {
       display: none !important;
@@ -81,8 +54,52 @@
     .human-turn-bar.active {
       display: flex !important;
     }
+
+    /* Winner Modal Critical Styles */
+    .winner-card {
+      text-align: center !important;
+      padding: 32px 28px !important;
+      max-width: 420px !important;
+      background: #ffffff !important;
+    }
+    .winner-trophy {
+      font-size: 3rem !important;
+      line-height: 1 !important;
+      margin-bottom: 6px !important;
+      display: inline-block !important;
+    }
+    .winner-headline {
+      margin: 8px 0 6px !important;
+      font-size: 1.35rem !important;
+      font-weight: 800 !important;
+      color: #0f172a !important;
+    }
+    .winner-badge-wrap {
+      display: inline-flex !important;
+      align-items: center !important;
+      justify-content: center !important;
+      gap: 8px !important;
+      margin: 10px auto 6px !important;
+      padding: 6px 18px !important;
+      background: #f8fafc !important;
+      border-radius: 999px !important;
+      border: 1.5px solid #e2e8f0 !important;
+    }
+    .winner-avatar { font-size: 1.25rem !important; line-height: 1 !important; }
+    .winner-name { font-size: 1.25rem !important; font-weight: 800 !important; letter-spacing: -0.01em !important; }
+    .winner-details {
+      margin: 8px 0 22px !important;
+      font-size: 0.84rem !important;
+      color: #64748b !important;
+    }
+    .winner-modal-actions {
+      display: flex !important;
+      align-items: center !important;
+      justify-content: center !important;
+      gap: 12px !important;
+    }
   </style>
-  <script src="audio.js?v=2.3.0"></script>
+  <script src="audio.js?v=2.4.0"></script>
 </head>
 <body>
   <header class="app-header">
@@ -103,8 +120,6 @@
     <div class="header-right">
       <div class="header-actions">
         <button class="btn btn-ghost btn-sm" id="btn-sound" title="Toggle Sound (Mute/Unmute)">🔊</button>
-        <button class="btn btn-ghost btn-sm" id="btn-speed" title="Cycle Battle Speed: Fast, Blitz, Slow, Normal">⚡ Fast</button>
-        <button class="btn btn-ghost btn-sm" id="btn-championship" title="Championship Tournament Mode">🏆 Series</button>
         <button class="btn btn-ghost btn-sm" id="btn-fullscreen" title="Toggle Fullscreen">⛶</button>
         <button class="btn btn-primary btn-sm" id="btn-auto">
           <svg viewBox="0 0 16 16" width="13" height="13" fill="currentColor"><path d="M4 2.5l9 5.5-9 5.5V2.5z"/></svg>
@@ -129,21 +144,6 @@
             <button class="btn btn-xs" onclick="stepReplay(1)">Next</button>
             <button class="btn btn-xs btn-danger" onclick="exitReplayMode()">Exit</button>
           </div>
-        </div>
-
-        <!-- Championship Mode Banner -->
-        <div id="championship-bar" class="championship-bar" style="display: none;">
-          <div class="championship-info">
-            <div class="championship-title-wrap">
-              <span class="championship-title">🏆 Series Championship</span>
-              <span class="championship-status" id="championship-status">Best of 5 · Match 1</span>
-            </div>
-            <div class="championship-actions">
-              <button class="btn btn-xs btn-outline" id="btn-series-new" title="Reset and start a fresh Championship Season">↺ Reset Season</button>
-              <button class="btn btn-xs btn-outline" id="btn-series-exit" title="Exit Championship Mode">✕ Exit</button>
-            </div>
-          </div>
-          <div class="championship-progress" id="championship-progress"></div>
         </div>
 
         <!-- Human turn indicator with Undo -->
@@ -183,7 +183,6 @@
             <label><input type="checkbox" id="toggle-numbers" checked><span>Numbers</span></label>
             <label><input type="checkbox" id="toggle-coords"><span>Coords</span></label>
             <label><input type="checkbox" id="toggle-heatmap" checked><span>🔥 Heatmap</span></label>
-            <label><input type="checkbox" id="toggle-lasers" checked><span>⚡ Lasers</span></label>
           </div>
         </footer>
       </div>
@@ -269,18 +268,20 @@
     </aside>
   </main>
 
-  <!-- Championship Victory Celebration Modal -->
-  <div id="victory-modal" class="modal-backdrop" style="display: none;">
-    <div class="modal-card victory-card">
-      <div class="trophy-emitter">🏆</div>
-      <h2 class="victory-headline">Series Champion!</h2>
-      <div class="champion-name" id="champion-name">Laya</div>
-      <p class="victory-sub" id="victory-sub">Claimed 1st place in the Championship Series!</p>
+  <!-- Battle Winner Confirmation Modal -->
+  <div id="winner-modal" class="modal-backdrop" style="display: none;">
+    <div class="modal-card winner-card">
+      <div class="winner-trophy">🏆</div>
+      <h2 class="winner-headline" id="winner-headline">Battle Finished!</h2>
+      <div class="winner-badge-wrap" id="winner-badge-wrap">
+        <span class="winner-avatar" id="winner-avatar">●</span>
+        <span class="winner-name" id="winner-name">Laya</span>
+      </div>
+      <p class="winner-details" id="winner-details">Claimed 5-in-a-row in 54 moves</p>
       
-      <div class="podium-display" id="podium-display"></div>
-
-      <div class="modal-footer" style="justify-content: center; margin-top: 20px;">
-        <button class="btn btn-primary" id="btn-new-season">Start New Season</button>
+      <div class="winner-modal-actions">
+        <button class="btn btn-ghost" id="btn-inspect-board">Inspect Board</button>
+        <button class="btn btn-primary" id="btn-next-battle">Next Battle ▶</button>
       </div>
     </div>
   </div>
@@ -288,8 +289,8 @@
   <!-- Confetti Canvas for Victory Celebrations -->
   <canvas id="confetti-canvas" class="confetti-canvas" style="display: none;"></canvas>
 
-  <script src="audio.js?v=2.3.0"></script>
-  <script src="engine.js?v=2.3.0"></script>
-  <script src="app.js?v=2.3.0"></script>
+  <script src="audio.js?v=2.4.0"></script>
+  <script src="engine.js?v=2.4.0"></script>
+  <script src="app.js?v=2.4.0"></script>
 </body>
 </html>

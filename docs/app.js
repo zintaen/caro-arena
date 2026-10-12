@@ -43,22 +43,13 @@ let clientEngine = null;
 let isServerAvailable = false;
 let confettiEngine = null;
 
-// Championship Series State
-let championshipMode = false;
-let championshipSeries = {
-  targetPoints: 12,
-  scores: {},
-  matchesPlayed: 0,
-  season: 1
-};
-
 // Touch gestures
 let touchStartDistance = 0, touchStartZoom = 1.0;
 
-// Arena Config Defaults
+// Arena Config (Always fastest blitz speed: 10ms)
 window.CaroSandboxConfig = {
   defenseWeight: 0.05,
-  delaySec: 0.03,
+  delaySec: 0.01,
   temperatures: {
     laya: 0.40,
     jev: 0.25,
@@ -72,7 +63,6 @@ window.CaroSandboxConfig = {
 // ─────────────────────────────────────────
 document.addEventListener("DOMContentLoaded", async () => {
   loadSandboxConfig();
-  loadChampionshipState();
   setupEventListeners();
   resizeCanvas();
   window.addEventListener("resize", resizeCanvas);
@@ -184,9 +174,7 @@ function handleStateUpdate(data) {
   if (data.status === "finished" && !wasFinished) {
     fetchLeaderboard();
     fetchBattleHistory();
-    if (championshipMode) {
-      updateChampionshipRound(data);
-    }
+    showWinnerModal(data);
   }
 }
 
@@ -230,23 +218,21 @@ function setupEventListeners() {
     });
   }
 
-  // Speed control button
-  initSpeedButton();
-
-  // Championship Series
-  document.getElementById("btn-championship")?.addEventListener("click", toggleChampionshipMode);
-  document.getElementById("btn-new-season")?.addEventListener("click", resetChampionshipSeason);
-  document.getElementById("btn-series-new")?.addEventListener("click", resetChampionshipSeason);
-  document.getElementById("btn-series-exit")?.addEventListener("click", toggleChampionshipMode);
-
-  // Close victory modal when clicking dark backdrop or pressing Escape
-  document.getElementById("victory-modal")?.addEventListener("click", (e) => {
-    if (e.target.id === "victory-modal") resetChampionshipSeason();
+  // Battle Winner Modal confirmation actions
+  document.getElementById("btn-next-battle")?.addEventListener("click", onConfirmNextBattle);
+  document.getElementById("btn-inspect-board")?.addEventListener("click", closeWinnerModal);
+  document.getElementById("winner-modal")?.addEventListener("click", (e) => {
+    if (e.target.id === "winner-modal") closeWinnerModal();
   });
   window.addEventListener("keydown", (e) => {
-    if (e.key === "Escape") {
-      const vm = document.getElementById("victory-modal");
-      if (vm && vm.style.display !== "none") resetChampionshipSeason();
+    const wm = document.getElementById("winner-modal");
+    if (wm && wm.style.display !== "none") {
+      if (e.key === "Enter" || e.key === " ") {
+        e.preventDefault();
+        onConfirmNextBattle();
+      } else if (e.key === "Escape") {
+        closeWinnerModal();
+      }
     }
   });
 
@@ -258,11 +244,6 @@ function setupEventListeners() {
   document.getElementById("toggle-coords")?.addEventListener("change", e => { showCoords = e.target.checked; renderBoard(); });
   document.getElementById("toggle-heatmap")?.addEventListener("change", e => {
     showHeatmap = e.target.checked;
-    renderBoard();
-    if (showHeatmap || showLasers) startFxAnimation();
-  });
-  document.getElementById("toggle-lasers")?.addEventListener("change", e => {
-    showLasers = e.target.checked;
     renderBoard();
     if (showHeatmap || showLasers) startFxAnimation();
   });
@@ -547,7 +528,6 @@ function updateUI() {
   renderBattleRoster();
   renderBoard();
   updateMoveHistory();
-  if (championshipMode) renderChampionshipBar();
 }
 
 function getPlayerMeta(symbol) {
@@ -587,8 +567,7 @@ function updateTurnBanner() {
     if (placements.length > 0) {
       const winner = getPlayerMeta(placements[0].player);
       dot.style.background = winner.color;
-      const suffix = gameState.is_auto_playing ? " · Next in 3s" : "";
-      text.textContent = `Battle #${bn} · ${winner.name} wins!${suffix}`;
+      text.textContent = `Battle #${bn} · ${winner.name} wins!`;
     } else {
       dot.style.background = "#94a3b8";
       text.textContent = `Battle #${bn} · Draw`;
@@ -1509,15 +1488,9 @@ function stepReplay(delta) {
 }
 
 // ─────────────────────────────────────────
-// Battle Speed Control & Configuration
+// Battle Flow & Winner Confirmation Modal
 // ─────────────────────────────────────────
-const BATTLE_SPEEDS = [
-  { label: "⚡ Fast (30ms)", delaySec: 0.03 },
-  { label: "⚡ Blitz (10ms)", delaySec: 0.01 },
-  { label: "🐢 Slow (250ms)", delaySec: 0.25 },
-  { label: "▶ Normal (80ms)", delaySec: 0.08 }
-];
-let currentSpeedIndex = 0;
+let lastWinnerModalGameId = null;
 
 function loadSandboxConfig() {
   try {
@@ -1527,6 +1500,8 @@ function loadSandboxConfig() {
       window.CaroSandboxConfig = Object.assign(window.CaroSandboxConfig, cfg);
     }
   } catch {}
+  // Always lock to fastest blitz speed (10ms)
+  window.CaroSandboxConfig.delaySec = 0.01;
 }
 
 function saveSandboxConfig() {
@@ -1535,152 +1510,66 @@ function saveSandboxConfig() {
   } catch {}
 }
 
-function initSpeedButton() {
-  const btn = document.getElementById("btn-speed");
-  if (!btn) return;
-  const curDelay = window.CaroSandboxConfig.delaySec || 0.03;
-  const matchIdx = BATTLE_SPEEDS.findIndex(s => Math.abs(s.delaySec - curDelay) < 0.015);
-  if (matchIdx !== -1) currentSpeedIndex = matchIdx;
-  btn.textContent = BATTLE_SPEEDS[currentSpeedIndex].label;
-  btn.addEventListener("click", cycleBattleSpeed);
-}
+function showWinnerModal(data) {
+  if (!data || data.status !== "finished") return;
+  const gameKey = data.game_id || (data.series?.battle_number ? `battle_${data.series.battle_number}` : null);
+  if (gameKey && gameKey === lastWinnerModalGameId) return;
+  lastWinnerModalGameId = gameKey;
 
-function cycleBattleSpeed() {
-  currentSpeedIndex = (currentSpeedIndex + 1) % BATTLE_SPEEDS.length;
-  applyBattleSpeed();
-}
-
-function applyBattleSpeed() {
-  const speed = BATTLE_SPEEDS[currentSpeedIndex];
-  const btn = document.getElementById("btn-speed");
-  if (btn) {
-    btn.textContent = speed.label;
-    btn.title = `Current battle speed: ${speed.label}. Click to cycle speeds.`;
-  }
-  window.CaroSandboxConfig.delaySec = speed.delaySec;
-  saveSandboxConfig();
-
-  if (clientEngine && clientEngine.isAutoPlaying) {
-    clientEngine.autoDelaySec = speed.delaySec;
-  }
-  if (isServerAvailable && gameState?.is_autoplay) {
-    fetch("/api/battle/autoplay", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ enabled: true, delay_sec: speed.delaySec })
-    }).catch(() => {});
-  }
-}
-
-// ─────────────────────────────────────────
-// Championship Tournament Series Mode
-// ─────────────────────────────────────────
-function loadChampionshipState() {
-  try {
-    const s = localStorage.getItem("caro_championship_state");
-    if (s) championshipSeries = JSON.parse(s);
-  } catch {}
-}
-
-function saveChampionshipState() {
-  try {
-    localStorage.setItem("caro_championship_state", JSON.stringify(championshipSeries));
-  } catch {}
-}
-
-function toggleChampionshipMode() {
-  championshipMode = !championshipMode;
-  const bar = document.getElementById("championship-bar");
-  const btn = document.getElementById("btn-championship");
-  if (bar) bar.style.display = championshipMode ? "flex" : "none";
-  if (btn) btn.classList.toggle("btn-active", championshipMode);
-  if (championshipMode) renderChampionshipBar();
-}
-
-function renderChampionshipBar() {
-  const bar = document.getElementById("championship-bar");
-  const statusEl = document.getElementById("championship-status");
-  const progEl = document.getElementById("championship-progress");
-  if (!bar || !statusEl || !progEl) return;
-
-  statusEl.textContent = `Season #${championshipSeries.season || 1} · Match ${championshipSeries.matchesPlayed + 1} · First to ${championshipSeries.targetPoints} pts`;
-
-  const scores = championshipSeries.scores || {};
-  const sorted = Object.entries(scores).sort((a, b) => b[1] - a[1]);
-
-  if (sorted.length === 0) {
-    progEl.innerHTML = `<span style="font-size:0.68rem; color:#b45309;">Battles will earn Championship points (1st=4pts, 2nd=3pts...)</span>`;
-    return;
-  }
-
-  progEl.innerHTML = sorted.map(([ptype, pts], i) => {
-    const meta = PLAYER_COLORS[ptype] || { fill: "#94a3b8", name: ptype };
-    const crown = i === 0 ? "👑 " : "";
-    return `<div class="series-pill">
-      <span style="color:${meta.fill}; font-weight:700;">${crown}${meta.name}</span>
-      <span class="series-pts">${pts}/${championshipSeries.targetPoints}</span>
-    </div>`;
-  }).join("");
-}
-
-function updateChampionshipRound(finishedState) {
-  if (!championshipMode || !finishedState?.board?.placements) return;
-  const placements = finishedState.board.placements;
-  const totalP = placements.length;
-  championshipSeries.matchesPlayed++;
-
-  for (const pl of placements) {
-    const pInfo = finishedState.players.find(p => p.symbol === pl.player);
-    const ptype = pInfo?.type || "unknown";
-    const pts = Math.max(1, totalP - pl.rank + 1);
-    championshipSeries.scores[ptype] = (championshipSeries.scores[ptype] || 0) + pts;
-  }
-  saveChampionshipState();
-  renderChampionshipBar();
-
-  // Check victory condition
-  const entries = Object.entries(championshipSeries.scores);
-  const champ = entries.find(([_, score]) => score >= championshipSeries.targetPoints);
-  if (champ) {
-    showVictoryCelebration(champ[0], entries);
-  }
-}
-
-function showVictoryCelebration(winnerType, allEntries) {
-  const modal = document.getElementById("victory-modal");
-  const nameEl = document.getElementById("champion-name");
-  const podiumEl = document.getElementById("podium-display");
+  const modal = document.getElementById("winner-modal");
   if (!modal) return;
 
-  const meta = PLAYER_COLORS[winnerType] || { name: winnerType, fill: "#d97706" };
-  if (nameEl) {
-    nameEl.textContent = meta.name;
-    nameEl.style.color = meta.fill;
-  }
+  const bn = data.series?.battle_number || data.battle_number || 1;
+  const placements = data.board?.placements || [];
+  const headline = document.getElementById("winner-headline");
+  const avatar = document.getElementById("winner-avatar");
+  const name = document.getElementById("winner-name");
+  const details = document.getElementById("winner-details");
+  const totalMoves = data.board?.moves?.length || 0;
 
-  if (podiumEl) {
-    const sorted = [...allEntries].sort((a, b) => b[1] - a[1]);
-    const p1 = sorted[0], p2 = sorted[1], p3 = sorted[2];
-    podiumEl.innerHTML = `
-      ${p2 ? `<div class="podium-step step-2"><span class="podium-model" style="color:${PLAYER_COLORS[p2[0]]?.fill || '#666'}">${PLAYER_COLORS[p2[0]]?.name || p2[0]}</span><span class="podium-pts">🥈 ${p2[1]} pts</span></div>` : ""}
-      ${p1 ? `<div class="podium-step step-1"><span class="podium-model" style="color:${PLAYER_COLORS[p1[0]]?.fill || '#d97706'}">${PLAYER_COLORS[p1[0]]?.name || p1[0]}</span><span class="podium-pts">🥇 ${p1[1]} pts</span></div>` : ""}
-      ${p3 ? `<div class="podium-step step-3"><span class="podium-model" style="color:${PLAYER_COLORS[p3[0]]?.fill || '#666'}">${PLAYER_COLORS[p3[0]]?.name || p3[0]}</span><span class="podium-pts">🥉 ${p3[1]} pts</span></div>` : ""}
-    `;
+  if (placements.length > 0 && placements[0].winning_line) {
+    const winnerMeta = getPlayerMeta(placements[0].player);
+    if (headline) headline.textContent = `Battle #${bn} Finished!`;
+    if (avatar) {
+      avatar.style.color = winnerMeta.color;
+      avatar.textContent = "●";
+    }
+    if (name) {
+      name.textContent = winnerMeta.name;
+      name.style.color = winnerMeta.color;
+    }
+    if (details) {
+      details.textContent = `Claimed 5-in-a-row in ${totalMoves} moves`;
+    }
+  } else {
+    if (headline) headline.textContent = `Battle #${bn} Ended`;
+    if (avatar) {
+      avatar.style.color = "#94a3b8";
+      avatar.textContent = "⚖";
+    }
+    if (name) {
+      name.textContent = "Draw Game";
+      name.style.color = "var(--text-primary)";
+    }
+    if (details) {
+      details.textContent = `Board reached draw after ${totalMoves} moves`;
+    }
   }
 
   modal.style.display = "flex";
+
   if (window.CaroAudio) window.CaroAudio.playChampionshipFanfare();
-  if (confettiEngine) confettiEngine.launch(5000);
+  if (confettiEngine) confettiEngine.launch(3500);
 }
 
-function resetChampionshipSeason() {
-  const modal = document.getElementById("victory-modal");
+function closeWinnerModal() {
+  const modal = document.getElementById("winner-modal");
   if (modal) modal.style.display = "none";
-  championshipSeries.season = (championshipSeries.season || 1) + 1;
-  championshipSeries.scores = {};
-  championshipSeries.matchesPlayed = 0;
-  saveChampionshipState();
-  renderChampionshipBar();
+}
+
+function onConfirmNextBattle() {
+  closeWinnerModal();
+  newBattle();
 }
 
 // ─────────────────────────────────────────

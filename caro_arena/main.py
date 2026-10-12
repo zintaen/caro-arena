@@ -193,20 +193,9 @@ async def _run_auto_play():
                 await asyncio.sleep(manager.auto_delay_sec)
 
             if manager.status == "finished":
+                manager.is_auto_playing = False
                 await broadcast_state()
-                # If there's a human player, don't auto-chain battles
-                if manager.has_human_player():
-                    manager.is_auto_playing = False
-                    await broadcast_state()
-                    break
-                await asyncio.sleep(3.0)
-                if not manager.is_auto_playing:
-                    break
-
-                manager.battle_number += 1
-                manager.new_game()
-                manager.status = "playing"
-                await broadcast_state()
+                break
     except asyncio.CancelledError:
         pass
     except Exception as e:
