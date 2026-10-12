@@ -492,75 +492,147 @@ class MoJevAgent extends BaseClientAgent {
 class ClientStorage {
   static getBattles() {
     try {
-      return JSON.parse(localStorage.getItem("caro_arena_battles") || "[]");
-    } catch { return []; }
+      const raw = localStorage.getItem("caro_arena_battles");
+      if (!raw) return [];
+      const parsed = JSON.parse(raw);
+      return Array.isArray(parsed) ? parsed : [];
+    } catch {
+      return [];
+    }
+  }
+
+  static sanitizeBattle(battle) {
+    if (!battle) return null;
+    const rawMoves = battle.moves_data || battle.moves || [];
+    const sanitizedMoves = rawMoves.map(m => ({
+      row: m.row !== undefined ? m.row : m.r,
+      col: m.col !== undefined ? m.col : m.c,
+      player: m.player || m.p,
+      move_number: m.move_number || m.n
+    }));
+    return {
+      battle_id: battle.battle_id || ("b_" + Math.random().toString(36).substring(2, 8)),
+      total_moves: battle.total_moves || sanitizedMoves.length,
+      started_at: battle.started_at,
+      ended_at: battle.ended_at,
+      player_order: battle.player_order || [],
+      placements: (battle.placements || []).map(p => ({
+        rank: p.rank,
+        type: p.type,
+        player: p.player,
+        symbol: p.symbol || p.player,
+        name: p.name,
+        winning_line: p.winning_line ? p.winning_line.slice(0, 5) : null
+      })),
+      moves_data: sanitizedMoves
+    };
   }
 
   static saveBattle(battle) {
-    const list = this.getBattles();
-    list.unshift(battle);
-    if (list.length > 50) list.pop();
-    localStorage.setItem("caro_arena_battles", JSON.stringify(list));
-    this.updateLeaderboard(battle);
+    try {
+      const clean = this.sanitizeBattle(battle);
+      if (!clean) return;
+
+      let list = this.getBattles();
+      list.unshift(clean);
+
+      // Keep maximum 20 battles in history (prevents quota bloat)
+      if (list.length > 20) {
+        list = list.slice(0, 20);
+      }
+
+      // Safe saving with progressive fallback if quota is exceeded
+      let saved = false;
+      while (list.length > 0 && !saved) {
+        try {
+          localStorage.setItem("caro_arena_battles", JSON.stringify(list));
+          saved = true;
+        } catch (e) {
+          // If QuotaExceededError, cut list in half and retry
+          if (list.length <= 1) {
+            try { localStorage.removeItem("caro_arena_battles"); } catch {}
+            break;
+          }
+          list = list.slice(0, Math.max(1, Math.floor(list.length / 2)));
+        }
+      }
+
+      this.updateLeaderboard(battle);
+    } catch (e) {
+      console.warn("ClientStorage: Failed to save battle without blocking game", e);
+    }
   }
 
   static getLeaderboard() {
     try {
-      return JSON.parse(localStorage.getItem("caro_arena_leaderboard") || "[]");
-    } catch { return []; }
+      const raw = localStorage.getItem("caro_arena_leaderboard");
+      if (!raw) return [];
+      const parsed = JSON.parse(raw);
+      return Array.isArray(parsed) ? parsed : [];
+    } catch {
+      return [];
+    }
   }
 
   static updateLeaderboard(battle) {
-    const statsMap = {};
-    const battles = this.getBattles();
-    for (const b of battles) {
-      const placements = b.placements || [];
-      const totalP = placements.length;
-      for (const pl of placements) {
-        const ptype = pl.type;
-        const rank = pl.rank;
-        if (!statsMap[ptype]) {
-          statsMap[ptype] = { points: 0, battles: 0, wins: 0, ranks_sum: 0, best_streak: 0, current_streak: 0 };
-        }
-        statsMap[ptype].battles++;
-        statsMap[ptype].ranks_sum += rank;
-        const pts = Math.max(1, totalP - rank + 1);
-        statsMap[ptype].points += pts;
-        if (rank === 1) {
-          statsMap[ptype].wins++;
-          statsMap[ptype].current_streak++;
-          if (statsMap[ptype].current_streak > statsMap[ptype].best_streak) {
-            statsMap[ptype].best_streak = statsMap[ptype].current_streak;
+    try {
+      const statsMap = {};
+      const battles = this.getBattles();
+      for (const b of battles) {
+        const placements = b.placements || [];
+        const totalP = placements.length;
+        for (const pl of placements) {
+          const ptype = pl.type;
+          const rank = pl.rank;
+          if (!statsMap[ptype]) {
+            statsMap[ptype] = { points: 0, battles: 0, wins: 0, ranks_sum: 0, best_streak: 0, current_streak: 0 };
           }
-        } else {
-          statsMap[ptype].current_streak = 0;
+          statsMap[ptype].battles++;
+          statsMap[ptype].ranks_sum += rank;
+          const pts = Math.max(1, totalP - rank + 1);
+          statsMap[ptype].points += pts;
+          if (rank === 1) {
+            statsMap[ptype].wins++;
+            statsMap[ptype].current_streak++;
+            if (statsMap[ptype].current_streak > statsMap[ptype].best_streak) {
+              statsMap[ptype].best_streak = statsMap[ptype].current_streak;
+            }
+          } else {
+            statsMap[ptype].current_streak = 0;
+          }
         }
       }
+
+      const res = Object.entries(statsMap).map(([ptype, s]) => ({
+        player_type: ptype,
+        total_points: s.points,
+        battles_played: s.battles,
+        wins: s.wins,
+        avg_placement: s.battles > 0 ? Math.round((s.ranks_sum / s.battles) * 10) / 10 : 0,
+        best_streak: s.best_streak
+      }));
+
+      // Sort: points DESC, wins DESC, avg_placement ASC, battles DESC
+      res.sort((a, b) => {
+        if (b.total_points !== a.total_points) return b.total_points - a.total_points;
+        if (b.wins !== a.wins) return b.wins - a.wins;
+        if (a.avg_placement !== b.avg_placement) return a.avg_placement - b.avg_placement;
+        return b.battles_played - a.battles_played;
+      });
+
+      try {
+        localStorage.setItem("caro_arena_leaderboard", JSON.stringify(res));
+      } catch {}
+    } catch (e) {
+      console.warn("ClientStorage: Failed to update leaderboard", e);
     }
-
-    const res = Object.entries(statsMap).map(([ptype, s]) => ({
-      player_type: ptype,
-      total_points: s.points,
-      battles_played: s.battles,
-      wins: s.wins,
-      avg_placement: s.battles > 0 ? Math.round((s.ranks_sum / s.battles) * 10) / 10 : 0,
-      best_streak: s.best_streak
-    }));
-
-    // Sort: points DESC, wins DESC, avg_placement ASC, battles DESC
-    res.sort((a, b) => {
-      if (b.total_points !== a.total_points) return b.total_points - a.total_points;
-      if (b.wins !== a.wins) return b.wins - a.wins;
-      if (a.avg_placement !== b.avg_placement) return a.avg_placement - b.avg_placement;
-      return b.battles_played - a.battles_played;
-    });
-
-    localStorage.setItem("caro_arena_leaderboard", JSON.stringify(res));
   }
 
   static clearHistory() {
-    localStorage.removeItem("caro_arena_battles");
-    localStorage.removeItem("caro_arena_leaderboard");
+    try {
+      localStorage.removeItem("caro_arena_battles");
+      localStorage.removeItem("caro_arena_leaderboard");
+    } catch {}
   }
 }
 
@@ -744,30 +816,34 @@ class ClientGameManager {
   }
 
   persistGame() {
-    const playerOrder = this.players.map(p => ({ type: p.type, symbol: p.symbol }));
-    const placements = this.board.placements.map(pl => {
-      const ptype = this.players.find(p => p.symbol === pl.player)?.type || "unknown";
-      return {
-        symbol: pl.player,
-        type: ptype,
-        rank: pl.rank,
-        move_number: pl.move_number,
-        winning_line: pl.winning_line
+    try {
+      const playerOrder = this.players.map(p => ({ type: p.type, symbol: p.symbol }));
+      const placements = this.board.placements.map(pl => {
+        const ptype = this.players.find(p => p.symbol === pl.player)?.type || "unknown";
+        return {
+          symbol: pl.player,
+          type: ptype,
+          rank: pl.rank,
+          move_number: pl.move_number,
+          winning_line: pl.winning_line
+        };
+      });
+
+      const battleRecord = {
+        battle_id: this.gameId,
+        started_at: this.startedAt / 1000,
+        ended_at: (this.endedAt || Date.now()) / 1000,
+        player_order: playerOrder,
+        placements: placements,
+        total_moves: this.board.moves.length,
+        duration_sec: ((this.endedAt || Date.now()) - this.startedAt) / 1000,
+        moves_data: this.board.moves
       };
-    });
 
-    const battleRecord = {
-      battle_id: this.gameId,
-      started_at: this.startedAt / 1000,
-      ended_at: (this.endedAt || Date.now()) / 1000,
-      player_order: playerOrder,
-      placements: placements,
-      total_moves: this.board.moves.length,
-      duration_sec: ((this.endedAt || Date.now()) - this.startedAt) / 1000,
-      moves_data: this.board.moves
-    };
-
-    ClientStorage.saveBattle(battleRecord);
+      ClientStorage.saveBattle(battleRecord);
+    } catch (err) {
+      console.warn("ClientGameManager: persistGame non-fatal error", err);
+    }
   }
 
   toggleAutoPlay(enabled, delaySec = 0.01) {

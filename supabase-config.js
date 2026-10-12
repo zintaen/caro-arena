@@ -14,5 +14,5 @@
  * via the "👥 Rooms" -> "⚙️ Settings" button (saved privately in your browser).
  */
 
-window.CARO_SUPABASE_URL = window.CARO_SUPABASE_URL || "";
-window.CARO_SUPABASE_KEY = window.CARO_SUPABASE_KEY || "";
+window.CARO_SUPABASE_URL = window.CARO_SUPABASE_URL || "https://lvnzcwjxreamelewdwql.supabase.co";
+window.CARO_SUPABASE_KEY = window.CARO_SUPABASE_KEY || "sb_publishable_UHtglbl0-hEqik_pAo0Dag_w7tvexKC";
