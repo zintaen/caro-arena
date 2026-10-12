@@ -101,14 +101,19 @@ document.addEventListener("DOMContentLoaded", async () => {
   const confCanvas = document.getElementById("confetti-canvas");
   if (confCanvas) confettiEngine = new ConfettiEngine(confCanvas);
 
-  // Check if backend API server is available
-  try {
-    const ctrl = new AbortController();
-    const timeout = setTimeout(() => ctrl.abort(), 1200);
-    const r = await fetch("/api/health", { signal: ctrl.signal });
-    clearTimeout(timeout);
-    if (r.ok) isServerAvailable = true;
-  } catch {
+  // Check if backend API server is available (only probe on localhost / 127.0.0.1 to avoid 404 on static hosts like GitHub Pages)
+  const isLocalHost = window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1";
+  if (isLocalHost) {
+    try {
+      const ctrl = new AbortController();
+      const timeout = setTimeout(() => ctrl.abort(), 1200);
+      const r = await fetch("/api/health", { signal: ctrl.signal });
+      clearTimeout(timeout);
+      if (r.ok) isServerAvailable = true;
+    } catch {
+      isServerAvailable = false;
+    }
+  } else {
     isServerAvailable = false;
   }
 
@@ -191,21 +196,27 @@ function handleStateUpdate(data) {
   // Audio feedback for remote server updates
   if (isServerAvailable && window.CaroAudio && newMoveCount > prevMoveCount) {
     const lastM = data.board.moves[newMoveCount - 1];
-    const pInfo = data.players.find(p => p.symbol === lastM.player);
-    window.CaroAudio.playStoneClick(pInfo?.type || "ai");
+    const pInfo = data.players?.find(p => p.symbol === lastM.player);
+    try { window.CaroAudio?.playStoneClick?.(pInfo?.type || "ai"); } catch {}
   }
 
   // Human turn chime
   const isHumanTurn = data.is_human_turn && data.status !== "finished";
-  if (isHumanTurn && !lastWasHumanTurn && window.CaroAudio) {
-    window.CaroAudio.playHumanTurnAlert();
+  if (isHumanTurn && !lastWasHumanTurn) {
+    if (typeof window.CaroAudio?.playHumanTurnAlert === "function") {
+      try {
+        window.CaroAudio.playHumanTurnAlert();
+      } catch (err) {
+        console.warn("Audio chime failed:", err);
+      }
+    }
   }
   lastWasHumanTurn = isHumanTurn;
 
   if (data.status === "finished" && !wasFinished) {
     fetchLeaderboard();
     fetchBattleHistory();
-    if (window.CaroAudio) window.CaroAudio.playChampionshipFanfare();
+    try { window.CaroAudio?.playChampionshipFanfare?.(); } catch {}
     if (confettiEngine) confettiEngine.launch(3000);
   }
 }
