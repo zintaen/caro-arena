@@ -336,13 +336,24 @@ class TacticalEvaluator {
     }
     const centroid = [sumR / board.stones.size, sumC / board.stones.size];
     const scored = raw.map(([r, c]) => this.evaluateMove(board, r, c, player, centroid));
-    const maxScore = Math.max(1, ...scored.map(s => s.total_score));
 
-    return scored.map(s => ({
+    // Filter to ONLY genuine tactical threats (open 3s, 4s, win threats, critical blocks)
+    // Discard all quiet/low-value candidate moves so the board stays clean
+    const threats = scored.filter(s => s.total_score >= 1200);
+    threats.sort((a, b) => b.total_score - a.total_score);
+
+    // Keep at most top 8 critical hotspots on the board
+    const topThreats = threats.slice(0, 8);
+    if (topThreats.length === 0) return [];
+
+    const maxScore = topThreats[0].total_score;
+    return topThreats.map((s, idx) => ({
       row: s.row, col: s.col,
       total_score: s.total_score,
-      intensity: Math.min(1.0, Math.max(0.12, s.total_score / (s.total_score >= 10000 ? s.total_score : Math.min(maxScore, 10000)))),
+      rank: idx + 1,
+      intensity: Math.min(1.0, Math.max(0.35, s.total_score / Math.max(8000, maxScore))),
       isWinThreat: s.total_score >= 20000,
+      isLethal: s.total_score >= 10000,
       summary: s.summary
     }));
   }

@@ -239,6 +239,23 @@ function setupEventListeners() {
   // Championship Series
   document.getElementById("btn-championship")?.addEventListener("click", toggleChampionshipMode);
   document.getElementById("btn-new-season")?.addEventListener("click", resetChampionshipSeason);
+  document.getElementById("btn-series-new")?.addEventListener("click", resetChampionshipSeason);
+  document.getElementById("btn-series-exit")?.addEventListener("click", toggleChampionshipMode);
+
+  // Close modals when clicking dark backdrop or pressing Escape
+  document.getElementById("sandbox-modal")?.addEventListener("click", (e) => {
+    if (e.target.id === "sandbox-modal") closeSandboxModal();
+  });
+  document.getElementById("victory-modal")?.addEventListener("click", (e) => {
+    if (e.target.id === "victory-modal") resetChampionshipSeason();
+  });
+  window.addEventListener("keydown", (e) => {
+    if (e.key === "Escape") {
+      closeSandboxModal();
+      const vm = document.getElementById("victory-modal");
+      if (vm && vm.style.display !== "none") resetChampionshipSeason();
+    }
+  });
 
   // Human Undo
   document.getElementById("btn-undo-move")?.addEventListener("click", undoHumanMove);
@@ -931,44 +948,65 @@ function drawThreatHeatmap(cs) {
 
   const currentSymbol = gameState?.board?.current_player || "A";
   const heatmap = window.CaroEngine.TacticalEvaluator.getThreatHeatmap(boardObj, currentSymbol);
+  if (!heatmap || heatmap.length === 0) return;
+
+  const now = Date.now();
+  const pulse = (Math.sin(now / 180) + 1) / 2;
 
   ctx.save();
   for (const h of heatmap) {
     const pt = boardToScreen(h.row, h.col);
-    const radius = cs * (0.45 + h.intensity * 0.45);
+    const radius = cs * (0.50 + h.intensity * 0.40);
     const grad = ctx.createRadialGradient(pt.x, pt.y, 0, pt.x, pt.y, radius);
 
     if (h.isWinThreat) {
-      grad.addColorStop(0, "rgba(239, 68, 68, 0.7)");
-      grad.addColorStop(0.5, "rgba(245, 158, 11, 0.35)");
+      grad.addColorStop(0, `rgba(239, 68, 68, ${0.75 + pulse * 0.2})`);
+      grad.addColorStop(0.45, "rgba(245, 158, 11, 0.45)");
       grad.addColorStop(1, "rgba(239, 68, 68, 0)");
-    } else if (h.total_score >= 4000) {
-      grad.addColorStop(0, "rgba(245, 158, 11, 0.55)");
-      grad.addColorStop(0.6, "rgba(234, 179, 8, 0.25)");
+    } else if (h.isLethal) {
+      grad.addColorStop(0, `rgba(245, 158, 11, ${0.70 + pulse * 0.15})`);
+      grad.addColorStop(0.5, "rgba(234, 179, 8, 0.35)");
       grad.addColorStop(1, "rgba(245, 158, 11, 0)");
     } else {
-      grad.addColorStop(0, "rgba(6, 182, 212, 0.4)");
-      grad.addColorStop(0.7, "rgba(14, 165, 233, 0.15)");
-      grad.addColorStop(1, "rgba(6, 182, 212, 0)");
+      // Warm golden tactical alert for top-tier open threats
+      grad.addColorStop(0, "rgba(251, 191, 36, 0.50)");
+      grad.addColorStop(0.6, "rgba(245, 158, 11, 0.20)");
+      grad.addColorStop(1, "rgba(251, 191, 36, 0)");
     }
 
     ctx.fillStyle = grad;
     ctx.beginPath();
     ctx.arc(pt.x, pt.y, radius, 0, Math.PI * 2);
     ctx.fill();
+
+    // Prominent tactical reticle on the #1 most lethal threat spot
+    if (h.rank === 1 && (h.isLethal || h.isWinThreat)) {
+      ctx.save();
+      ctx.strokeStyle = h.isWinThreat ? `rgba(239, 68, 68, ${0.8 + pulse * 0.2})` : `rgba(245, 158, 11, ${0.8 + pulse * 0.2})`;
+      ctx.lineWidth = 1.8 * camera.zoom;
+      const arm = cs * 0.38;
+      // Crosshair ticks
+      ctx.beginPath();
+      ctx.moveTo(pt.x - arm, pt.y); ctx.lineTo(pt.x + arm, pt.y);
+      ctx.moveTo(pt.x, pt.y - arm); ctx.lineTo(pt.x, pt.y + arm);
+      ctx.stroke();
+
+      // Outer focus ring
+      ctx.beginPath();
+      ctx.arc(pt.x, pt.y, cs * (0.34 + pulse * 0.08), 0, Math.PI * 2);
+      ctx.stroke();
+      ctx.restore();
+    }
   }
 
   // Draw danger warning pulses for active threat lines
   const threatLines = window.CaroEngine.TacticalEvaluator.findThreatLines(boardObj);
-  const now = Date.now();
-  const pulse = (Math.sin(now / 150) + 1) / 2;
-
   for (const t of threatLines) {
     for (const [tr, tc] of t.line) {
       const pt = boardToScreen(tr, tc);
       ctx.strokeStyle = t.severity === "critical"
-        ? `rgba(239, 68, 68, ${0.4 + pulse * 0.5})`
-        : `rgba(245, 158, 11, ${0.3 + pulse * 0.4})`;
+        ? `rgba(239, 68, 68, ${0.45 + pulse * 0.45})`
+        : `rgba(245, 158, 11, ${0.35 + pulse * 0.35})`;
       ctx.lineWidth = (2 + pulse * 2) * camera.zoom;
       ctx.setLineDash([4 * camera.zoom, 4 * camera.zoom]);
       ctx.beginPath();
@@ -1164,10 +1202,15 @@ function renderBoard() {
         ctx.restore();
       }
 
-      // 3. Floating Winner Badge above the winning row
+      // 3. Floating Winner Badge above the winning row with rank-based offsets
       const midCoord = pl.winning_line[Math.floor(pl.winning_line.length / 2)];
       const midPt = boardToScreen(midCoord[0], midCoord[1]);
-      const badgeY = midPt.y - cs * 0.70;
+      const rank = pl.rank || 1;
+      // Stagger vertical offsets and slight horizontal displacement by rank to prevent any collision
+      const yOffsets = { 1: -0.80, 2: 0.85, 3: -1.55, 4: 1.55, 5: -2.3 };
+      const xOffsets = { 1: 0, 2: 8 * camera.zoom, 3: -12 * camera.zoom, 4: 14 * camera.zoom, 5: 0 };
+      const badgeY = midPt.y + (yOffsets[rank] || -0.80) * cs;
+      const badgeX = midPt.x + (xOffsets[rank] || 0);
       const rankText = pl.rank === 1 ? `🥇 ${meta.name} · 5 in a row` : `#${pl.rank} ${meta.name} · 5 in a row`;
 
       ctx.save();
@@ -1179,14 +1222,14 @@ function renderBoard() {
       const bgH = Math.max(18, Math.round(22 * camera.zoom));
 
       // Badge pill background
-      ctx.fillStyle = "rgba(15, 23, 42, 0.92)";
-      ctx.shadowColor = "rgba(0, 0, 0, 0.4)";
+      ctx.fillStyle = "rgba(15, 23, 42, 0.94)";
+      ctx.shadowColor = "rgba(0, 0, 0, 0.5)";
       ctx.shadowBlur = 8;
       ctx.beginPath();
       if (ctx.roundRect) {
-        ctx.roundRect(midPt.x - bgW / 2, badgeY - bgH / 2, bgW, bgH, 999);
+        ctx.roundRect(badgeX - bgW / 2, badgeY - bgH / 2, bgW, bgH, 999);
       } else {
-        ctx.rect(midPt.x - bgW / 2, badgeY - bgH / 2, bgW, bgH);
+        ctx.rect(badgeX - bgW / 2, badgeY - bgH / 2, bgW, bgH);
       }
       ctx.fill();
 
@@ -1195,16 +1238,16 @@ function renderBoard() {
       ctx.lineWidth = 1.5;
       ctx.beginPath();
       if (ctx.roundRect) {
-        ctx.roundRect(midPt.x - bgW / 2, badgeY - bgH / 2, bgW, bgH, 999);
+        ctx.roundRect(badgeX - bgW / 2, badgeY - bgH / 2, bgW, bgH, 999);
       } else {
-        ctx.rect(midPt.x - bgW / 2, badgeY - bgH / 2, bgW, bgH);
+        ctx.rect(badgeX - bgW / 2, badgeY - bgH / 2, bgW, bgH);
       }
       ctx.stroke();
 
       // Badge text
       ctx.fillStyle = "#ffffff";
       ctx.shadowBlur = 0;
-      ctx.fillText(rankText, midPt.x, badgeY);
+      ctx.fillText(rankText, badgeX, badgeY);
       ctx.restore();
     }
   }
