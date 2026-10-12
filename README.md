@@ -110,13 +110,35 @@ The frontend follows an anti-slop, clean editorial design system:
    - Cursor changes to a pointer with valid placement crosshairs.
    - Clicks on occupied cells or outside canvas boundaries are rejected cleanly.
 
-5. **Integrated Replay & Review System**:
-   - Browse completed matches from the **History** tab.
-   - Step forward/backward through moves using **Prev** / **Next** buttons or keyboard shortcuts:
-     - `←` (`ArrowLeft`): Step backward
-     - `→` (`ArrowRight`): Step forward
-     - `Esc` (`Escape`): Exit replay
-   - Direct link support via query param: `?replay=<battle_id>`.
+5. **Web Audio Sound Effects Engine**:
+   - Synthesizes realistic wooden stone clicks, winning fanfare chimes, laser whooshes, human turn reminders, and victory fanfare chords via the Web Audio API with zero external audio assets.
+   - Header sound toggle (`🔊` / `🔇`) with state persistence.
+
+6. **Tactical Threat Heatmap & Laser Radar**:
+   - Toggleable live tactical heatmap (`🔥 Heatmap`) highlighting hot intersection zones where multiple players' threat lines cross.
+   - Laser threat vectors (`⚡ Lasers`) connecting 5-in-a-row alignments.
+
+7. **AI Sandbox & Live Hyperparameter Tuning**:
+   - Open the **⚙️ Sandbox** modal to adjust AI Temperature (creativity vs determinism), Defense Weight (offensive aggro vs turtle defense), and Candidate Search Radius in real-time.
+
+8. **Championship Series Tournament Mode**:
+   - Click **🏆 Series** to start a Best-of-3, Best-of-5, or Best-of-7 tournament with live ladder tracking, interactive podium celebration, and canvas confetti cannon.
+
+9. **Human Move Undo & Ghost HUD Preview**:
+   - **↩ Undo**: One-click rewind of the last human move and any intermediate AI responses, letting humans learn and test tactical counterplays.
+   - **Ghost Stone HUD**: Hovering over open intersections renders a translucent ghost preview with live coordinate tooltip.
+
+10. **Mobile Touch & PWA Support**:
+    - Full multi-touch pinch-to-zoom and two-finger pan for tablets and mobile phones.
+    - Web Application Manifest (`manifest.json`) and vector SVG icon for desktop/mobile "Add to Home Screen" installation.
+
+11. **Integrated Replay & Review System**:
+    - Browse completed matches from the **History** tab.
+    - Step forward/backward through moves using **Prev** / **Next** buttons or keyboard shortcuts:
+      - `←` (`ArrowLeft`): Step backward
+      - `→` (`ArrowRight`): Step forward
+      - `Esc` (`Escape`): Exit replay
+    - Direct link support via query param: `?replay=<battle_id>`.
 
 ---
 
