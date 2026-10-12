@@ -4,10 +4,14 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Caro Arena · Battle Royale</title>
+  <meta name="theme-color" content="#d97706">
+  <link rel="icon" type="image/svg+xml" href="icon.svg">
+  <link rel="manifest" href="manifest.json">
   <link rel="stylesheet" href="style.css">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+  <script src="audio.js"></script>
 </head>
 <body>
   <header class="app-header">
@@ -27,12 +31,16 @@
 
     <div class="header-right">
       <div class="header-actions">
-        <button class="btn btn-primary" id="btn-auto">
+        <button class="btn btn-ghost btn-sm" id="btn-sound" title="Toggle Sound (Mute/Unmute)">🔊</button>
+        <button class="btn btn-ghost btn-sm" id="btn-sandbox" title="Model Tuning & Speed Sandbox">⚙️ Sandbox</button>
+        <button class="btn btn-ghost btn-sm" id="btn-championship" title="Championship Tournament Mode">🏆 Series</button>
+        <button class="btn btn-ghost btn-sm" id="btn-fullscreen" title="Toggle Fullscreen">⛶</button>
+        <button class="btn btn-primary btn-sm" id="btn-auto">
           <svg viewBox="0 0 16 16" width="13" height="13" fill="currentColor"><path d="M4 2.5l9 5.5-9 5.5V2.5z"/></svg>
           <span id="btn-auto-text">Battle</span>
         </button>
-        <button class="btn btn-ghost" id="btn-new">New battle</button>
-        <button class="btn btn-ghost" id="btn-reset">Reset all</button>
+        <button class="btn btn-ghost btn-sm" id="btn-new">New battle</button>
+        <button class="btn btn-ghost btn-sm" id="btn-reset">Reset all</button>
       </div>
     </div>
   </header>
@@ -52,13 +60,27 @@
           </div>
         </div>
 
-        <!-- Human turn indicator -->
+        <!-- Championship Mode Banner -->
+        <div id="championship-bar" class="championship-bar" style="display: none;">
+          <div class="championship-info">
+            <span class="championship-title">🏆 Series Championship</span>
+            <span class="championship-status" id="championship-status">Best of 5 · Match 1</span>
+          </div>
+          <div class="championship-progress" id="championship-progress"></div>
+        </div>
+
+        <!-- Human turn indicator with Undo -->
         <div id="human-turn-bar" class="human-turn-bar" style="display: none;">
-          <span>🎯 Your turn — click the board to place a stone</span>
+          <div class="human-turn-content">
+            <span class="pulse-icon">🎯</span>
+            <span>Your turn — click any empty cell to place your stone</span>
+          </div>
+          <button class="btn btn-xs btn-outline" id="btn-undo-move" title="Undo your last move">↩ Undo</button>
         </div>
 
         <div class="canvas-wrap">
           <canvas id="caro-canvas" width="700" height="700"></canvas>
+          <div id="ghost-hud" class="ghost-hud" style="display: none;"></div>
           <div class="viewport-hud">
             <button class="hud-btn" id="btn-zoom-in" title="Zoom in">
               <svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M8 3.5v9M3.5 8h9"/></svg>
@@ -77,12 +99,14 @@
         <footer class="board-footer">
           <div class="board-hints">
             <span>Drag to pan</span><span class="dot">·</span>
-            <span>Scroll to zoom</span><span class="dot">·</span>
+            <span>Scroll/pinch to zoom</span><span class="dot">·</span>
             <span>5-in-a-row wins</span>
           </div>
           <div class="board-toggles">
             <label><input type="checkbox" id="toggle-numbers" checked><span>Numbers</span></label>
             <label><input type="checkbox" id="toggle-coords"><span>Coords</span></label>
+            <label><input type="checkbox" id="toggle-heatmap"><span>🔥 Heatmap</span></label>
+            <label><input type="checkbox" id="toggle-lasers" checked><span>⚡ Lasers</span></label>
           </div>
         </footer>
       </div>
@@ -168,6 +192,98 @@
     </aside>
   </main>
 
+  <!-- Sandbox / Model Tuning Modal -->
+  <div id="sandbox-modal" class="modal-backdrop" style="display: none;">
+    <div class="modal-card">
+      <div class="modal-header">
+        <h3 class="modal-title">⚙️ Arena Sandbox & Model Tuning</h3>
+        <button class="modal-close" id="btn-close-sandbox">&times;</button>
+      </div>
+      <div class="modal-body">
+        <div class="sandbox-group">
+          <div class="sandbox-label-row">
+            <label for="slider-speed">Auto-Play Move Delay</label>
+            <span class="sandbox-val" id="val-speed">20 ms</span>
+          </div>
+          <input type="range" id="slider-speed" min="10" max="600" step="10" value="20" class="slider">
+          <div class="slider-ticks"><span>10ms (Blitz)</span><span>100ms</span><span>600ms (Slow)</span></div>
+        </div>
+
+        <div class="sandbox-group">
+          <div class="sandbox-label-row">
+            <label for="slider-def-weight">Multi-Player Defense Weight</label>
+            <span class="sandbox-val" id="val-def-weight">5%</span>
+          </div>
+          <input type="range" id="slider-def-weight" min="0" max="60" step="5" value="5" class="slider">
+          <div class="sandbox-presets">
+            <button class="btn btn-xs preset-btn" data-def="0">Hyper-Offense (0%)</button>
+            <button class="btn btn-xs preset-btn active" data-def="5">Standard FFA (5%)</button>
+            <button class="btn btn-xs preset-btn" data-def="30">Bunker (30%)</button>
+          </div>
+          <p class="sandbox-hint">Lower defense weights encourage aggressive forward expansion and rapid multi-player clashes (~80-150 turns).</p>
+        </div>
+
+        <div class="sandbox-divider"></div>
+
+        <h4 class="sandbox-subhead">Decision Model Exploration Temperatures (T)</h4>
+        <div class="sandbox-grid">
+          <div class="sandbox-item">
+            <div class="sandbox-label-row">
+              <span class="model-badge" style="color: #0891b2">Laya</span>
+              <span class="sandbox-val" id="val-temp-laya">0.40</span>
+            </div>
+            <input type="range" id="slider-temp-laya" min="0.1" max="1.2" step="0.05" value="0.40" class="slider">
+          </div>
+          <div class="sandbox-item">
+            <div class="sandbox-label-row">
+              <span class="model-badge" style="color: #7c3aed">Jev</span>
+              <span class="sandbox-val" id="val-temp-jev">0.25</span>
+            </div>
+            <input type="range" id="slider-temp-jev" min="0.1" max="1.2" step="0.05" value="0.25" class="slider">
+          </div>
+          <div class="sandbox-item">
+            <div class="sandbox-label-row">
+              <span class="model-badge" style="color: #059669">Von</span>
+              <span class="sandbox-val" id="val-temp-von">0.35</span>
+            </div>
+            <input type="range" id="slider-temp-von" min="0.1" max="1.2" step="0.05" value="0.35" class="slider">
+          </div>
+          <div class="sandbox-item">
+            <div class="sandbox-label-row">
+              <span class="model-badge" style="color: #e11d48">MoJev</span>
+              <span class="sandbox-val" id="val-temp-mojev">0.50</span>
+            </div>
+            <input type="range" id="slider-temp-mojev" min="0.1" max="1.2" step="0.05" value="0.50" class="slider">
+          </div>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-ghost btn-sm" id="btn-reset-sandbox">Restore Defaults</button>
+        <button class="btn btn-primary btn-sm" id="btn-save-sandbox">Done</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Championship Victory Celebration Modal -->
+  <div id="victory-modal" class="modal-backdrop" style="display: none;">
+    <div class="modal-card victory-card">
+      <div class="trophy-emitter">🏆</div>
+      <h2 class="victory-headline">Series Champion!</h2>
+      <div class="champion-name" id="champion-name">Laya</div>
+      <p class="victory-sub" id="victory-sub">Claimed 1st place in the Championship Series!</p>
+      
+      <div class="podium-display" id="podium-display"></div>
+
+      <div class="modal-footer" style="justify-content: center; margin-top: 20px;">
+        <button class="btn btn-primary" id="btn-new-season">Start New Season</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Confetti Canvas for Victory Celebrations -->
+  <canvas id="confetti-canvas" class="confetti-canvas" style="display: none;"></canvas>
+
+  <script src="audio.js"></script>
   <script src="engine.js"></script>
   <script src="app.js"></script>
 </body>

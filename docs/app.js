@@ -1,6 +1,6 @@
 /**
  * Caro Arena — Battle Royale Frontend
- * N-Player Free-For-All with Leaderboard Tracking
+ * N-Player Free-For-All with Leaderboard Tracking, Web Audio, Heatmap, and Championship Mode
  */
 
 const canvas = document.getElementById("caro-canvas");
@@ -34,19 +34,51 @@ let cachedLeaderboard = null;
 let lastRenderedMoveCount = 0, lastRenderedGameId = null;
 let isReplayMode = false, replayMoves = [], replayIndex = 0, replayPlayers = [], replayPlacements = [];
 let showMoveNumbers = true, showCoords = false;
+let showHeatmap = false, showLasers = true;
 let socket = null, wsReconnectTimer = null;
 let activeHistoryTab = "moves";
+let lastWasHumanTurn = false;
 
 let clientEngine = null;
 let isServerAvailable = false;
+let confettiEngine = null;
+
+// Championship Series State
+let championshipMode = false;
+let championshipSeries = {
+  targetPoints: 12,
+  scores: {},
+  matchesPlayed: 0,
+  season: 1
+};
+
+// Touch gestures
+let touchStartDistance = 0, touchStartZoom = 1.0;
+
+// Sandbox Config Defaults
+window.CaroSandboxConfig = {
+  defenseWeight: 0.05,
+  delaySec: 0.02,
+  temperatures: {
+    laya: 0.40,
+    jev: 0.25,
+    von: 0.35,
+    mojev: 0.50
+  }
+};
 
 // ─────────────────────────────────────────
 // Init
 // ─────────────────────────────────────────
 document.addEventListener("DOMContentLoaded", async () => {
+  loadSandboxConfig();
+  loadChampionshipState();
   setupEventListeners();
   resizeCanvas();
   window.addEventListener("resize", resizeCanvas);
+
+  const confCanvas = document.getElementById("confetti-canvas");
+  if (confCanvas) confettiEngine = new ConfettiEngine(confCanvas);
 
   // Check if backend API server is available
   try {
@@ -109,7 +141,7 @@ function resizeCanvas() {
 }
 
 // ─────────────────────────────────────────
-// WebSocket
+// WebSocket & Dual-Mode State Handler
 // ─────────────────────────────────────────
 function connectWebSocket() {
   const protocol = location.protocol === "https:" ? "wss:" : "ws:";
@@ -125,14 +157,36 @@ function connectWebSocket() {
 function handleStateUpdate(data) {
   if (isReplayMode) return;
   const wasFinished = gameState?.status === "finished";
+  const wasPlaying = gameState?.status === "playing";
   const isNewGame = gameState?.game_id && data.game_id !== gameState.game_id;
+  const prevMoveCount = gameState?.board?.moves?.length || 0;
+  const newMoveCount = data?.board?.moves?.length || 0;
+
   gameState = data;
   if (isNewGame) userInteractedWithCamera = false;
   rebuildSymbolMap();
   updateUI();
+
+  // Audio feedback for remote server updates
+  if (isServerAvailable && window.CaroAudio && newMoveCount > prevMoveCount) {
+    const lastM = data.board.moves[newMoveCount - 1];
+    const pInfo = data.players.find(p => p.symbol === lastM.player);
+    window.CaroAudio.playStoneClick(pInfo?.type || "ai");
+  }
+
+  // Human turn chime
+  const isHumanTurn = data.is_human_turn && data.status !== "finished";
+  if (isHumanTurn && !lastWasHumanTurn && window.CaroAudio) {
+    window.CaroAudio.playHumanTurnAlert();
+  }
+  lastWasHumanTurn = isHumanTurn;
+
   if (data.status === "finished" && !wasFinished) {
     fetchLeaderboard();
     fetchBattleHistory();
+    if (championshipMode) {
+      updateChampionshipRound(data);
+    }
   }
 }
 
@@ -152,18 +206,69 @@ function setupEventListeners() {
   document.getElementById("btn-auto").addEventListener("click", toggleAutoPlay);
   document.getElementById("btn-new").addEventListener("click", newBattle);
   document.getElementById("btn-reset").addEventListener("click", resetAll);
-  document.getElementById("toggle-numbers").addEventListener("change", e => { showMoveNumbers = e.target.checked; renderBoard(); });
-  document.getElementById("toggle-coords").addEventListener("change", e => { showCoords = e.target.checked; renderBoard(); });
-  document.getElementById("btn-zoom-in").addEventListener("click", () => zoomCamera(1.2));
-  document.getElementById("btn-zoom-out").addEventListener("click", () => zoomCamera(0.833));
-  document.getElementById("btn-recenter").addEventListener("click", recenterCamera);
-  document.getElementById("btn-tab-moves").addEventListener("click", () => switchHistoryTab("moves"));
-  document.getElementById("btn-tab-battles").addEventListener("click", () => switchHistoryTab("battles"));
+
+  // Sound toggle button
+  const soundBtn = document.getElementById("btn-sound");
+  if (soundBtn) {
+    soundBtn.textContent = (window.CaroAudio && window.CaroAudio.enabled) ? "🔊" : "🔇";
+    soundBtn.addEventListener("click", () => {
+      if (!window.CaroAudio) return;
+      const on = window.CaroAudio.toggle();
+      soundBtn.textContent = on ? "🔊" : "🔇";
+    });
+  }
+
+  // Fullscreen button
+  const fsBtn = document.getElementById("btn-fullscreen");
+  if (fsBtn) {
+    fsBtn.addEventListener("click", () => {
+      if (!document.fullscreenElement) {
+        document.documentElement.requestFullscreen().catch(() => {});
+      } else {
+        document.exitFullscreen().catch(() => {});
+      }
+    });
+  }
+
+  // Sandbox modal
+  document.getElementById("btn-sandbox")?.addEventListener("click", openSandboxModal);
+  document.getElementById("btn-close-sandbox")?.addEventListener("click", closeSandboxModal);
+  document.getElementById("btn-save-sandbox")?.addEventListener("click", closeSandboxModal);
+  document.getElementById("btn-reset-sandbox")?.addEventListener("click", resetSandboxModal);
+
+  // Championship Series
+  document.getElementById("btn-championship")?.addEventListener("click", toggleChampionshipMode);
+  document.getElementById("btn-new-season")?.addEventListener("click", resetChampionshipSeason);
+
+  // Human Undo
+  document.getElementById("btn-undo-move")?.addEventListener("click", undoHumanMove);
+
+  // Viewport & Board Toggles
+  document.getElementById("toggle-numbers")?.addEventListener("change", e => { showMoveNumbers = e.target.checked; renderBoard(); });
+  document.getElementById("toggle-coords")?.addEventListener("change", e => { showCoords = e.target.checked; renderBoard(); });
+  document.getElementById("toggle-heatmap")?.addEventListener("change", e => { showHeatmap = e.target.checked; renderBoard(); });
+  document.getElementById("toggle-lasers")?.addEventListener("change", e => { showLasers = e.target.checked; renderBoard(); });
+
+  document.getElementById("btn-zoom-in")?.addEventListener("click", () => zoomCamera(1.2));
+  document.getElementById("btn-zoom-out")?.addEventListener("click", () => zoomCamera(0.833));
+  document.getElementById("btn-recenter")?.addEventListener("click", recenterCamera);
+  document.getElementById("btn-tab-moves")?.addEventListener("click", () => switchHistoryTab("moves"));
+  document.getElementById("btn-tab-battles")?.addEventListener("click", () => switchHistoryTab("battles"));
+
+  // Mouse controls
   canvas.addEventListener("mousedown", onMouseDown);
   window.addEventListener("mousemove", onMouseMove);
   window.addEventListener("mouseup", onMouseUp);
   canvas.addEventListener("wheel", onWheel, { passive: false });
-  canvas.addEventListener("mouseleave", () => { hoverCoord = null; renderBoard(); });
+  canvas.addEventListener("mouseleave", () => {
+    hoverCoord = null;
+    const hud = document.getElementById("ghost-hud");
+    if (hud) hud.style.display = "none";
+    renderBoard();
+  });
+
+  // Touch gesture listeners (Pinch-to-zoom & Pan)
+  setupTouchListeners();
 
   // Roster checkboxes
   document.querySelectorAll("#roster-config input[type=checkbox]").forEach(cb => {
@@ -178,6 +283,64 @@ function setupEventListeners() {
       else if (e.key === "Escape") exitReplayMode();
     }
   });
+
+  // Sandbox inputs
+  setupSandboxInputs();
+}
+
+function setupTouchListeners() {
+  canvas.addEventListener("touchstart", (e) => {
+    if (e.touches.length === 1) {
+      isDragging = true; hasDragged = false;
+      const t = e.touches[0];
+      dragStartX = t.clientX; dragStartY = t.clientY;
+      camStartX = camera.x; camStartY = camera.y;
+    } else if (e.touches.length === 2) {
+      isDragging = false;
+      const dx = e.touches[0].clientX - e.touches[1].clientX;
+      const dy = e.touches[0].clientY - e.touches[1].clientY;
+      touchStartDistance = Math.hypot(dx, dy);
+      touchStartZoom = camera.zoom;
+      userInteractedWithCamera = true;
+    }
+  }, { passive: true });
+
+  canvas.addEventListener("touchmove", (e) => {
+    if (e.touches.length === 1 && isDragging) {
+      const t = e.touches[0];
+      const rect = canvas.getBoundingClientRect();
+      const scX = canvas.width / rect.width, scY = canvas.height / rect.height;
+      const dx = (t.clientX - dragStartX) * scX, dy = (t.clientY - dragStartY) * scY;
+      if (Math.abs(dx) > 3 || Math.abs(dy) > 3) { hasDragged = true; userInteractedWithCamera = true; }
+      camera.x = camStartX + dx; camera.y = camStartY + dy;
+      renderBoard();
+    } else if (e.touches.length === 2) {
+      const dx = e.touches[0].clientX - e.touches[1].clientX;
+      const dy = e.touches[0].clientY - e.touches[1].clientY;
+      const dist = Math.hypot(dx, dy);
+      if (touchStartDistance > 0) {
+        const factor = dist / touchStartDistance;
+        camera.zoom = Math.max(0.2, Math.min(4.0, touchStartZoom * factor));
+        renderBoard();
+      }
+    }
+  }, { passive: true });
+
+  canvas.addEventListener("touchend", (e) => {
+    if (isDragging && !hasDragged && e.changedTouches.length === 1) {
+      const t = e.changedTouches[0];
+      const rect = canvas.getBoundingClientRect();
+      const scX = canvas.width / rect.width, scY = canvas.height / rect.height;
+      const sx = (t.clientX - rect.left) * scX, sy = (t.clientY - rect.top) * scY;
+      const coord = screenToBoard(sx, sy);
+      if (gameState?.is_human_turn && gameState?.status !== "finished") {
+        const moves = gameState?.board?.moves || [];
+        const occupied = moves.some(m => m.row === coord.r && m.col === coord.c);
+        if (!occupied) sendHumanMove(coord.r, coord.c);
+      }
+    }
+    isDragging = false;
+  }, { passive: true });
 }
 
 // ─────────────────────────────────────────
@@ -217,7 +380,6 @@ function onRosterChange() {
   const roster = getSelectedRoster();
   updateRosterCount();
   if (roster.length >= 2) {
-    // If game hasn't started moves yet or is finished/ready, immediately update board with new roster
     if (!gameState || gameState.board?.move_count === 0 || gameState.status === "finished" || gameState.status === "ready") {
       newBattle();
     }
@@ -251,7 +413,7 @@ async function fetchLeaderboard() {
 async function fetchBattleHistory() {
   if (isServerAvailable) {
     try {
-      const r = await fetch("/api/battles");
+      const r = await fetch("/api/battles?limit=50");
       renderBattleHistory(await r.json());
     } catch {}
   } else if (window.CaroEngine) {
@@ -259,104 +421,73 @@ async function fetchBattleHistory() {
   }
 }
 
-async function checkHealth() {
-  if (isServerAvailable) {
-    try {
-      const r = await fetch("/api/health");
-      await r.json();
-    } catch {}
-  }
-}
-
 async function toggleAutoPlay() {
-  if (isReplayMode) return;
-  const willEnable = !(gameState?.is_auto_playing);
-
-  if (willEnable) {
-    // Ensure the battle being run matches the roster checkboxes in the UI!
-    const selected = getSelectedRoster();
-    const currentTypes = (gameState?.players || []).map(p => p.type).sort();
-    const selectedSorted = [...selected].sort();
-    const rosterMismatch = JSON.stringify(currentTypes) !== JSON.stringify(selectedSorted);
-
-    if (rosterMismatch || !gameState || gameState.status === "finished" || (gameState.board?.move_count === 0)) {
-      await newBattle();
-    }
-  }
+  if (isReplayMode) exitReplayMode();
+  const currentlyPlaying = gameState?.is_auto_playing;
+  const targetState = !currentlyPlaying;
+  const delaySec = window.CaroSandboxConfig.delaySec || 0.02;
 
   if (isServerAvailable) {
     try {
       await fetch("/api/battle/auto-play", {
-        method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ enabled: willEnable, delay_sec: 0.02 })
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ enabled: targetState, delay_sec: delaySec })
       });
-      if (gameState) gameState.is_auto_playing = willEnable;
-      updateAutoPlayButton();
+      await fetchState();
     } catch {}
   } else if (clientEngine) {
-    clientEngine.toggleAutoPlay(willEnable, 0.02);
-    if (gameState) gameState.is_auto_playing = willEnable;
-    updateAutoPlayButton();
+    clientEngine.toggleAutoPlay(targetState, delaySec);
   }
 }
 
 async function newBattle() {
   if (isReplayMode) exitReplayMode();
-  const roster = getSelectedRoster();
-  if (roster.length < 2) return;
-  userInteractedWithCamera = false;
+  const selected = getSelectedRoster();
+  if (selected.length < 2) return;
 
   if (isServerAvailable) {
     try {
-      const r = await fetch("/api/battle/new", {
+      const res = await fetch("/api/battle/new", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ players: roster })
+        body: JSON.stringify({ players: selected })
       });
-      handleStateUpdate(await r.json());
+      handleStateUpdate(await res.json());
+      userInteractedWithCamera = false;
+      autoScaleCamera(true);
+      renderBoard();
     } catch {}
   } else if (clientEngine) {
-    handleStateUpdate(clientEngine.newGame(roster));
+    const nextState = clientEngine.newGame(selected);
+    userInteractedWithCamera = false;
+    autoScaleCamera(true);
+    handleStateUpdate(nextState);
+    if (clientEngine.isAutoPlaying) clientEngine.scheduleNextStep();
   }
-
-  autoScaleCamera(true);
-  renderBoard();
 }
 
 async function resetAll() {
-  if (isReplayMode) exitReplayMode();
-  try {
-    if (gameState) gameState.is_auto_playing = false;
-    updateAutoPlayButton();
-
-    // Reset checkboxes to default: Laya, Jev, Von, MoJev checked; Human unchecked
-    document.querySelectorAll("#roster-config .roster-toggle").forEach(label => {
-      const cb = label.querySelector("input");
-      if (cb) {
-        cb.checked = (label.dataset.model !== "human");
-      }
-    });
-    updateRosterCount();
-
+  if (confirm("Reset arena history, leaderboards, and battle series to #1?")) {
+    if (isReplayMode) exitReplayMode();
     if (isServerAvailable) {
-      await fetch("/api/history/clear", { method: "POST" });
-    } else if (clientEngine) {
+      try { await fetch("/api/history/clear", { method: "POST" }); } catch {}
+    } else if (window.CaroEngine) {
       window.CaroEngine.ClientStorage.clearHistory();
-      clientEngine.battleNumber = 1;
-      clientEngine.selectedPlayerTypes = ["laya", "jev", "von", "mojev"];
-      clientEngine.newGame(["laya", "jev", "von", "mojev"]);
+      if (clientEngine) clientEngine.newGame(["laya", "jev", "von", "mojev"]);
     }
-
     userInteractedWithCamera = false;
     await fetchState();
     await fetchLeaderboard();
     await fetchBattleHistory();
     autoScaleCamera(true);
     renderBoard();
-  } catch {}
+  }
 }
 
 async function sendHumanMove(r, c) {
+  if (window.CaroAudio) window.CaroAudio.playStoneClick("human");
+
   if (isServerAvailable) {
     try {
       const res = await fetch("/api/battle/human-move", {
@@ -364,15 +495,23 @@ async function sendHumanMove(r, c) {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ row: r, col: c })
       });
-      if (res.ok) {
-        handleStateUpdate(await res.json());
-      }
+      if (res.ok) handleStateUpdate(await res.json());
     } catch {}
   } else if (clientEngine) {
     const nextState = clientEngine.humanMove(r, c);
-    if (nextState) {
-      handleStateUpdate(nextState);
-    }
+    if (nextState) handleStateUpdate(nextState);
+  }
+}
+
+async function undoHumanMove() {
+  if (isReplayMode) return;
+  if (isServerAvailable) {
+    try {
+      const r = await fetch("/api/battle/undo", { method: "POST" });
+      if (r.ok) handleStateUpdate(await r.json());
+    } catch {}
+  } else if (clientEngine) {
+    clientEngine.undoHumanMove();
   }
 }
 
@@ -388,6 +527,7 @@ function updateUI() {
   renderBattleRoster();
   renderBoard();
   updateMoveHistory();
+  if (championshipMode) renderChampionshipBar();
 }
 
 function getPlayerMeta(symbol) {
@@ -400,7 +540,8 @@ function getPlayerMeta(symbol) {
 function updateHumanTurnBar() {
   const bar = document.getElementById("human-turn-bar");
   if (!bar) return;
-  bar.style.display = (gameState?.is_human_turn && gameState?.status !== "finished") ? "flex" : "none";
+  const isHumanWaiting = gameState?.is_human_turn && gameState?.status !== "finished";
+  bar.style.display = isHumanWaiting ? "flex" : "none";
 }
 
 function updateTurnBanner() {
@@ -454,45 +595,42 @@ function updateAutoPlayButton() {
   }
 }
 
-// ─────────────────────────────────────────
-// Leaderboard
-// ─────────────────────────────────────────
 function renderLeaderboard() {
   const tbody = document.getElementById("leaderboard-body");
   const badge = document.getElementById("total-battles-badge");
-  if (!tbody || !cachedLeaderboard) return;
+  if (!tbody) return;
 
-  const totalBattles = cachedLeaderboard.length > 0 ? cachedLeaderboard[0].battles_played : 0;
+  const data = cachedLeaderboard || [];
+  const totalBattles = data.reduce((max, r) => Math.max(max, r.battles_played || 0), 0);
   if (badge) badge.textContent = `${totalBattles} battle${totalBattles !== 1 ? "s" : ""}`;
 
-  if (cachedLeaderboard.length === 0) {
-    tbody.innerHTML = `<tr><td colspan="6" class="empty-cell">No battles yet</td></tr>`;
+  if (data.length === 0) {
+    tbody.innerHTML = `<tr><td colspan="6" class="empty-cell">No matches recorded</td></tr>`;
     return;
   }
 
-  tbody.innerHTML = cachedLeaderboard.map((p, i) => {
-    const meta = PLAYER_COLORS[p.player_type] || { fill: "#94a3b8", name: p.player_type };
-    const rankIcon = i === 0 ? "🥇" : i === 1 ? "🥈" : i === 2 ? "🥉" : `${i + 1}`;
-    return `<tr class="${i === 0 ? "leader" : ""}">
-      <td class="rank-cell">${rankIcon}</td>
+  tbody.innerHTML = data.map((r, i) => {
+    const meta = PLAYER_COLORS[r.player_type] || { fill: "#94a3b8", name: r.player_type };
+    const medal = i === 0 ? "🥇" : i === 1 ? "🥈" : i === 2 ? "🥉" : (i + 1);
+    const isLeader = i === 0 && totalBattles > 0;
+    return `<tr class="${isLeader ? "leader" : ""}">
+      <td class="rank-cell">${medal}</td>
       <td><span class="model-dot" style="background:${meta.fill}"></span>${meta.name}</td>
-      <td class="mono">${p.total_points}</td>
-      <td class="mono">${p.wins}</td>
-      <td class="mono">${p.avg_placement.toFixed(1)}</td>
-      <td class="mono muted">${p.battles_played}</td>
+      <td class="mono"><strong>${r.total_points}</strong></td>
+      <td class="mono muted">${r.wins}</td>
+      <td class="mono muted">${r.avg_placement}</td>
+      <td class="mono muted">${r.battles_played}</td>
     </tr>`;
   }).join("");
 }
 
-// ─────────────────────────────────────────
-// Battle Roster (current battle status)
-// ─────────────────────────────────────────
 function renderBattleRoster() {
   const el = document.getElementById("battle-roster");
-  const badge = document.getElementById("battle-number-badge");
+  const bnBadge = document.getElementById("battle-number-badge");
   if (!el || !gameState) return;
 
-  if (badge) badge.textContent = `Battle #${gameState.series?.battle_number || 1}`;
+  const bn = gameState.series?.battle_number || 1;
+  if (bnBadge) bnBadge.textContent = isReplayMode ? "Replay Mode" : `Battle #${bn}`;
 
   const players = gameState.players || [];
   const placements = gameState.board?.placements || [];
@@ -511,7 +649,6 @@ function renderBattleRoster() {
     let statusClass = "";
     if (placement) {
       const rank = placement.rank;
-      const total = players.length;
       statusText = rank === 1 ? "🥇 1st" : rank === 2 ? "🥈 2nd" : rank === 3 ? "🥉 3rd" : `${rank}th`;
       statusClass = rank === 1 ? "winner" : "eliminated";
     } else if (isHumanWaiting) {
@@ -600,83 +737,84 @@ function updateMoveHistory() {
     counter.textContent = `${c} turn${c !== 1 ? "s" : ""}`;
   }
 
-  if (gameState?.game_id !== lastRenderedGameId) {
-    lastRenderedGameId = gameState?.game_id;
-    list.innerHTML = "";
-    lastRenderedMoveCount = 0;
-    _lastAutoScaleMoveCount = -1;
-    userInteractedWithCamera = false;
-    autoScaleCamera(true);
-  }
-
   if (!moves || moves.length === 0) {
-    if (lastRenderedMoveCount !== 0 || !list.children.length) {
-      list.innerHTML = `<li class="empty-state">No moves yet.</li>`;
-      lastRenderedMoveCount = 0;
-    }
+    list.innerHTML = `<li class="empty-state">No moves yet.</li>`;
     return;
   }
 
-  if (lastRenderedMoveCount === 0 || list.querySelector(".empty-state")) {
-    list.innerHTML = "";
-    lastRenderedMoveCount = 0;
-  }
-  if (moves.length < lastRenderedMoveCount) {
-    list.innerHTML = "";
-    lastRenderedMoveCount = 0;
-  }
+  list.innerHTML = moves.map(m => {
+    const meta = getPlayerMeta(m.player);
+    const lat = m.metadata?.latency_ms ? `${m.metadata.latency_ms}ms` : "";
+    return `<li class="move-item">
+      <span class="mono" style="color: ${meta.color}; font-weight: 600;">#${m.move_number}</span>
+      <span style="font-weight: 600;">${meta.name}</span>
+      <span class="mono">(${m.row}, ${m.col})</span>
+      <span class="mono muted" style="margin-left: auto;">${lat}</span>
+    </li>`;
+  }).join("");
 
-  if (moves.length > lastRenderedMoveCount) {
-    const frag = document.createDocumentFragment();
-    for (let i = lastRenderedMoveCount; i < moves.length; i++) {
-      const m = moves[i];
-      const meta = getPlayerMeta(m.player);
-      const li = document.createElement("li");
-      li.className = "move-item";
-      const lat = m.metadata?.latency_ms ? `${Math.round(m.metadata.latency_ms)}ms` : "";
-      li.innerHTML = `<span style="color:${meta.color};font-weight:600">#${m.move_number}</span>
-        <span>${meta.name}</span>
-        <span class="mono">(${m.row},${m.col})</span>
-        <span class="muted">${lat}</span>`;
-      frag.appendChild(li);
-    }
-    list.appendChild(frag);
-    list.scrollTop = list.scrollHeight;
-    lastRenderedMoveCount = moves.length;
-  }
+  list.scrollTop = list.scrollHeight;
 }
 
 // ─────────────────────────────────────────
-// Canvas: Camera, Pan, Zoom
+// Camera Controls
 // ─────────────────────────────────────────
 function zoomCamera(factor) {
   userInteractedWithCamera = true;
   const newZ = Math.max(0.2, Math.min(4.0, camera.zoom * factor));
-  const cx = canvas.width / 2, cy = canvas.height / 2;
-  camera.x = cx - (cx - camera.x) * (newZ / camera.zoom);
-  camera.y = cy - (cy - camera.y) * (newZ / camera.zoom);
+  camera.x = canvas.width / 2 - (canvas.width / 2 - camera.x) * (newZ / camera.zoom);
+  camera.y = canvas.height / 2 - (canvas.height / 2 - camera.y) * (newZ / camera.zoom);
   camera.zoom = newZ;
   renderBoard();
 }
-function recenterCamera() { userInteractedWithCamera = false; autoScaleCamera(true); renderBoard(); }
-function autoScaleCamera(force) {
-  if (isDragging && !force) return;
-  if (userInteractedWithCamera && !force) return;
-  const moves = isReplayMode ? replayMoves.slice(0, replayIndex) : gameState?.board?.moves;
-  const moveCount = moves?.length || 0;
-  if (!force && moveCount === _lastAutoScaleMoveCount) return;
-  _lastAutoScaleMoveCount = moveCount;
-  if (!moves || !moves.length) { camera.zoom = 1.0; camera.x = canvas.width / 2; camera.y = canvas.height / 2; return; }
-  let minR = Infinity, maxR = -Infinity, minC = Infinity, maxC = -Infinity;
-  moves.forEach(m => { minR = Math.min(minR, m.row); maxR = Math.max(maxR, m.row); minC = Math.min(minC, m.col); maxC = Math.max(maxC, m.col); });
-  const pad = 3, rSpan = Math.max(13, maxR - minR + 1 + 2 * pad), cSpan = Math.max(13, maxC - minC + 1 + 2 * pad);
-  const maxSpan = Math.max(rSpan, cSpan);
-  const avail = Math.min(canvas.width, canvas.height) - 40;
-  camera.zoom = Math.max(0.22, Math.min(1.05, avail / maxSpan / camera.baseCellSize));
-  const cs = camera.baseCellSize * camera.zoom;
-  camera.x = canvas.width / 2 - ((minC + maxC) / 2) * cs;
-  camera.y = canvas.height / 2 - ((minR + maxR) / 2) * cs;
+
+function recenterCamera() {
+  userInteractedWithCamera = false;
+  autoScaleCamera(true);
+  renderBoard();
 }
+
+function autoScaleCamera(force = false) {
+  if (userInteractedWithCamera && !force) return;
+  const moves = isReplayMode ? replayMoves.slice(0, replayIndex) : gameState?.board?.moves || [];
+  if (moves.length === 0) {
+    camera.x = canvas.width / 2;
+    camera.y = canvas.height / 2;
+    camera.zoom = 1.0;
+    return;
+  }
+
+  if (!force && moves.length === _lastAutoScaleMoveCount) return;
+  _lastAutoScaleMoveCount = moves.length;
+
+  let minR = Infinity, maxR = -Infinity, minC = Infinity, maxC = -Infinity;
+  for (const m of moves) {
+    if (m.row < minR) minR = m.row;
+    if (m.row > maxR) maxR = m.row;
+    if (m.col < minC) minC = m.col;
+    if (m.col > maxC) maxC = m.col;
+  }
+
+  const pad = 3;
+  minR -= pad; maxR += pad; minC -= pad; maxC += pad;
+  const spanR = Math.max(12, maxR - minR + 1), spanC = Math.max(12, maxC - minC + 1);
+  const targetZoom = Math.max(0.4, Math.min(1.4, Math.min(canvas.width / (spanC * camera.baseCellSize), canvas.height / (spanR * camera.baseCellSize))));
+
+  const centerR = (minR + maxR) / 2, centerC = (minC + maxC) / 2;
+  const targetX = canvas.width / 2 - centerC * camera.baseCellSize * targetZoom;
+  const targetY = canvas.height / 2 - centerR * camera.baseCellSize * targetZoom;
+
+  if (force) {
+    camera.zoom = targetZoom;
+    camera.x = targetX;
+    camera.y = targetY;
+  } else {
+    camera.zoom += (targetZoom - camera.zoom) * 0.15;
+    camera.x += (targetX - camera.x) * 0.15;
+    camera.y += (targetY - camera.y) * 0.15;
+  }
+}
+
 function boardToScreen(r, c) { const cs = camera.baseCellSize * camera.zoom; return { x: camera.x + c * cs, y: camera.y + r * cs }; }
 function screenToBoard(sx, sy) { const cs = camera.baseCellSize * camera.zoom; return { r: Math.round((sy - camera.y) / cs), c: Math.round((sx - camera.x) / cs) }; }
 
@@ -688,27 +826,62 @@ function onMouseDown(e) {
     canvas.style.cursor = "grabbing";
   }
 }
+
 function onMouseMove(e) {
   const rect = canvas.getBoundingClientRect(), scX = canvas.width / rect.width, scY = canvas.height / rect.height;
   const sx = (e.clientX - rect.left) * scX, sy = (e.clientY - rect.top) * scY;
+
   if (isDragging) {
     const dx = (e.clientX - dragStartX) * scX, dy = (e.clientY - dragStartY) * scY;
     if (Math.abs(dx) > 3 || Math.abs(dy) > 3) { hasDragged = true; userInteractedWithCamera = true; }
-    camera.x = camStartX + dx; camera.y = camStartY + dy; renderBoard();
+    camera.x = camStartX + dx; camera.y = camStartY + dy;
+    renderBoard();
   } else {
     if (sx >= 0 && sx <= canvas.width && sy >= 0 && sy <= canvas.height) {
       hoverCoord = screenToBoard(sx, sy);
       canvas.style.cursor = gameState?.is_human_turn ? "pointer" : "crosshair";
-    } else { hoverCoord = null; }
+
+      // Tactical Ghost HUD tooltip for human turn
+      const hud = document.getElementById("ghost-hud");
+      if (gameState?.is_human_turn && gameState?.status !== "finished" && hud && window.CaroEngine?.TacticalEvaluator) {
+        const moves = gameState?.board?.moves || [];
+        const occupied = moves.some(m => m.row === hoverCoord.r && m.col === hoverCoord.c);
+        if (!occupied) {
+          const boardObj = clientEngine ? clientEngine.board : reconstructBoardFromState(gameState);
+          if (boardObj) {
+            const humanSymbol = gameState.players.find(p => p.type === "human")?.symbol || "E";
+            let sumR = 0, sumC = 0;
+            for (const key of boardObj.stones.keys()) {
+              const [kr, kc] = key.split(",").map(Number);
+              sumR += kr; sumC += kc;
+            }
+            const centroid = boardObj.stones.size ? [sumR / boardObj.stones.size, sumC / boardObj.stones.size] : [0, 0];
+            const evalRes = window.CaroEngine.TacticalEvaluator.evaluateMove(boardObj, hoverCoord.r, hoverCoord.c, humanSymbol, centroid);
+
+            const scoreText = evalRes.total_score >= 20000 ? "🔥 WIN / BLOCK" : `Score: ${evalRes.total_score}`;
+            hud.innerHTML = `<span class="score-badge">${scoreText}</span> ${evalRes.summary}`;
+            hud.style.display = "block";
+            hud.style.left = `${e.clientX - rect.left}px`;
+            hud.style.top = `${e.clientY - rect.top}px`;
+          }
+        } else {
+          hud.style.display = "none";
+        }
+      }
+    } else {
+      hoverCoord = null;
+      const hud = document.getElementById("ghost-hud");
+      if (hud) hud.style.display = "none";
+    }
     renderBoard();
   }
 }
+
 function onMouseUp(e) {
   if (isDragging) {
     isDragging = false;
     canvas.style.cursor = gameState?.is_human_turn ? "pointer" : "crosshair";
 
-    // Human click-to-play: if we didn't drag and not in replay, treat as a click
     if (!hasDragged && !isReplayMode && gameState?.is_human_turn && gameState?.status !== "finished") {
       const rect = canvas.getBoundingClientRect();
       const scX = canvas.width / rect.width, scY = canvas.height / rect.height;
@@ -724,6 +897,7 @@ function onMouseUp(e) {
     }
   }
 }
+
 function onWheel(e) {
   e.preventDefault(); userInteractedWithCamera = true;
   const rect = canvas.getBoundingClientRect(), scX = canvas.width / rect.width, scY = canvas.height / rect.height;
@@ -738,8 +912,74 @@ function onWheel(e) {
 }
 
 // ─────────────────────────────────────────
-// Board Rendering
+// Board Rendering & Threat Heatmap
 // ─────────────────────────────────────────
+function reconstructBoardFromState(state) {
+  if (!window.CaroEngine?.CaroBoard || !state?.board) return null;
+  const symbols = (state.players || []).map(p => p.symbol);
+  const b = new window.CaroEngine.CaroBoard(0, "standard", symbols);
+  for (const m of (state.board.moves || [])) {
+    b.makeMove(m.row, m.col, m.player, m.metadata);
+  }
+  return b;
+}
+
+function drawThreatHeatmap(cs) {
+  if (!window.CaroEngine?.TacticalEvaluator) return;
+  const boardObj = clientEngine ? clientEngine.board : reconstructBoardFromState(gameState);
+  if (!boardObj || boardObj.stones.size === 0) return;
+
+  const currentSymbol = gameState?.board?.current_player || "A";
+  const heatmap = window.CaroEngine.TacticalEvaluator.getThreatHeatmap(boardObj, currentSymbol);
+
+  ctx.save();
+  for (const h of heatmap) {
+    const pt = boardToScreen(h.row, h.col);
+    const radius = cs * (0.45 + h.intensity * 0.45);
+    const grad = ctx.createRadialGradient(pt.x, pt.y, 0, pt.x, pt.y, radius);
+
+    if (h.isWinThreat) {
+      grad.addColorStop(0, "rgba(239, 68, 68, 0.7)");
+      grad.addColorStop(0.5, "rgba(245, 158, 11, 0.35)");
+      grad.addColorStop(1, "rgba(239, 68, 68, 0)");
+    } else if (h.total_score >= 4000) {
+      grad.addColorStop(0, "rgba(245, 158, 11, 0.55)");
+      grad.addColorStop(0.6, "rgba(234, 179, 8, 0.25)");
+      grad.addColorStop(1, "rgba(245, 158, 11, 0)");
+    } else {
+      grad.addColorStop(0, "rgba(6, 182, 212, 0.4)");
+      grad.addColorStop(0.7, "rgba(14, 165, 233, 0.15)");
+      grad.addColorStop(1, "rgba(6, 182, 212, 0)");
+    }
+
+    ctx.fillStyle = grad;
+    ctx.beginPath();
+    ctx.arc(pt.x, pt.y, radius, 0, Math.PI * 2);
+    ctx.fill();
+  }
+
+  // Draw danger warning pulses for active threat lines
+  const threatLines = window.CaroEngine.TacticalEvaluator.findThreatLines(boardObj);
+  const now = Date.now();
+  const pulse = (Math.sin(now / 150) + 1) / 2;
+
+  for (const t of threatLines) {
+    for (const [tr, tc] of t.line) {
+      const pt = boardToScreen(tr, tc);
+      ctx.strokeStyle = t.severity === "critical"
+        ? `rgba(239, 68, 68, ${0.4 + pulse * 0.5})`
+        : `rgba(245, 158, 11, ${0.3 + pulse * 0.4})`;
+      ctx.lineWidth = (2 + pulse * 2) * camera.zoom;
+      ctx.setLineDash([4 * camera.zoom, 4 * camera.zoom]);
+      ctx.beginPath();
+      ctx.arc(pt.x, pt.y, cs * 0.48, 0, Math.PI * 2);
+      ctx.stroke();
+      ctx.setLineDash([]);
+    }
+  }
+  ctx.restore();
+}
+
 function renderBoard() {
   autoScaleCamera();
   const W = canvas.width, H = canvas.height, cs = camera.baseCellSize * camera.zoom;
@@ -759,6 +999,7 @@ function renderBoard() {
   for (let r = minR; r <= maxR; r++) { const y = camera.y + r * cs; ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(W, y); ctx.stroke(); }
   for (let c = minC; c <= maxC; c++) { const x = camera.x + c * cs; ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, H); ctx.stroke(); }
 
+  // Hoshi star points
   if (camera.zoom > 0.35) {
     for (let r = minR; r <= maxR; r++) for (let c = minC; c <= maxC; c++) {
       if (r % 4 === 0 && c % 4 === 0) {
@@ -771,11 +1012,13 @@ function renderBoard() {
     }
   }
 
+  // Origin marker
   const o = boardToScreen(0, 0);
   ctx.strokeStyle = "rgba(55, 28, 10, 0.85)";
   ctx.lineWidth = 1.8;
   ctx.beginPath(); ctx.moveTo(o.x - 6, o.y); ctx.lineTo(o.x + 6, o.y); ctx.moveTo(o.x, o.y - 6); ctx.lineTo(o.x, o.y + 6); ctx.stroke();
 
+  // Coordinates
   if (showCoords && camera.zoom >= 0.5) {
     ctx.fillStyle = "rgba(80, 48, 20, 0.55)";
     ctx.font = `600 ${Math.round(9 * Math.min(1.3, Math.max(0.8, camera.zoom)))}px var(--font-mono, monospace)`;
@@ -786,22 +1029,48 @@ function renderBoard() {
     }
   }
 
+  // Live Threat Heatmap Layer (renders beneath stones)
+  if (showHeatmap && !isReplayMode && gameState?.board) {
+    drawThreatHeatmap(cs);
+  }
+
   // Draw stones
   const moves = isReplayMode ? replayMoves.slice(0, replayIndex) : gameState?.board?.moves || [];
   const lastMove = moves.length > 0 ? moves[moves.length - 1] : null;
   moves.forEach(m => drawStone(m.row, m.col, m.player, cs, m.move_number));
 
-  // Human hover ghost
+  // Human hover ghost with alignment guide crosshair
   if (hoverCoord && gameState?.is_human_turn && gameState?.status !== "finished") {
     const occupied = moves.some(m => m.row === hoverCoord.r && m.col === hoverCoord.c);
     if (!occupied) {
       const pt = boardToScreen(hoverCoord.r, hoverCoord.c);
       ctx.save();
-      ctx.globalAlpha = 0.35;
+      // Thin alignment guides
+      ctx.strokeStyle = "rgba(217, 119, 6, 0.4)";
+      ctx.lineWidth = 1;
+      ctx.setLineDash([3, 3]);
+      ctx.beginPath();
+      ctx.moveTo(pt.x, 0); ctx.lineTo(pt.x, H);
+      ctx.moveTo(0, pt.y); ctx.lineTo(W, pt.y);
+      ctx.stroke();
+      ctx.setLineDash([]);
+
+      // Ghost stone
+      ctx.globalAlpha = 0.45;
       ctx.fillStyle = "#d97706";
       ctx.beginPath();
-      ctx.arc(pt.x, pt.y, cs * 0.38, 0, Math.PI * 2);
+      ctx.arc(pt.x, pt.y, cs * 0.40, 0, Math.PI * 2);
       ctx.fill();
+
+      // Pulsing outer ring
+      const pulseTime = Date.now() / 200;
+      const ringRadius = cs * (0.42 + Math.sin(pulseTime) * 0.05);
+      ctx.strokeStyle = "#fbbf24";
+      ctx.lineWidth = 2 * camera.zoom;
+      ctx.globalAlpha = 0.75;
+      ctx.beginPath();
+      ctx.arc(pt.x, pt.y, ringRadius, 0, Math.PI * 2);
+      ctx.stroke();
       ctx.restore();
     }
   }
@@ -851,47 +1120,49 @@ function renderBoard() {
       }
 
       // 2. Bold, high-contrast laser strike-through line
-      const firstCoord = pl.winning_line[0];
-      const lastCoord = pl.winning_line[pl.winning_line.length - 1];
-      const p1 = boardToScreen(firstCoord[0], firstCoord[1]);
-      const p2 = boardToScreen(lastCoord[0], lastCoord[1]);
-      const angle = Math.atan2(p2.y - p1.y, p2.x - p1.x);
-      const extend = cs * 0.55;
-      const startX = p1.x - Math.cos(angle) * extend;
-      const startY = p1.y - Math.sin(angle) * extend;
-      const endX = p2.x + Math.cos(angle) * extend;
-      const endY = p2.y + Math.sin(angle) * extend;
+      if (showLasers) {
+        const firstCoord = pl.winning_line[0];
+        const lastCoord = pl.winning_line[pl.winning_line.length - 1];
+        const p1 = boardToScreen(firstCoord[0], firstCoord[1]);
+        const p2 = boardToScreen(lastCoord[0], lastCoord[1]);
+        const angle = Math.atan2(p2.y - p1.y, p2.x - p1.x);
+        const extend = cs * 0.55;
+        const startX = p1.x - Math.cos(angle) * extend;
+        const startY = p1.y - Math.sin(angle) * extend;
+        const endX = p2.x + Math.cos(angle) * extend;
+        const endY = p2.y + Math.sin(angle) * extend;
 
-      // Outer glow beam (Golden Amber)
-      ctx.save();
-      ctx.lineCap = "round";
-      ctx.lineJoin = "round";
-      ctx.strokeStyle = "rgba(245, 158, 11, 0.95)";
-      ctx.lineWidth = 9.0 * camera.zoom;
-      ctx.shadowColor = "#f59e0b";
-      ctx.shadowBlur = 18 * camera.zoom;
-      ctx.beginPath();
-      ctx.moveTo(startX, startY);
-      ctx.lineTo(endX, endY);
-      ctx.stroke();
+        // Outer glow beam (Golden Amber)
+        ctx.save();
+        ctx.lineCap = "round";
+        ctx.lineJoin = "round";
+        ctx.strokeStyle = "rgba(245, 158, 11, 0.95)";
+        ctx.lineWidth = 9.0 * camera.zoom;
+        ctx.shadowColor = "#f59e0b";
+        ctx.shadowBlur = 18 * camera.zoom;
+        ctx.beginPath();
+        ctx.moveTo(startX, startY);
+        ctx.lineTo(endX, endY);
+        ctx.stroke();
 
-      // Middle model-tinted beam
-      ctx.strokeStyle = meta.color || "#fff";
-      ctx.lineWidth = 5.0 * camera.zoom;
-      ctx.beginPath();
-      ctx.moveTo(startX, startY);
-      ctx.lineTo(endX, endY);
-      ctx.stroke();
+        // Middle model-tinted beam
+        ctx.strokeStyle = meta.color || "#fff";
+        ctx.lineWidth = 5.0 * camera.zoom;
+        ctx.beginPath();
+        ctx.moveTo(startX, startY);
+        ctx.lineTo(endX, endY);
+        ctx.stroke();
 
-      // Core bright laser white beam
-      ctx.strokeStyle = "#ffffff";
-      ctx.lineWidth = 2.5 * camera.zoom;
-      ctx.shadowBlur = 0;
-      ctx.beginPath();
-      ctx.moveTo(startX, startY);
-      ctx.lineTo(endX, endY);
-      ctx.stroke();
-      ctx.restore();
+        // Core bright laser white beam
+        ctx.strokeStyle = "#ffffff";
+        ctx.lineWidth = 2.5 * camera.zoom;
+        ctx.shadowBlur = 0;
+        ctx.beginPath();
+        ctx.moveTo(startX, startY);
+        ctx.lineTo(endX, endY);
+        ctx.stroke();
+        ctx.restore();
+      }
 
       // 3. Floating Winner Badge above the winning row
       const midCoord = pl.winning_line[Math.floor(pl.winning_line.length / 2)];
@@ -919,13 +1190,20 @@ function renderBoard() {
       }
       ctx.fill();
 
-      // Badge border in gold
-      ctx.strokeStyle = "#fbbf24";
-      ctx.lineWidth = 1.5 * camera.zoom;
+      // Badge border with winner color
+      ctx.strokeStyle = meta.color || "#fbbf24";
+      ctx.lineWidth = 1.5;
+      ctx.beginPath();
+      if (ctx.roundRect) {
+        ctx.roundRect(midPt.x - bgW / 2, badgeY - bgH / 2, bgW, bgH, 999);
+      } else {
+        ctx.rect(midPt.x - bgW / 2, badgeY - bgH / 2, bgW, bgH);
+      }
       ctx.stroke();
 
-      // Text
+      // Badge text
       ctx.fillStyle = "#ffffff";
+      ctx.shadowBlur = 0;
       ctx.fillText(rankText, midPt.x, badgeY);
       ctx.restore();
     }
@@ -977,7 +1255,7 @@ function drawStone(r, c, symbol, cs, moveNumber) {
 }
 
 // ─────────────────────────────────────────
-// Replay
+// Replay System
 // ─────────────────────────────────────────
 async function startReplay(battleId) {
   try {
@@ -1028,9 +1306,280 @@ function exitReplayMode() {
 function stepReplay(delta) {
   if (!isReplayMode) return;
   replayIndex = Math.max(0, Math.min(replayMoves.length, replayIndex + delta));
-  updateUI();
+  const lbl = document.getElementById("replay-label");
+  if (lbl) lbl.textContent = `Move ${replayIndex} of ${replayMoves.length}`;
+  renderBoard();
+  updateMoveHistory();
 }
 
-window.startReplay = startReplay;
-window.exitReplayMode = exitReplayMode;
-window.stepReplay = stepReplay;
+// ─────────────────────────────────────────
+// Sandbox & Model Tuning Modal
+// ─────────────────────────────────────────
+function loadSandboxConfig() {
+  try {
+    const saved = localStorage.getItem("caro_sandbox_config");
+    if (saved) {
+      const cfg = JSON.parse(saved);
+      window.CaroSandboxConfig = Object.assign(window.CaroSandboxConfig, cfg);
+    }
+  } catch {}
+}
+
+function saveSandboxConfig() {
+  try {
+    localStorage.setItem("caro_sandbox_config", JSON.stringify(window.CaroSandboxConfig));
+  } catch {}
+}
+
+function openSandboxModal() {
+  const modal = document.getElementById("sandbox-modal");
+  if (!modal) return;
+  modal.style.display = "flex";
+
+  const cfg = window.CaroSandboxConfig;
+  const speedSlider = document.getElementById("slider-speed");
+  const defSlider = document.getElementById("slider-def-weight");
+  if (speedSlider) { speedSlider.value = Math.round(cfg.delaySec * 1000); document.getElementById("val-speed").textContent = `${speedSlider.value} ms`; }
+  if (defSlider) { defSlider.value = Math.round(cfg.defenseWeight * 100); document.getElementById("val-def-weight").textContent = `${defSlider.value}%`; }
+
+  for (const m of ["laya", "jev", "von", "mojev"]) {
+    const sl = document.getElementById(`slider-temp-${m}`);
+    const vl = document.getElementById(`val-temp-${m}`);
+    if (sl && vl && cfg.temperatures[m]) {
+      sl.value = cfg.temperatures[m];
+      vl.textContent = Number(cfg.temperatures[m]).toFixed(2);
+    }
+  }
+}
+
+function closeSandboxModal() {
+  const modal = document.getElementById("sandbox-modal");
+  if (modal) modal.style.display = "none";
+}
+
+function resetSandboxModal() {
+  window.CaroSandboxConfig = {
+    defenseWeight: 0.05,
+    delaySec: 0.02,
+    temperatures: { laya: 0.40, jev: 0.25, von: 0.35, mojev: 0.50 }
+  };
+  saveSandboxConfig();
+  openSandboxModal();
+}
+
+function setupSandboxInputs() {
+  document.getElementById("slider-speed")?.addEventListener("input", e => {
+    const ms = Number(e.target.value);
+    document.getElementById("val-speed").textContent = `${ms} ms`;
+    window.CaroSandboxConfig.delaySec = ms / 1000;
+    saveSandboxConfig();
+  });
+
+  document.getElementById("slider-def-weight")?.addEventListener("input", e => {
+    const pct = Number(e.target.value);
+    document.getElementById("val-def-weight").textContent = `${pct}%`;
+    window.CaroSandboxConfig.defenseWeight = pct / 100;
+    saveSandboxConfig();
+  });
+
+  document.querySelectorAll(".preset-btn").forEach(btn => {
+    btn.addEventListener("click", () => {
+      document.querySelectorAll(".preset-btn").forEach(b => b.classList.remove("active"));
+      btn.classList.add("active");
+      const def = Number(btn.dataset.def);
+      const sl = document.getElementById("slider-def-weight");
+      if (sl) sl.value = def;
+      document.getElementById("val-def-weight").textContent = `${def}%`;
+      window.CaroSandboxConfig.defenseWeight = def / 100;
+      saveSandboxConfig();
+    });
+  });
+
+  for (const m of ["laya", "jev", "von", "mojev"]) {
+    document.getElementById(`slider-temp-${m}`)?.addEventListener("input", e => {
+      const v = Number(e.target.value);
+      document.getElementById(`val-temp-${m}`).textContent = v.toFixed(2);
+      window.CaroSandboxConfig.temperatures[m] = v;
+      saveSandboxConfig();
+    });
+  }
+}
+
+// ─────────────────────────────────────────
+// Championship Tournament Series Mode
+// ─────────────────────────────────────────
+function loadChampionshipState() {
+  try {
+    const s = localStorage.getItem("caro_championship_state");
+    if (s) championshipSeries = JSON.parse(s);
+  } catch {}
+}
+
+function saveChampionshipState() {
+  try {
+    localStorage.setItem("caro_championship_state", JSON.stringify(championshipSeries));
+  } catch {}
+}
+
+function toggleChampionshipMode() {
+  championshipMode = !championshipMode;
+  const bar = document.getElementById("championship-bar");
+  const btn = document.getElementById("btn-championship");
+  if (bar) bar.style.display = championshipMode ? "flex" : "none";
+  if (btn) btn.classList.toggle("btn-active", championshipMode);
+  if (championshipMode) renderChampionshipBar();
+}
+
+function renderChampionshipBar() {
+  const bar = document.getElementById("championship-bar");
+  const statusEl = document.getElementById("championship-status");
+  const progEl = document.getElementById("championship-progress");
+  if (!bar || !statusEl || !progEl) return;
+
+  statusEl.textContent = `Season #${championshipSeries.season || 1} · Match ${championshipSeries.matchesPlayed + 1} · First to ${championshipSeries.targetPoints} pts`;
+
+  const scores = championshipSeries.scores || {};
+  const sorted = Object.entries(scores).sort((a, b) => b[1] - a[1]);
+
+  if (sorted.length === 0) {
+    progEl.innerHTML = `<span style="font-size:0.68rem; color:#b45309;">Battles will earn Championship points (1st=4pts, 2nd=3pts...)</span>`;
+    return;
+  }
+
+  progEl.innerHTML = sorted.map(([ptype, pts], i) => {
+    const meta = PLAYER_COLORS[ptype] || { fill: "#94a3b8", name: ptype };
+    const crown = i === 0 ? "👑 " : "";
+    return `<div class="series-pill">
+      <span style="color:${meta.fill}; font-weight:700;">${crown}${meta.name}</span>
+      <span class="series-pts">${pts}/${championshipSeries.targetPoints}</span>
+    </div>`;
+  }).join("");
+}
+
+function updateChampionshipRound(finishedState) {
+  if (!championshipMode || !finishedState?.board?.placements) return;
+  const placements = finishedState.board.placements;
+  const totalP = placements.length;
+  championshipSeries.matchesPlayed++;
+
+  for (const pl of placements) {
+    const pInfo = finishedState.players.find(p => p.symbol === pl.player);
+    const ptype = pInfo?.type || "unknown";
+    const pts = Math.max(1, totalP - pl.rank + 1);
+    championshipSeries.scores[ptype] = (championshipSeries.scores[ptype] || 0) + pts;
+  }
+  saveChampionshipState();
+  renderChampionshipBar();
+
+  // Check victory condition
+  const entries = Object.entries(championshipSeries.scores);
+  const champ = entries.find(([_, score]) => score >= championshipSeries.targetPoints);
+  if (champ) {
+    showVictoryCelebration(champ[0], entries);
+  }
+}
+
+function showVictoryCelebration(winnerType, allEntries) {
+  const modal = document.getElementById("victory-modal");
+  const nameEl = document.getElementById("champion-name");
+  const podiumEl = document.getElementById("podium-display");
+  if (!modal) return;
+
+  const meta = PLAYER_COLORS[winnerType] || { name: winnerType, fill: "#d97706" };
+  if (nameEl) {
+    nameEl.textContent = meta.name;
+    nameEl.style.color = meta.fill;
+  }
+
+  if (podiumEl) {
+    const sorted = [...allEntries].sort((a, b) => b[1] - a[1]);
+    const p1 = sorted[0], p2 = sorted[1], p3 = sorted[2];
+    podiumEl.innerHTML = `
+      ${p2 ? `<div class="podium-step step-2"><span class="podium-model" style="color:${PLAYER_COLORS[p2[0]]?.fill || '#666'}">${PLAYER_COLORS[p2[0]]?.name || p2[0]}</span><span class="podium-pts">🥈 ${p2[1]} pts</span></div>` : ""}
+      ${p1 ? `<div class="podium-step step-1"><span class="podium-model" style="color:${PLAYER_COLORS[p1[0]]?.fill || '#d97706'}">${PLAYER_COLORS[p1[0]]?.name || p1[0]}</span><span class="podium-pts">🥇 ${p1[1]} pts</span></div>` : ""}
+      ${p3 ? `<div class="podium-step step-3"><span class="podium-model" style="color:${PLAYER_COLORS[p3[0]]?.fill || '#666'}">${PLAYER_COLORS[p3[0]]?.name || p3[0]}</span><span class="podium-pts">🥉 ${p3[1]} pts</span></div>` : ""}
+    `;
+  }
+
+  modal.style.display = "flex";
+  if (window.CaroAudio) window.CaroAudio.playChampionshipFanfare();
+  if (confettiEngine) confettiEngine.launch(5000);
+}
+
+function resetChampionshipSeason() {
+  const modal = document.getElementById("victory-modal");
+  if (modal) modal.style.display = "none";
+  championshipSeries.season = (championshipSeries.season || 1) + 1;
+  championshipSeries.scores = {};
+  championshipSeries.matchesPlayed = 0;
+  saveChampionshipState();
+  renderChampionshipBar();
+}
+
+// ─────────────────────────────────────────
+// Lightweight Canvas Confetti Engine
+// ─────────────────────────────────────────
+class ConfettiEngine {
+  constructor(canvas) {
+    this.canvas = canvas;
+    this.ctx = canvas.getContext("2d");
+    this.particles = [];
+    this.animId = null;
+  }
+
+  launch(durationMs = 4000) {
+    this.canvas.width = window.innerWidth;
+    this.canvas.height = window.innerHeight;
+    this.canvas.style.display = "block";
+    this.particles = [];
+    const colors = ["#fbbf24", "#0891b2", "#7c3aed", "#e11d48", "#10b981", "#f59e0b", "#ec4899"];
+
+    for (let i = 0; i < 150; i++) {
+      this.particles.push({
+        x: this.canvas.width / 2 + (Math.random() - 0.5) * 180,
+        y: this.canvas.height / 2 + (Math.random() - 0.5) * 80,
+        vx: (Math.random() - 0.5) * 18,
+        vy: -Math.random() * 15 - 5,
+        size: Math.random() * 8 + 4,
+        color: colors[Math.floor(Math.random() * colors.length)],
+        rotation: Math.random() * 360,
+        vRot: (Math.random() - 0.5) * 12,
+        life: 1.0,
+        decay: Math.random() * 0.007 + 0.004
+      });
+    }
+
+    const start = performance.now();
+    const frame = (now) => {
+      this.ctx.clearRect(0, 0, this.canvas.width, this.canvas.height);
+      let alive = 0;
+      for (const p of this.particles) {
+        p.x += p.vx;
+        p.y += p.vy;
+        p.vy += 0.38;
+        p.rotation += p.vRot;
+        p.life -= p.decay;
+
+        if (p.life > 0 && p.y < this.canvas.height + 25) {
+          alive++;
+          this.ctx.save();
+          this.ctx.translate(p.x, p.y);
+          this.ctx.rotate((p.rotation * Math.PI) / 180);
+          this.ctx.globalAlpha = Math.max(0, p.life);
+          this.ctx.fillStyle = p.color;
+          this.ctx.fillRect(-p.size / 2, -p.size / 2, p.size, p.size * 0.65);
+          this.ctx.restore();
+        }
+      }
+
+      if (alive > 0 && now - start < durationMs) {
+        this.animId = requestAnimationFrame(frame);
+      } else {
+        this.canvas.style.display = "none";
+        this.ctx.clearRect(0, 0, this.canvas.width, this.canvas.height);
+      }
+    };
+    if (this.animId) cancelAnimationFrame(this.animId);
+    this.animId = requestAnimationFrame(frame);
+  }
+}

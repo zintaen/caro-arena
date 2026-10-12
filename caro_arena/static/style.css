@@ -555,6 +555,304 @@ html, body {
 }
 
 /* ==========================================================================
+   Championship Mode Banner
+   ========================================================================== */
+.championship-bar {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px 14px;
+  background: linear-gradient(135deg, #fffbeb 0%, #fef3c7 100%);
+  border-bottom: 1px solid #fde68a;
+  color: #92400e;
+  font-size: 0.74rem;
+}
+.championship-info {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-weight: 700;
+}
+.championship-title { display: flex; align-items: center; gap: 6px; }
+.championship-status { font-family: var(--font-mono); font-size: 0.68rem; color: #b45309; }
+.championship-progress {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.series-pill {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  background: white;
+  padding: 3px 8px;
+  border-radius: 999px;
+  border: 1px solid #fde68a;
+  font-size: 0.68rem;
+  font-weight: 600;
+}
+.series-pts {
+  font-family: var(--font-mono);
+  color: #b45309;
+  background: #fef3c7;
+  padding: 1px 5px;
+  border-radius: 999px;
+}
+
+/* ==========================================================================
+   Human Turn Bar & Undo
+   ========================================================================== */
+.human-turn-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 16px;
+  background: #fffbeb;
+  border-bottom: 1px solid #fde68a;
+  color: #b45309;
+  font-weight: 600;
+  font-size: 0.76rem;
+}
+.human-turn-content { display: flex; align-items: center; gap: 6px; }
+.btn-outline {
+  background: white;
+  border: 1px solid var(--border-medium);
+  color: var(--text-secondary);
+}
+.btn-outline:hover {
+  background: var(--bg-raised);
+  color: var(--text-primary);
+}
+
+/* ==========================================================================
+   Ghost HUD Tooltip
+   ========================================================================== */
+.ghost-hud {
+  position: absolute;
+  pointer-events: none;
+  background: rgba(26, 22, 18, 0.88);
+  backdrop-filter: blur(6px);
+  color: white;
+  padding: 5px 9px;
+  border-radius: var(--radius-sm);
+  font-size: 0.68rem;
+  font-weight: 600;
+  white-space: nowrap;
+  box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+  transform: translate(-50%, -130%);
+  transition: opacity 0.1s;
+  z-index: 20;
+}
+.ghost-hud .score-badge {
+  font-family: var(--font-mono);
+  color: #fbbf24;
+  margin-right: 4px;
+}
+
+/* ==========================================================================
+   Modals & Sandbox
+   ========================================================================== */
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(15, 12, 8, 0.45);
+  backdrop-filter: blur(4px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+  animation: fadeIn 0.15s ease-out;
+}
+.modal-card {
+  width: 90%;
+  max-width: 480px;
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  box-shadow: 0 16px 36px rgba(0,0,0,0.18);
+  overflow: hidden;
+  animation: slideUp 0.18s cubic-bezier(0.16, 1, 0.3, 1);
+}
+.modal-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 14px 18px;
+  border-bottom: 1px solid var(--border);
+}
+.modal-title {
+  margin: 0;
+  font-size: 0.92rem;
+  font-weight: 700;
+  color: var(--text-primary);
+}
+.modal-close {
+  background: none;
+  border: none;
+  font-size: 1.3rem;
+  cursor: pointer;
+  color: var(--text-muted);
+  line-height: 1;
+}
+.modal-close:hover { color: var(--text-primary); }
+.modal-body {
+  padding: 16px 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+.modal-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 18px;
+  background: var(--bg-raised);
+  border-top: 1px solid var(--border);
+}
+
+.sandbox-group { display: flex; flex-direction: column; gap: 6px; }
+.sandbox-label-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-size: 0.74rem;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+.sandbox-val {
+  font-family: var(--font-mono);
+  font-size: 0.72rem;
+  color: var(--text-secondary);
+  background: var(--bg-raised);
+  padding: 1px 6px;
+  border-radius: 4px;
+}
+.slider {
+  width: 100%;
+  height: 5px;
+  border-radius: 999px;
+  background: var(--border-medium);
+  accent-color: #0891b2;
+  cursor: pointer;
+}
+.slider-ticks {
+  display: flex;
+  justify-content: space-between;
+  font-size: 0.62rem;
+  color: var(--text-muted);
+}
+.sandbox-presets {
+  display: flex;
+  gap: 6px;
+  margin-top: 2px;
+}
+.preset-btn.active {
+  background: color-mix(in srgb, var(--text-primary) 8%, white);
+  border-color: var(--text-primary);
+  font-weight: 700;
+}
+.sandbox-hint {
+  margin: 0;
+  font-size: 0.65rem;
+  color: var(--text-muted);
+  line-height: 1.35;
+}
+.sandbox-divider {
+  height: 1px;
+  background: var(--border);
+  margin: 2px 0;
+}
+.sandbox-subhead {
+  margin: 0;
+  font-size: 0.72rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-muted);
+}
+.sandbox-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+}
+.sandbox-item { display: flex; flex-direction: column; gap: 4px; }
+.model-badge { font-weight: 700; font-size: 0.74rem; }
+
+/* ==========================================================================
+   Victory Celebration Modal
+   ========================================================================== */
+.victory-card {
+  text-align: center;
+  padding: 24px 20px;
+  background: radial-gradient(circle at 50% 10%, #fffbeb 0%, white 70%);
+}
+.trophy-emitter {
+  font-size: 3.5rem;
+  line-height: 1;
+  animation: bounce 1.2s infinite;
+}
+.victory-headline {
+  margin: 10px 0 4px;
+  font-size: 1.35rem;
+  font-weight: 800;
+  color: #92400e;
+}
+.champion-name {
+  font-size: 1.6rem;
+  font-weight: 800;
+  color: #d97706;
+  letter-spacing: -0.02em;
+}
+.victory-sub {
+  margin: 4px 0 16px;
+  font-size: 0.8rem;
+  color: var(--text-secondary);
+}
+.podium-display {
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+  gap: 10px;
+  margin: 15px auto 5px;
+  max-width: 320px;
+}
+.podium-step {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  width: 90px;
+  background: var(--bg-raised);
+  border-radius: var(--radius-sm) var(--radius-sm) 0 0;
+  border: 1px solid var(--border);
+  padding: 8px 4px 12px;
+}
+.podium-step.step-1 { height: 90px; background: #fef3c7; border-color: #fde68a; }
+.podium-step.step-2 { height: 70px; }
+.podium-step.step-3 { height: 55px; }
+.podium-model { font-weight: 700; font-size: 0.76rem; }
+.podium-pts { font-family: var(--font-mono); font-size: 0.68rem; color: var(--text-muted); }
+
+.confetti-canvas {
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 1001;
+}
+
+@keyframes bounce {
+  0%, 100% { transform: translateY(0); }
+  50% { transform: translateY(-10px); }
+}
+@keyframes fadeIn {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+@keyframes slideUp {
+  from { transform: translateY(16px); opacity: 0; }
+  to { transform: translateY(0); opacity: 1; }
+}
+
+/* ==========================================================================
    Responsive
    ========================================================================== */
 @media (max-width: 840px) {
@@ -562,3 +860,4 @@ html, body {
   .sidebar { border-left: none; border-top: 1px solid var(--border); max-height: 50vh; }
   .model-status-row { display: none; }
 }
+

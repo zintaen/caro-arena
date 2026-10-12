@@ -124,6 +124,29 @@ class GameManager:
                 self.status = "playing"
         return success
 
+    def undo_human_move(self) -> bool:
+        """Undoes moves back to before the human's last stone."""
+        if not self.board or not self.board.moves:
+            return False
+        human_idx = -1
+        for i in range(len(self.board.moves) - 1, -1, -1):
+            m = self.board.moves[i]
+            p_info = next((p for p in self.players if p["symbol"] == m["player"]), None)
+            if p_info and p_info["type"] == "human":
+                human_idx = i
+                break
+        if human_idx == -1:
+            return False
+
+        keep_moves = self.board.moves[:human_idx]
+        symbols = [p["symbol"] for p in self.players]
+        self.board = CaroBoard(size=0, rule="standard", player_symbols=symbols)
+        for m in keep_moves:
+            self.board.make_move(m["row"], m["col"], m["player"], metadata=m.get("metadata"))
+        self.status = "playing"
+        self.last_move_details = keep_moves[-1] if keep_moves else None
+        return True
+
     def human_move(self, r: int, c: int) -> Optional[Dict[str, Any]]:
         """Place a stone for the human player."""
         if not self.is_human_turn():

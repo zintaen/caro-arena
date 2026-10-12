@@ -1,0 +1,17 @@
+{
+  "name": "Caro Arena: Multi-Agent Battle Royale",
+  "short_name": "Caro Arena",
+  "description": "Interactive Battle Royale arena where non-autoregressive decision models compete on an infinite Caro grid.",
+  "start_url": "./",
+  "display": "standalone",
+  "background_color": "#fcfbfa",
+  "theme_color": "#0891b2",
+  "icons": [
+    {
+      "src": "icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}

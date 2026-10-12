@@ -272,10 +272,13 @@ class TacticalEvaluator {
     const dist = Math.sqrt((r - cr) ** 2 + (c - cc) ** 2);
     const posBonus = Math.max(0, 15.0 - dist * 1.5);
 
-    // Multi-player (3+ players): weight defense at 5% for dynamic decisive play
+    // Multi-player (3+ players): weight defense (configurable via Sandbox, default 5%)
     // 2-player: full 100% defense
     const numOpponents = opponents.length || 1;
-    const defWeight = numOpponents >= 2 ? 0.05 : 1.0;
+    const configuredWeight = (typeof window !== "undefined" && window.CaroSandboxConfig && typeof window.CaroSandboxConfig.defenseWeight === "number")
+      ? window.CaroSandboxConfig.defenseWeight
+      : 0.05;
+    const defWeight = numOpponents >= 2 ? configuredWeight : 1.0;
     const totalScore = offScore + defScore * defWeight + posBonus;
 
     let summary = "";
@@ -291,6 +294,57 @@ class TacticalEvaluator {
       total_score: Math.round(totalScore * 10) / 10,
       summary: summary
     };
+  }
+
+  static findThreatLines(board) {
+    // Detects dangerous 3-in-a-row and 4-in-a-row alignments for radar overlay
+    const threats = [];
+    const active = board.getActivePlayers();
+    for (const [key, player] of board.stones.entries()) {
+      if (!active.includes(player)) continue;
+      const [r, c] = key.split(",").map(Number);
+      for (const [dr, dc] of DIRECTIONS) {
+        if (board.getCell(r - dr, c - dc) === player) continue; // Start of line only
+        const line = [[r, c]];
+        let step = 1;
+        while (board.getCell(r + dr * step, c + dc * step) === player) {
+          line.push([r + dr * step, c + dc * step]);
+          step++;
+        }
+        if (line.length >= 3) {
+          const frontOpen = board.getCell(r - dr, c - dc) === ".";
+          const backOpen = board.getCell(r + dr * step, c + dc * step) === ".";
+          const openEnds = (frontOpen ? 1 : 0) + (backOpen ? 1 : 0);
+          if (line.length >= 4 && openEnds >= 1) {
+            threats.push({ player, line, count: line.length, severity: "critical", openEnds });
+          } else if (line.length === 3 && openEnds === 2) {
+            threats.push({ player, line, count: 3, severity: "warning", openEnds });
+          }
+        }
+      }
+    }
+    return threats;
+  }
+
+  static getThreatHeatmap(board, player) {
+    const raw = board.getCandidateMoves(2);
+    if (!raw.length || board.stones.size === 0) return [];
+    let sumR = 0, sumC = 0;
+    for (const key of board.stones.keys()) {
+      const [r, c] = key.split(",").map(Number);
+      sumR += r; sumC += c;
+    }
+    const centroid = [sumR / board.stones.size, sumC / board.stones.size];
+    const scored = raw.map(([r, c]) => this.evaluateMove(board, r, c, player, centroid));
+    const maxScore = Math.max(1, ...scored.map(s => s.total_score));
+
+    return scored.map(s => ({
+      row: s.row, col: s.col,
+      total_score: s.total_score,
+      intensity: Math.min(1.0, Math.max(0.12, s.total_score / (s.total_score >= 10000 ? s.total_score : Math.min(maxScore, 10000)))),
+      isWinThreat: s.total_score >= 20000,
+      summary: s.summary
+    }));
   }
 
   static getRankedCandidates(board, player, topK = 8) {
@@ -574,6 +628,18 @@ class ClientGameManager {
         row: r, col: c,
         meta: meta || {}
       };
+
+      // Audio feedback
+      const pInfo = this.players.find(p => p.symbol === curr);
+      if (typeof window !== "undefined" && window.CaroAudio) {
+        window.CaroAudio.playStoneClick(pInfo?.type || "ai");
+        const newPl = this.board.placements[this.board.placements.length - 1];
+        if (newPl && newPl.move_number === this.board.moves.length && newPl.winning_line) {
+          window.CaroAudio.playWinChime(newPl.rank);
+          window.CaroAudio.playLaserSweep();
+        }
+      }
+
       if (this.board.isGameOver()) {
         this.status = "finished";
         this.endedAt = Date.now();
@@ -583,6 +649,31 @@ class ClientGameManager {
       }
     }
     return success;
+  }
+
+  undoHumanMove() {
+    if (!this.board || this.board.moves.length === 0) return false;
+    let lastHumanIdx = -1;
+    for (let i = this.board.moves.length - 1; i >= 0; i--) {
+      const m = this.board.moves[i];
+      const p = this.players.find(pl => pl.symbol === m.player);
+      if (p && p.type === "human") {
+        lastHumanIdx = i;
+        break;
+      }
+    }
+    if (lastHumanIdx === -1) return false;
+
+    const keepMoves = this.board.moves.slice(0, lastHumanIdx);
+    const symbols = this.players.map(p => p.symbol);
+    this.board = new CaroBoard(0, "standard", symbols);
+    for (const m of keepMoves) {
+      this.board.makeMove(m.row, m.col, m.player, m.metadata);
+    }
+    this.status = "playing";
+    this.lastMoveDetails = keepMoves.length ? keepMoves[keepMoves.length - 1] : null;
+    if (this.onStateChange) this.onStateChange(this.getState());
+    return true;
   }
 
   humanMove(r, c) {

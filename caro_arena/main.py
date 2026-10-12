@@ -94,6 +94,21 @@ async def get_engine():
     return FileResponse(STATIC_DIR / "engine.js")
 
 
+@app.get("/audio.js")
+async def get_audio():
+    return FileResponse(STATIC_DIR / "audio.js")
+
+
+@app.get("/manifest.json")
+async def get_manifest():
+    return FileResponse(STATIC_DIR / "manifest.json")
+
+
+@app.get("/icon.svg")
+async def get_icon():
+    return FileResponse(STATIC_DIR / "icon.svg")
+
+
 @app.get("/api/health")
 async def health_check():
     laya_ready = get_shared_laya_agent() is not None
@@ -152,6 +167,15 @@ async def human_move(req: HumanMoveRequest):
 
     await broadcast_state()
     return state
+
+
+@app.post("/api/battle/undo")
+async def undo_move():
+    success = manager.undo_human_move()
+    if not success:
+        raise HTTPException(status_code=400, detail="Cannot undo move")
+    await broadcast_state()
+    return manager.get_state()
 
 
 async def _run_auto_play():
