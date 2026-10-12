@@ -34,7 +34,7 @@ let cachedLeaderboard = null;
 let lastRenderedMoveCount = 0, lastRenderedGameId = null;
 let isReplayMode = false, replayMoves = [], replayIndex = 0, replayPlayers = [], replayPlacements = [];
 let showMoveNumbers = true, showCoords = false;
-let showHeatmap = false, showLasers = true;
+let showHeatmap = true, showLasers = true;
 let socket = null, wsReconnectTimer = null;
 let activeHistoryTab = "moves";
 let lastWasHumanTurn = false;
@@ -55,10 +55,10 @@ let championshipSeries = {
 // Touch gestures
 let touchStartDistance = 0, touchStartZoom = 1.0;
 
-// Sandbox Config Defaults
+// Arena Config Defaults
 window.CaroSandboxConfig = {
   defenseWeight: 0.05,
-  delaySec: 0.02,
+  delaySec: 0.03,
   temperatures: {
     laya: 0.40,
     jev: 0.25,
@@ -230,11 +230,8 @@ function setupEventListeners() {
     });
   }
 
-  // Sandbox modal
-  document.getElementById("btn-sandbox")?.addEventListener("click", openSandboxModal);
-  document.getElementById("btn-close-sandbox")?.addEventListener("click", closeSandboxModal);
-  document.getElementById("btn-save-sandbox")?.addEventListener("click", closeSandboxModal);
-  document.getElementById("btn-reset-sandbox")?.addEventListener("click", resetSandboxModal);
+  // Speed control button
+  initSpeedButton();
 
   // Championship Series
   document.getElementById("btn-championship")?.addEventListener("click", toggleChampionshipMode);
@@ -242,16 +239,12 @@ function setupEventListeners() {
   document.getElementById("btn-series-new")?.addEventListener("click", resetChampionshipSeason);
   document.getElementById("btn-series-exit")?.addEventListener("click", toggleChampionshipMode);
 
-  // Close modals when clicking dark backdrop or pressing Escape
-  document.getElementById("sandbox-modal")?.addEventListener("click", (e) => {
-    if (e.target.id === "sandbox-modal") closeSandboxModal();
-  });
+  // Close victory modal when clicking dark backdrop or pressing Escape
   document.getElementById("victory-modal")?.addEventListener("click", (e) => {
     if (e.target.id === "victory-modal") resetChampionshipSeason();
   });
   window.addEventListener("keydown", (e) => {
     if (e.key === "Escape") {
-      closeSandboxModal();
       const vm = document.getElementById("victory-modal");
       if (vm && vm.style.display !== "none") resetChampionshipSeason();
     }
@@ -263,8 +256,16 @@ function setupEventListeners() {
   // Viewport & Board Toggles
   document.getElementById("toggle-numbers")?.addEventListener("change", e => { showMoveNumbers = e.target.checked; renderBoard(); });
   document.getElementById("toggle-coords")?.addEventListener("change", e => { showCoords = e.target.checked; renderBoard(); });
-  document.getElementById("toggle-heatmap")?.addEventListener("change", e => { showHeatmap = e.target.checked; renderBoard(); });
-  document.getElementById("toggle-lasers")?.addEventListener("change", e => { showLasers = e.target.checked; renderBoard(); });
+  document.getElementById("toggle-heatmap")?.addEventListener("change", e => {
+    showHeatmap = e.target.checked;
+    renderBoard();
+    if (showHeatmap || showLasers) startFxAnimation();
+  });
+  document.getElementById("toggle-lasers")?.addEventListener("change", e => {
+    showLasers = e.target.checked;
+    renderBoard();
+    if (showHeatmap || showLasers) startFxAnimation();
+  });
 
   document.getElementById("btn-zoom-in")?.addEventListener("click", () => zoomCamera(1.2));
   document.getElementById("btn-zoom-out")?.addEventListener("click", () => zoomCamera(0.833));
@@ -301,8 +302,10 @@ function setupEventListeners() {
     }
   });
 
-  // Sandbox inputs
-  setupSandboxInputs();
+  // Start real-time FX animation loop for heat shimmer & laser pulse
+  if (showHeatmap || showLasers) {
+    startFxAnimation();
+  }
 }
 
 function setupTouchListeners() {
@@ -557,7 +560,13 @@ function getPlayerMeta(symbol) {
 function updateHumanTurnBar() {
   const bar = document.getElementById("human-turn-bar");
   if (!bar) return;
-  const isHumanWaiting = gameState?.is_human_turn && gameState?.status !== "finished";
+  const hasHuman = Boolean(
+    gameState?.players?.some(p => p.type === "human") ||
+    gameState?.has_human ||
+    (clientEngine && clientEngine.hasHumanPlayer())
+  );
+  const isHumanWaiting = hasHuman && Boolean(gameState?.is_human_turn) && gameState?.status !== "finished";
+  bar.classList.toggle("active", isHumanWaiting);
   bar.style.display = isHumanWaiting ? "flex" : "none";
 }
 
@@ -956,21 +965,24 @@ function drawThreatHeatmap(cs) {
   ctx.save();
   for (const h of heatmap) {
     const pt = boardToScreen(h.row, h.col);
-    const radius = cs * (0.50 + h.intensity * 0.40);
+    const radius = cs * (0.55 + h.intensity * 0.45);
     const grad = ctx.createRadialGradient(pt.x, pt.y, 0, pt.x, pt.y, radius);
 
     if (h.isWinThreat) {
-      grad.addColorStop(0, `rgba(239, 68, 68, ${0.75 + pulse * 0.2})`);
-      grad.addColorStop(0.45, "rgba(245, 158, 11, 0.45)");
+      grad.addColorStop(0, `rgba(239, 68, 68, ${0.85 + pulse * 0.15})`);
+      grad.addColorStop(0.40, "rgba(244, 63, 94, 0.55)");
+      grad.addColorStop(0.75, "rgba(249, 115, 22, 0.25)");
       grad.addColorStop(1, "rgba(239, 68, 68, 0)");
     } else if (h.isLethal) {
-      grad.addColorStop(0, `rgba(245, 158, 11, ${0.70 + pulse * 0.15})`);
-      grad.addColorStop(0.5, "rgba(234, 179, 8, 0.35)");
-      grad.addColorStop(1, "rgba(245, 158, 11, 0)");
+      grad.addColorStop(0, `rgba(249, 115, 22, ${0.80 + pulse * 0.15})`);
+      grad.addColorStop(0.45, "rgba(234, 179, 8, 0.50)");
+      grad.addColorStop(0.80, "rgba(245, 158, 11, 0.20)");
+      grad.addColorStop(1, "rgba(249, 115, 22, 0)");
     } else {
-      // Warm golden tactical alert for top-tier open threats
-      grad.addColorStop(0, "rgba(251, 191, 36, 0.50)");
-      grad.addColorStop(0.6, "rgba(245, 158, 11, 0.20)");
+      // Warm solar gold / electric amber
+      grad.addColorStop(0, `rgba(251, 191, 36, ${0.70 + pulse * 0.15})`);
+      grad.addColorStop(0.50, "rgba(245, 158, 11, 0.35)");
+      grad.addColorStop(0.85, "rgba(251, 191, 36, 0.12)");
       grad.addColorStop(1, "rgba(251, 191, 36, 0)");
     }
 
@@ -979,43 +991,179 @@ function drawThreatHeatmap(cs) {
     ctx.arc(pt.x, pt.y, radius, 0, Math.PI * 2);
     ctx.fill();
 
-    // Prominent tactical reticle on the #1 most lethal threat spot
-    if (h.rank === 1 && (h.isLethal || h.isWinThreat)) {
+    // Hotspot border corner brackets for tactical arena feel
+    const bSize = cs * 0.42;
+    ctx.strokeStyle = h.isWinThreat
+      ? `rgba(239, 68, 68, ${0.6 + pulse * 0.3})`
+      : h.isLethal
+        ? `rgba(249, 115, 22, ${0.5 + pulse * 0.3})`
+        : `rgba(245, 158, 11, ${0.4 + pulse * 0.2})`;
+    ctx.lineWidth = 1.4 * camera.zoom;
+    const tick = cs * 0.14;
+    ctx.beginPath();
+    // Top-left
+    ctx.moveTo(pt.x - bSize, pt.y - bSize + tick); ctx.lineTo(pt.x - bSize, pt.y - bSize); ctx.lineTo(pt.x - bSize + tick, pt.y - bSize);
+    // Top-right
+    ctx.moveTo(pt.x + bSize - tick, pt.y - bSize); ctx.lineTo(pt.x + bSize, pt.y - bSize); ctx.lineTo(pt.x + bSize, pt.y - bSize + tick);
+    // Bottom-left
+    ctx.moveTo(pt.x - bSize, pt.y + bSize - tick); ctx.lineTo(pt.x - bSize, pt.y + bSize); ctx.lineTo(pt.x - bSize + tick, pt.y + bSize);
+    // Bottom-right
+    ctx.moveTo(pt.x + bSize - tick, pt.y + bSize); ctx.lineTo(pt.x + bSize, pt.y + bSize); ctx.lineTo(pt.x + bSize, pt.y + bSize - tick);
+    ctx.stroke();
+
+    // Prominent tactical reticle on #1 hottest tension hotspot
+    if (h.rank === 1) {
       ctx.save();
-      ctx.strokeStyle = h.isWinThreat ? `rgba(239, 68, 68, ${0.8 + pulse * 0.2})` : `rgba(245, 158, 11, ${0.8 + pulse * 0.2})`;
-      ctx.lineWidth = 1.8 * camera.zoom;
-      const arm = cs * 0.38;
-      // Crosshair ticks
+      const strokeCol = h.isWinThreat ? `rgba(239, 68, 68, ${0.85 + pulse * 0.15})` : `rgba(245, 158, 11, ${0.85 + pulse * 0.15})`;
+      ctx.strokeStyle = strokeCol;
+      ctx.lineWidth = 2.0 * camera.zoom;
+      const arm = cs * 0.40;
+      // Crosshair lines
       ctx.beginPath();
-      ctx.moveTo(pt.x - arm, pt.y); ctx.lineTo(pt.x + arm, pt.y);
-      ctx.moveTo(pt.x, pt.y - arm); ctx.lineTo(pt.x, pt.y + arm);
+      ctx.moveTo(pt.x - arm, pt.y); ctx.lineTo(pt.x - cs * 0.15, pt.y);
+      ctx.moveTo(pt.x + cs * 0.15, pt.y); ctx.lineTo(pt.x + arm, pt.y);
+      ctx.moveTo(pt.x, pt.y - arm); ctx.lineTo(pt.x, pt.y - cs * 0.15);
+      ctx.moveTo(pt.x, pt.y + cs * 0.15); ctx.lineTo(pt.x, pt.y + arm);
       ctx.stroke();
 
       // Outer focus ring
       ctx.beginPath();
-      ctx.arc(pt.x, pt.y, cs * (0.34 + pulse * 0.08), 0, Math.PI * 2);
+      ctx.arc(pt.x, pt.y, cs * (0.32 + pulse * 0.08), 0, Math.PI * 2);
       ctx.stroke();
       ctx.restore();
     }
   }
+  ctx.restore();
+}
 
-  // Draw danger warning pulses for active threat lines
+function drawActiveThreatLasers(cs) {
+  if (!window.CaroEngine?.TacticalEvaluator) return;
+  const boardObj = clientEngine ? clientEngine.board : reconstructBoardFromState(gameState);
+  if (!boardObj || boardObj.stones.size < 2) return;
+
   const threatLines = window.CaroEngine.TacticalEvaluator.findThreatLines(boardObj);
+  if (!threatLines || threatLines.length === 0) return;
+
+  const now = Date.now();
+  const pulse = (Math.sin(now / 150) + 1) / 2;
+  const fastPulse = (Math.sin(now / 70) + 1) / 2;
+
+  ctx.save();
   for (const t of threatLines) {
-    for (const [tr, tc] of t.line) {
-      const pt = boardToScreen(tr, tc);
-      ctx.strokeStyle = t.severity === "critical"
-        ? `rgba(239, 68, 68, ${0.45 + pulse * 0.45})`
-        : `rgba(245, 158, 11, ${0.35 + pulse * 0.35})`;
-      ctx.lineWidth = (2 + pulse * 2) * camera.zoom;
-      ctx.setLineDash([4 * camera.zoom, 4 * camera.zoom]);
+    if (!t.line || t.line.length < 2) continue;
+    const meta = getPlayerMeta(t.player);
+    const color = meta.color || "#06b6d4";
+    const isCritical = t.severity === "critical";
+    const isWarning = t.severity === "warning";
+    const isTactical = t.severity === "tactical";
+
+    const pFirst = boardToScreen(t.line[0][0], t.line[0][1]);
+    const pLast = boardToScreen(t.line[t.line.length - 1][0], t.line[t.line.length - 1][1]);
+
+    // 1. Draw glowing laser beam through the stones in this line
+    ctx.save();
+    ctx.lineCap = "round";
+
+    // Outer Neon Glow
+    ctx.shadowColor = color;
+    const blur = isCritical ? (18 + fastPulse * 10) : isWarning ? (12 + pulse * 6) : 6;
+    ctx.shadowBlur = blur * camera.zoom;
+    ctx.strokeStyle = color;
+    const lineW = isCritical ? 5.5 : isWarning ? 3.5 : 2.2;
+    ctx.lineWidth = lineW * camera.zoom;
+    ctx.globalAlpha = isCritical ? 0.95 : isWarning ? 0.80 : 0.60;
+    ctx.beginPath();
+    ctx.moveTo(pFirst.x, pFirst.y);
+    ctx.lineTo(pLast.x, pLast.y);
+    ctx.stroke();
+
+    // Inner White-Hot Energy Core (for 3+ stone lines)
+    if (!isTactical) {
+      ctx.shadowBlur = 0;
+      ctx.strokeStyle = "#ffffff";
+      ctx.lineWidth = (isCritical ? 2.2 : 1.4) * camera.zoom;
+      ctx.globalAlpha = 0.95;
       ctx.beginPath();
-      ctx.arc(pt.x, pt.y, cs * 0.48, 0, Math.PI * 2);
+      ctx.moveTo(pFirst.x, pFirst.y);
+      ctx.lineTo(pLast.x, pLast.y);
       ctx.stroke();
-      ctx.setLineDash([]);
+    }
+    ctx.restore();
+
+    // 2. Pulse energy rings around each stone in the active line
+    for (const [sr, sc] of t.line) {
+      const sp = boardToScreen(sr, sc);
+      ctx.save();
+      ctx.strokeStyle = color;
+      ctx.lineWidth = (isCritical ? 2.2 : 1.4) * camera.zoom;
+      ctx.globalAlpha = isCritical ? (0.65 + fastPulse * 0.35) : isWarning ? (0.50 + pulse * 0.25) : 0.35;
+      ctx.beginPath();
+      ctx.arc(sp.x, sp.y, cs * (0.42 + (isCritical ? fastPulse : pulse) * 0.05), 0, Math.PI * 2);
+      ctx.stroke();
+      ctx.restore();
+    }
+
+    // 3. Projected Strike Laser into open attack targets (empty cells)
+    if (t.targets && t.targets.length > 0) {
+      for (const [tr, tc] of t.targets) {
+        const tp = boardToScreen(tr, tc);
+        const dFirst = Math.hypot(tp.x - pFirst.x, tp.y - pFirst.y);
+        const dLast = Math.hypot(tp.x - pLast.x, tp.y - pLast.y);
+        const origin = dFirst < dLast ? pFirst : pLast;
+
+        ctx.save();
+        ctx.setLineDash(isTactical ? [3 * camera.zoom, 3 * camera.zoom] : [5 * camera.zoom, 4 * camera.zoom]);
+        ctx.strokeStyle = isCritical ? `rgba(239, 68, 68, ${0.85 + fastPulse * 0.15})` : color;
+        ctx.lineWidth = (isCritical ? 2.6 : isWarning ? 1.6 : 1.0) * camera.zoom;
+        ctx.globalAlpha = isTactical ? 0.45 : 0.85;
+        if (!isTactical) {
+          ctx.shadowColor = isCritical ? "#ef4444" : color;
+          ctx.shadowBlur = 8 * camera.zoom;
+        }
+        ctx.beginPath();
+        ctx.moveTo(origin.x, origin.y);
+        ctx.lineTo(tp.x, tp.y);
+        ctx.stroke();
+        ctx.setLineDash([]);
+
+        if (!isTactical) {
+          const targetRadius = cs * (isCritical ? (0.34 + fastPulse * 0.08) : (0.24 + pulse * 0.05));
+          ctx.strokeStyle = isCritical ? "#ef4444" : color;
+          ctx.lineWidth = (isCritical ? 2.2 : 1.4) * camera.zoom;
+          ctx.beginPath();
+          ctx.moveTo(tp.x, tp.y - targetRadius);
+          ctx.lineTo(tp.x + targetRadius, tp.y);
+          ctx.lineTo(tp.x, tp.y + targetRadius);
+          ctx.lineTo(tp.x - targetRadius, tp.y);
+          ctx.closePath();
+          ctx.stroke();
+
+          if (isCritical) {
+            ctx.fillStyle = "#ef4444";
+            ctx.beginPath();
+            ctx.arc(tp.x, tp.y, 2.5 * camera.zoom, 0, Math.PI * 2);
+            ctx.fill();
+          }
+        }
+        ctx.restore();
+      }
     }
   }
   ctx.restore();
+}
+
+let fxAnimId = null;
+function startFxAnimation() {
+  if (fxAnimId) return;
+  function fxLoop() {
+    if (showHeatmap || showLasers || (hoverCoord && gameState?.is_human_turn)) {
+      renderBoard();
+      fxAnimId = requestAnimationFrame(fxLoop);
+    } else {
+      fxAnimId = null;
+    }
+  }
+  fxAnimId = requestAnimationFrame(fxLoop);
 }
 
 function renderBoard() {
@@ -1076,6 +1224,11 @@ function renderBoard() {
   const moves = isReplayMode ? replayMoves.slice(0, replayIndex) : gameState?.board?.moves || [];
   const lastMove = moves.length > 0 ? moves[moves.length - 1] : null;
   moves.forEach(m => drawStone(m.row, m.col, m.player, cs, m.move_number));
+
+  // Live Threat Lasers (renders dynamic active threat beams over stones)
+  if (showLasers && !isReplayMode && gameState?.board) {
+    drawActiveThreatLasers(cs);
+  }
 
   // Human hover ghost with alignment guide crosshair
   if (hoverCoord && gameState?.is_human_turn && gameState?.status !== "finished") {
@@ -1356,8 +1509,16 @@ function stepReplay(delta) {
 }
 
 // ─────────────────────────────────────────
-// Sandbox & Model Tuning Modal
+// Battle Speed Control & Configuration
 // ─────────────────────────────────────────
+const BATTLE_SPEEDS = [
+  { label: "⚡ Fast (30ms)", delaySec: 0.03 },
+  { label: "⚡ Blitz (10ms)", delaySec: 0.01 },
+  { label: "🐢 Slow (250ms)", delaySec: 0.25 },
+  { label: "▶ Normal (80ms)", delaySec: 0.08 }
+];
+let currentSpeedIndex = 0;
+
 function loadSandboxConfig() {
   try {
     const saved = localStorage.getItem("caro_sandbox_config");
@@ -1374,77 +1535,40 @@ function saveSandboxConfig() {
   } catch {}
 }
 
-function openSandboxModal() {
-  const modal = document.getElementById("sandbox-modal");
-  if (!modal) return;
-  modal.style.display = "flex";
+function initSpeedButton() {
+  const btn = document.getElementById("btn-speed");
+  if (!btn) return;
+  const curDelay = window.CaroSandboxConfig.delaySec || 0.03;
+  const matchIdx = BATTLE_SPEEDS.findIndex(s => Math.abs(s.delaySec - curDelay) < 0.015);
+  if (matchIdx !== -1) currentSpeedIndex = matchIdx;
+  btn.textContent = BATTLE_SPEEDS[currentSpeedIndex].label;
+  btn.addEventListener("click", cycleBattleSpeed);
+}
 
-  const cfg = window.CaroSandboxConfig;
-  const speedSlider = document.getElementById("slider-speed");
-  const defSlider = document.getElementById("slider-def-weight");
-  if (speedSlider) { speedSlider.value = Math.round(cfg.delaySec * 1000); document.getElementById("val-speed").textContent = `${speedSlider.value} ms`; }
-  if (defSlider) { defSlider.value = Math.round(cfg.defenseWeight * 100); document.getElementById("val-def-weight").textContent = `${defSlider.value}%`; }
+function cycleBattleSpeed() {
+  currentSpeedIndex = (currentSpeedIndex + 1) % BATTLE_SPEEDS.length;
+  applyBattleSpeed();
+}
 
-  for (const m of ["laya", "jev", "von", "mojev"]) {
-    const sl = document.getElementById(`slider-temp-${m}`);
-    const vl = document.getElementById(`val-temp-${m}`);
-    if (sl && vl && cfg.temperatures[m]) {
-      sl.value = cfg.temperatures[m];
-      vl.textContent = Number(cfg.temperatures[m]).toFixed(2);
-    }
+function applyBattleSpeed() {
+  const speed = BATTLE_SPEEDS[currentSpeedIndex];
+  const btn = document.getElementById("btn-speed");
+  if (btn) {
+    btn.textContent = speed.label;
+    btn.title = `Current battle speed: ${speed.label}. Click to cycle speeds.`;
   }
-}
-
-function closeSandboxModal() {
-  const modal = document.getElementById("sandbox-modal");
-  if (modal) modal.style.display = "none";
-}
-
-function resetSandboxModal() {
-  window.CaroSandboxConfig = {
-    defenseWeight: 0.05,
-    delaySec: 0.02,
-    temperatures: { laya: 0.40, jev: 0.25, von: 0.35, mojev: 0.50 }
-  };
+  window.CaroSandboxConfig.delaySec = speed.delaySec;
   saveSandboxConfig();
-  openSandboxModal();
-}
 
-function setupSandboxInputs() {
-  document.getElementById("slider-speed")?.addEventListener("input", e => {
-    const ms = Number(e.target.value);
-    document.getElementById("val-speed").textContent = `${ms} ms`;
-    window.CaroSandboxConfig.delaySec = ms / 1000;
-    saveSandboxConfig();
-  });
-
-  document.getElementById("slider-def-weight")?.addEventListener("input", e => {
-    const pct = Number(e.target.value);
-    document.getElementById("val-def-weight").textContent = `${pct}%`;
-    window.CaroSandboxConfig.defenseWeight = pct / 100;
-    saveSandboxConfig();
-  });
-
-  document.querySelectorAll(".preset-btn").forEach(btn => {
-    btn.addEventListener("click", () => {
-      document.querySelectorAll(".preset-btn").forEach(b => b.classList.remove("active"));
-      btn.classList.add("active");
-      const def = Number(btn.dataset.def);
-      const sl = document.getElementById("slider-def-weight");
-      if (sl) sl.value = def;
-      document.getElementById("val-def-weight").textContent = `${def}%`;
-      window.CaroSandboxConfig.defenseWeight = def / 100;
-      saveSandboxConfig();
-    });
-  });
-
-  for (const m of ["laya", "jev", "von", "mojev"]) {
-    document.getElementById(`slider-temp-${m}`)?.addEventListener("input", e => {
-      const v = Number(e.target.value);
-      document.getElementById(`val-temp-${m}`).textContent = v.toFixed(2);
-      window.CaroSandboxConfig.temperatures[m] = v;
-      saveSandboxConfig();
-    });
+  if (clientEngine && clientEngine.isAutoPlaying) {
+    clientEngine.autoDelaySec = speed.delaySec;
+  }
+  if (isServerAvailable && gameState?.is_autoplay) {
+    fetch("/api/battle/autoplay", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ enabled: true, delay_sec: speed.delaySec })
+    }).catch(() => {});
   }
 }
 

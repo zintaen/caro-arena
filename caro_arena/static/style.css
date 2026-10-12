@@ -292,17 +292,6 @@ html, body {
 }
 .replay-controls { display: flex; gap: 4px; }
 
-.human-turn-bar {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  padding: 6px 12px;
-  background: #fef3c7;
-  border-bottom: 1px solid #f59e0b;
-  font-size: 0.72rem;
-  font-weight: 600;
-  color: #92400e;
-}
 
 /* ==========================================================================
    Sidebar
@@ -603,15 +592,18 @@ html, body {
    Human Turn Bar & Undo
    ========================================================================== */
 .human-turn-bar {
-  display: flex;
+  display: none;
   align-items: center;
   justify-content: space-between;
   padding: 8px 16px;
   background: #fffbeb;
-  border-bottom: 1px solid #fde68a;
+  border-bottom: 1.5px solid #fde68a;
   color: #b45309;
-  font-weight: 600;
-  font-size: 0.76rem;
+  font-weight: 700;
+  font-size: 0.78rem;
+}
+.human-turn-bar.active {
+  display: flex;
 }
 .human-turn-content { display: flex; align-items: center; gap: 6px; }
 .btn-outline {
@@ -711,73 +703,6 @@ html, body {
   border-top: 1px solid var(--border);
 }
 
-.sandbox-group { display: flex; flex-direction: column; gap: 6px; }
-.sandbox-label-row {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  font-size: 0.74rem;
-  font-weight: 600;
-  color: var(--text-primary);
-}
-.sandbox-val {
-  font-family: var(--font-mono);
-  font-size: 0.72rem;
-  color: var(--text-secondary);
-  background: var(--bg-raised);
-  padding: 1px 6px;
-  border-radius: 4px;
-}
-.slider {
-  width: 100%;
-  height: 5px;
-  border-radius: 999px;
-  background: var(--border-medium);
-  accent-color: #0891b2;
-  cursor: pointer;
-}
-.slider-ticks {
-  display: flex;
-  justify-content: space-between;
-  font-size: 0.62rem;
-  color: var(--text-muted);
-}
-.sandbox-presets {
-  display: flex;
-  gap: 6px;
-  margin-top: 2px;
-}
-.preset-btn.active {
-  background: color-mix(in srgb, var(--text-primary) 8%, white);
-  border-color: var(--text-primary);
-  font-weight: 700;
-}
-.sandbox-hint {
-  margin: 0;
-  font-size: 0.65rem;
-  color: var(--text-muted);
-  line-height: 1.35;
-}
-.sandbox-divider {
-  height: 1px;
-  background: var(--border);
-  margin: 2px 0;
-}
-.sandbox-subhead {
-  margin: 0;
-  font-size: 0.72rem;
-  font-weight: 700;
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
-  color: var(--text-muted);
-}
-.sandbox-grid {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 12px;
-}
-.sandbox-item { display: flex; flex-direction: column; gap: 4px; }
-.model-badge { font-weight: 700; font-size: 0.74rem; }
 
 /* ==========================================================================
    Victory Celebration Modal

@@ -297,7 +297,7 @@ class TacticalEvaluator {
   }
 
   static findThreatLines(board) {
-    // Detects dangerous 3-in-a-row and 4-in-a-row alignments for radar overlay
+    // Detects dangerous 3-in-a-row and 4-in-a-row alignments for laser vectors and radar overlay
     const threats = [];
     const active = board.getActivePlayers();
     for (const [key, player] of board.stones.entries()) {
@@ -315,10 +315,16 @@ class TacticalEvaluator {
           const frontOpen = board.getCell(r - dr, c - dc) === ".";
           const backOpen = board.getCell(r + dr * step, c + dc * step) === ".";
           const openEnds = (frontOpen ? 1 : 0) + (backOpen ? 1 : 0);
+          const targets = [];
+          if (frontOpen) targets.push([r - dr, c - dc]);
+          if (backOpen) targets.push([r + dr * step, c + dc * step]);
+
           if (line.length >= 4 && openEnds >= 1) {
-            threats.push({ player, line, count: line.length, severity: "critical", openEnds });
-          } else if (line.length === 3 && openEnds === 2) {
-            threats.push({ player, line, count: 3, severity: "warning", openEnds });
+            threats.push({ player, line, count: line.length, severity: "critical", openEnds, targets, dr, dc });
+          } else if (line.length === 3 && openEnds >= 1) {
+            threats.push({ player, line, count: 3, severity: openEnds === 2 ? "warning" : "minor", openEnds, targets, dr, dc });
+          } else if (line.length === 2 && openEnds === 2) {
+            threats.push({ player, line, count: 2, severity: "tactical", openEnds, targets, dr, dc });
           }
         }
       }
@@ -335,25 +341,36 @@ class TacticalEvaluator {
       sumR += r; sumC += c;
     }
     const centroid = [sumR / board.stones.size, sumC / board.stones.size];
-    const scored = raw.map(([r, c]) => this.evaluateMove(board, r, c, player, centroid));
+    const scored = raw.map(([r, c]) => {
+      const evalRes = this.evaluateMove(board, r, c, player, centroid);
+      // Raw tactical pressure combines total offensive + defensive stakes on this cell
+      const pressure = evalRes.off_score + evalRes.def_score;
+      return {
+        row: r, col: c,
+        pressure: pressure,
+        off_score: evalRes.off_score,
+        def_score: evalRes.def_score,
+        summary: evalRes.summary
+      };
+    });
 
-    // Filter to ONLY genuine tactical threats (open 3s, 4s, win threats, critical blocks)
-    // Discard all quiet/low-value candidate moves so the board stays clean
-    const threats = scored.filter(s => s.total_score >= 1200);
-    threats.sort((a, b) => b.total_score - a.total_score);
+    // Filter to cells with meaningful tactical tension (at least 2-stone connection or threat)
+    const threats = scored.filter(s => s.pressure >= 150);
+    threats.sort((a, b) => b.pressure - a.pressure);
 
-    // Keep at most top 8 critical hotspots on the board
-    const topThreats = threats.slice(0, 8);
+    // Keep top 10 hottest tactical zones
+    const topThreats = threats.slice(0, 10);
     if (topThreats.length === 0) return [];
 
-    const maxScore = topThreats[0].total_score;
+    const maxPressure = Math.max(200, topThreats[0].pressure);
     return topThreats.map((s, idx) => ({
       row: s.row, col: s.col,
-      total_score: s.total_score,
+      total_score: s.pressure,
       rank: idx + 1,
-      intensity: Math.min(1.0, Math.max(0.35, s.total_score / Math.max(8000, maxScore))),
-      isWinThreat: s.total_score >= 20000,
-      isLethal: s.total_score >= 10000,
+      intensity: Math.min(1.0, Math.max(0.25, Math.log10(s.pressure + 10) / Math.log10(maxPressure + 10))),
+      isWinThreat: s.pressure >= 100000,
+      isLethal: s.pressure >= 10000,
+      isWarning: s.pressure >= 2000,
       summary: s.summary
     }));
   }
@@ -753,7 +770,7 @@ class ClientGameManager {
 
   toggleAutoPlay(enabled, delaySec = 0.02) {
     this.isAutoPlaying = enabled;
-    this.autoDelaySec = Math.max(0.02, delaySec);
+    this.autoDelaySec = Math.max(0.005, delaySec);
     if (this.autoPlayTimer) { clearTimeout(this.autoPlayTimer); this.autoPlayTimer = null; }
 
     if (enabled) {
