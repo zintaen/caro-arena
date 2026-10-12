@@ -669,7 +669,7 @@ class ClientGameManager {
     return null;
   }
 
-  newGame(playerTypes, shouldShuffle = true) {
+  newGame(playerTypes, shouldShuffle = true, playerConfigs = null) {
     if (playerTypes) this.selectedPlayerTypes = playerTypes;
     this.gameId = Math.random().toString(36).substring(2, 10);
     this.startedAt = Date.now();
@@ -687,9 +687,11 @@ class ClientGameManager {
     this.players = types.map((ptype, i) => {
       const symbol = symbols[i];
       const agent = ptype === "human" ? null : this.createAgent(ptype, symbol);
+      const cfg = playerConfigs ? playerConfigs.find(c => c.symbol === symbol || c.slotIndex === i) : null;
+      const defaultName = agent ? agent.name : (ptype === "human" ? "Human" : ptype.toUpperCase());
       return {
         type: ptype,
-        name: agent ? agent.name : (ptype === "human" ? "Human" : ptype.toUpperCase()),
+        name: (cfg && cfg.name) ? cfg.name : defaultName,
         agent: agent,
         symbol: symbol
       };

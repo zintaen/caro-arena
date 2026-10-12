@@ -273,30 +273,56 @@
     });
 
     currentChannel.on("presence", { event: "join" }, ({ key, newPresences }) => {
-      if (onStatusMessageCallback) {
+      if (onStatusMessageCallback && newPresences) {
         newPresences.forEach(p => {
           if (p.name && p.name !== myPlayerName) {
             onStatusMessageCallback(`${p.name} joined the room.`);
           }
         });
       }
+      // Re-sync lobby slots immediately when a new user arrives
+      const state = currentChannel.presenceState();
+      handlePresenceSync(state);
     });
 
     currentChannel.on("presence", { event: "leave" }, ({ key, leftPresences }) => {
-      if (onStatusMessageCallback) {
+      if (onStatusMessageCallback && leftPresences) {
         leftPresences.forEach(p => {
           if (p.name) onStatusMessageCallback(`${p.name} left the room.`);
         });
       }
       handlePlayerLeft(key);
+      const state = currentChannel.presenceState();
+      handlePresenceSync(state);
     });
 
     // 2. Broadcast events
+    currentChannel.on("broadcast", { event: "player_join" }, ({ payload }) => {
+      if (!isRoomHost || !payload?.id) return;
+      let slot = roomSlots.find(s => s.id === payload.id);
+      if (!slot) {
+        slot = roomSlots.find((s, idx) => idx > 0 && s.type === "human" && (!s.id || s.name.startsWith("Waiting")));
+      }
+      if (slot) {
+        slot.id = payload.id;
+        slot.name = payload.name || "Friend";
+        slot.ready = true;
+        broadcastLobbyUpdate();
+        if (onLobbyChangeCallback) onLobbyChangeCallback(getLobbyState());
+      }
+    });
+
     currentChannel.on("broadcast", { event: "lobby_update" }, ({ payload }) => {
       if (!isRoomHost && payload?.slots) {
         roomSlots = payload.slots;
-        // Determine my slot
-        const myIndex = roomSlots.findIndex(s => s.id === myPlayerId);
+        // Robust resolution of my assigned slot
+        let myIndex = roomSlots.findIndex(s => s.id === myPlayerId);
+        if (myIndex === -1 && myPlayerName) {
+          myIndex = roomSlots.findIndex(s => s.type === "human" && s.name === myPlayerName);
+        }
+        if (myIndex === -1) {
+          myIndex = roomSlots.findIndex((s, idx) => idx > 0 && s.type === "human");
+        }
         if (myIndex !== -1) myAssignedSlot = myIndex;
         if (onLobbyChangeCallback) onLobbyChangeCallback(getLobbyState());
       }
@@ -327,11 +353,16 @@
         if (isRoomHost) {
           broadcastLobbyUpdate();
         } else {
-          // Request host to send latest lobby state
+          // Send explicit join handshake to host
+          currentChannel.send({
+            type: "broadcast",
+            event: "player_join",
+            payload: { id: myPlayerId, name: myPlayerName }
+          });
           currentChannel.send({
             type: "broadcast",
             event: "request_lobby",
-            payload: { from: myPlayerId }
+            payload: { from: myPlayerId, name: myPlayerName }
           });
         }
       }
@@ -339,7 +370,18 @@
 
     // Host listens for lobby state requests from new joiners
     if (isRoomHost) {
-      currentChannel.on("broadcast", { event: "request_lobby" }, () => {
+      currentChannel.on("broadcast", { event: "request_lobby" }, ({ payload }) => {
+        if (payload?.from) {
+          let slot = roomSlots.find(s => s.id === payload.from);
+          if (!slot) {
+            slot = roomSlots.find((s, idx) => idx > 0 && s.type === "human" && (!s.id || s.name.startsWith("Waiting")));
+          }
+          if (slot) {
+            slot.id = payload.from;
+            if (payload.name) slot.name = payload.name;
+            slot.ready = true;
+          }
+        }
         broadcastLobbyUpdate();
       });
     }
@@ -422,6 +464,27 @@
   function startGame() {
     if (!isRoomHost || !currentChannel) return;
 
+    // Ensure any open human slot is bound to a connected guest
+    const presenceUsers = [];
+    if (typeof currentChannel.presenceState === "function") {
+      const ps = currentChannel.presenceState();
+      for (const k in ps) {
+        if (ps[k] && ps[k].length > 0) presenceUsers.push(ps[k][0]);
+      }
+    }
+    const guestUsers = presenceUsers.filter(u => u.id !== myPlayerId);
+    let guestIdx = 0;
+    for (let i = 1; i < roomSlots.length; i++) {
+      if (roomSlots[i].type === "human" && (!roomSlots[i].id || roomSlots[i].name.startsWith("Waiting"))) {
+        if (guestIdx < guestUsers.length) {
+          roomSlots[i].id = guestUsers[guestIdx].id;
+          roomSlots[i].name = guestUsers[guestIdx].name || "Friend";
+          roomSlots[i].ready = true;
+          guestIdx++;
+        }
+      }
+    }
+
     // Filter active players
     const activeSlots = roomSlots.filter(s => s.type === "human" || s.type === "ai");
     if (activeSlots.length < 2) {
@@ -437,7 +500,8 @@
       symbol: symbols[idx],
       isLocalHuman: (s.type === "human" && s.id === myPlayerId),
       isAi: s.type === "ai",
-      playerId: s.id
+      playerId: s.id,
+      isHost: idx === 0
     }));
 
     inGame = true;

@@ -200,8 +200,10 @@ function handleStateUpdate(data) {
     try { window.CaroAudio?.playStoneClick?.(pInfo?.type || "ai"); } catch {}
   }
 
-  // Human turn chime
-  const isHumanTurn = data.is_human_turn && data.status !== "finished";
+  // Human turn chime (only alert when it is the local player's turn)
+  const isHumanTurn = isMultiplayerActive
+    ? (data.current_player?.symbol === myMultiplayerSymbol && data.status !== "finished")
+    : (data.is_human_turn && data.status !== "finished");
   if (isHumanTurn && !lastWasHumanTurn) {
     if (typeof window.CaroAudio?.playHumanTurnAlert === "function") {
       try {
@@ -367,12 +369,16 @@ function setupTouchListeners() {
 
   canvas.addEventListener("touchend", (e) => {
     if (isDragging && !hasDragged && e.changedTouches.length === 1) {
-      const t = e.changedTouches[0];
-      const rect = canvas.getBoundingClientRect();
-      const scX = canvas.width / rect.width, scY = canvas.height / rect.height;
-      const sx = (t.clientX - rect.left) * scX, sy = (t.clientY - rect.top) * scY;
-      const coord = screenToBoard(sx, sy);
-      if (gameState?.is_human_turn && gameState?.status !== "finished") {
+      const isAllowedToMove = isMultiplayerActive
+        ? (gameState?.current_player?.symbol === myMultiplayerSymbol && gameState?.status !== "finished")
+        : (Boolean(gameState?.is_human_turn) && gameState?.status !== "finished");
+
+      if (isAllowedToMove) {
+        const t = e.changedTouches[0];
+        const rect = canvas.getBoundingClientRect();
+        const scX = canvas.width / rect.width, scY = canvas.height / rect.height;
+        const sx = (t.clientX - rect.left) * scX, sy = (t.clientY - rect.top) * scY;
+        const coord = screenToBoard(sx, sy);
         const moves = gameState?.board?.moves || [];
         const occupied = moves.some(m => m.row === coord.r && m.col === coord.c);
         if (!occupied) sendHumanMove(coord.r, coord.c);
@@ -555,7 +561,11 @@ async function resetAll() {
 
 async function sendHumanMove(r, c) {
   if (isMultiplayerActive) {
+    if (!myMultiplayerSymbol) {
+      myMultiplayerSymbol = resolveMyMultiplayerSymbol(multiplayerRoster);
+    }
     if (!myMultiplayerSymbol) return;
+
     const currSymbol = gameState?.current_player?.symbol;
     if (currSymbol !== myMultiplayerSymbol) {
       const p = symbolMap[currSymbol];
@@ -630,14 +640,20 @@ function getPlayerMeta(symbol) {
 function updateHumanTurnBar() {
   const bar = document.getElementById("human-turn-bar");
   if (!bar) return;
-  const hasHuman = Boolean(
-    gameState?.players?.some(p => p.type === "human") ||
-    gameState?.has_human ||
-    (clientEngine && clientEngine.hasHumanPlayer())
-  );
-  const isHumanWaiting = hasHuman && Boolean(gameState?.is_human_turn) && gameState?.status !== "finished";
-  bar.classList.toggle("active", isHumanWaiting);
-  bar.style.display = isHumanWaiting ? "flex" : "none";
+  let isMyTurn = false;
+  if (isMultiplayerActive) {
+    if (!myMultiplayerSymbol) myMultiplayerSymbol = resolveMyMultiplayerSymbol(multiplayerRoster);
+    isMyTurn = (gameState?.current_player?.symbol === myMultiplayerSymbol) && gameState?.status !== "finished";
+  } else {
+    const hasHuman = Boolean(
+      gameState?.players?.some(p => p.type === "human") ||
+      gameState?.has_human ||
+      (clientEngine && clientEngine.hasHumanPlayer())
+    );
+    isMyTurn = hasHuman && Boolean(gameState?.is_human_turn) && gameState?.status !== "finished";
+  }
+  bar.classList.toggle("active", isMyTurn);
+  bar.style.display = isMyTurn ? "flex" : "none";
 }
 
 function updateTurnBanner() {
@@ -957,17 +973,24 @@ function onMouseMove(e) {
   } else {
     if (sx >= 0 && sx <= canvas.width && sy >= 0 && sy <= canvas.height) {
       hoverCoord = screenToBoard(sx, sy);
-      canvas.style.cursor = gameState?.is_human_turn ? "pointer" : "crosshair";
+      if (isMultiplayerActive && !myMultiplayerSymbol) {
+        myMultiplayerSymbol = resolveMyMultiplayerSymbol(multiplayerRoster);
+      }
+      const isAllowedToMove = isMultiplayerActive
+        ? (gameState?.current_player?.symbol === myMultiplayerSymbol && gameState?.status !== "finished")
+        : (Boolean(gameState?.is_human_turn) && gameState?.status !== "finished");
+
+      canvas.style.cursor = isAllowedToMove ? "pointer" : "crosshair";
 
       // Tactical Ghost HUD tooltip for human turn
       const hud = document.getElementById("ghost-hud");
-      if (gameState?.is_human_turn && gameState?.status !== "finished" && hud && window.CaroEngine?.TacticalEvaluator) {
+      if (isAllowedToMove && hud && window.CaroEngine?.TacticalEvaluator) {
         const moves = gameState?.board?.moves || [];
         const occupied = moves.some(m => m.row === hoverCoord.r && m.col === hoverCoord.c);
         if (!occupied) {
           const boardObj = clientEngine ? clientEngine.board : reconstructBoardFromState(gameState);
           if (boardObj) {
-            const humanSymbol = gameState.players.find(p => p.type === "human")?.symbol || "E";
+            const humanSymbol = isMultiplayerActive ? myMultiplayerSymbol : (gameState.players.find(p => p.type === "human")?.symbol || "E");
             let sumR = 0, sumC = 0;
             for (const key of boardObj.stones.keys()) {
               const [kr, kc] = key.split(",").map(Number);
@@ -998,9 +1021,16 @@ function onMouseMove(e) {
 function onMouseUp(e) {
   if (isDragging) {
     isDragging = false;
-    canvas.style.cursor = gameState?.is_human_turn ? "pointer" : "crosshair";
+    if (isMultiplayerActive && !myMultiplayerSymbol) {
+      myMultiplayerSymbol = resolveMyMultiplayerSymbol(multiplayerRoster);
+    }
+    const isAllowedToMove = isMultiplayerActive
+      ? (gameState?.current_player?.symbol === myMultiplayerSymbol && gameState?.status !== "finished")
+      : (Boolean(gameState?.is_human_turn) && gameState?.status !== "finished");
 
-    if (!hasDragged && !isReplayMode && gameState?.is_human_turn && gameState?.status !== "finished") {
+    canvas.style.cursor = isAllowedToMove ? "pointer" : "crosshair";
+
+    if (!hasDragged && !isReplayMode && isAllowedToMove) {
       const rect = canvas.getBoundingClientRect();
       const scX = canvas.width / rect.width, scY = canvas.height / rect.height;
       const sx = (e.clientX - rect.left) * scX, sy = (e.clientY - rect.top) * scY;
@@ -1968,12 +1998,49 @@ function renderMultiplayerSlots() {
   });
 }
 
+function resolveMyMultiplayerSymbol(roster) {
+  if (!roster || roster.length === 0) return null;
+  const isHost = Boolean(window.CaroMultiplayer?.isHost);
+  const myId = window.CaroMultiplayer?.myId;
+  const myName = window.CaroMultiplayer?.myName;
+  const assignedSlot = window.CaroMultiplayer?.myAssignedSlot;
+
+  // 1. Host is always symbol of slot 0 (A)
+  if (isHost) {
+    return roster[0]?.symbol || "A";
+  }
+
+  // 2. Match by exact playerId
+  if (myId) {
+    const slotById = roster.find(r => r.playerId && r.playerId === myId);
+    if (slotById) return slotById.symbol;
+  }
+
+  // 3. Match by player name
+  if (myName) {
+    const slotByName = roster.find(r => r.type === "human" && r.name && r.name.trim().toLowerCase() === myName.trim().toLowerCase());
+    if (slotByName) return slotByName.symbol;
+  }
+
+  // 4. Match by assigned slot index
+  if (typeof assignedSlot === "number" && assignedSlot >= 0 && assignedSlot < roster.length) {
+    const slotByIndex = roster[assignedSlot];
+    if (slotByIndex && slotByIndex.type === "human") return slotByIndex.symbol;
+  }
+
+  // 5. Fallback for guest: find the first human slot that is not host (idx > 0)
+  const guestHuman = roster.find((r, idx) => idx > 0 && r.type === "human");
+  if (guestHuman) return guestHuman.symbol;
+
+  // 6. Default to "B" for guest in 2+ player game
+  return roster[1]?.symbol || "B";
+}
+
 function handleMultiplayerGameStart(data) {
   isMultiplayerActive = true;
   multiplayerRoster = data.roster || [];
-
-  const mySlot = multiplayerRoster.find(r => r.playerId === window.CaroMultiplayer.myId);
-  myMultiplayerSymbol = mySlot ? mySlot.symbol : (window.CaroMultiplayer.isHost ? "A" : null);
+  myMultiplayerSymbol = resolveMyMultiplayerSymbol(multiplayerRoster);
+  console.log(`[Caro Arena] Match started. My symbol: ${myMultiplayerSymbol}, My ID: ${window.CaroMultiplayer?.myId}, IsHost: ${window.CaroMultiplayer?.isHost}`);
 
   if (!clientEngine && window.CaroEngine) {
     clientEngine = new window.CaroEngine.ClientGameManager();
@@ -1983,7 +2050,7 @@ function handleMultiplayerGameStart(data) {
   const playerTypes = multiplayerRoster.map(p => p.type);
   clientEngine.selectedPlayerTypes = playerTypes;
   clientEngine.battleNumber = data.battleNumber || 1;
-  const nextState = clientEngine.newGame(playerTypes, false);
+  const nextState = clientEngine.newGame(playerTypes, false, multiplayerRoster);
 
   closeMultiplayerModal();
   showMultiplayerHud(data.roomId);
@@ -2018,7 +2085,7 @@ function handleMultiplayerRemoteNextBattle(data) {
   if (!isMultiplayerActive || !clientEngine) return;
   clientEngine.battleNumber = data.battleNumber || (clientEngine.battleNumber + 1);
   const playerTypes = multiplayerRoster.map(p => p.type);
-  const nextState = clientEngine.newGame(playerTypes, false);
+  const nextState = clientEngine.newGame(playerTypes, false, multiplayerRoster);
   userInteractedWithCamera = false;
   autoScaleCamera(true);
   handleStateUpdate(nextState);
