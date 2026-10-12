@@ -100,6 +100,16 @@ async def get_audio():
     return FileResponse(STATIC_DIR / "audio.js")
 
 
+@app.get("/multiplayer.js")
+async def get_multiplayer():
+    return FileResponse(STATIC_DIR / "multiplayer.js")
+
+
+@app.get("/supabase-config.js")
+async def get_supabase_config():
+    return FileResponse(STATIC_DIR / "supabase-config.js")
+
+
 @app.get("/manifest.json")
 async def get_manifest():
     return FileResponse(STATIC_DIR / "manifest.json")

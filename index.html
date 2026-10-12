@@ -7,7 +7,7 @@
   <meta name="theme-color" content="#d97706">
   <link rel="icon" type="image/svg+xml" href="icon.svg">
   <link rel="manifest" href="manifest.json">
-  <link rel="stylesheet" href="style.css?v=2.3.0">
+  <link rel="stylesheet" href="style.css?v=2.5.0">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
@@ -89,7 +89,6 @@
       margin: 0 !important;
     }
   </style>
-  <script src="audio.js?v=2.5.0"></script>
 </head>
 <body>
   <header class="app-header">
@@ -109,6 +108,7 @@
 
     <div class="header-right">
       <div class="header-actions">
+        <button class="btn btn-ghost btn-sm" id="btn-multiplayer" title="Play with friends (Multiplayer Rooms)">👥 Rooms</button>
         <button class="btn btn-ghost btn-sm" id="btn-sound" title="Toggle Sound (Mute/Unmute)">🔊</button>
         <button class="btn btn-ghost btn-sm" id="btn-fullscreen" title="Toggle Fullscreen">⛶</button>
         <label class="toggle-nonstop-wrap" id="nonstop-wrap" title="Continuous battles without stopping">
@@ -123,6 +123,22 @@
       </div>
     </div>
   </header>
+
+  <!-- In-game Multiplayer Room HUD -->
+  <div id="multiplayer-hud" class="multiplayer-hud" style="display: none;">
+    <div class="mp-hud-left">
+      <span class="mp-live-dot">●</span>
+      <span class="mp-hud-title">Room:</span>
+      <span class="mp-room-badge" id="mp-hud-room">------</span>
+      <button class="btn-copy-code" id="btn-hud-copy-link" title="Copy Invite Link">📋 Copy Link</button>
+    </div>
+    <div class="mp-hud-center" id="mp-hud-status">
+      Waiting for players...
+    </div>
+    <div class="mp-hud-right">
+      <button class="btn btn-ghost btn-xs" id="btn-hud-leave-room">Leave Room</button>
+    </div>
+  </div>
 
   <main class="arena-layout">
     <section class="board-pane">
@@ -265,7 +281,97 @@
   <!-- Confetti Canvas for Victory Celebrations -->
   <canvas id="confetti-canvas" class="confetti-canvas" style="display: none;"></canvas>
 
+  <!-- Multiplayer Lobby & Settings Modal -->
+  <div id="modal-multiplayer" class="modal-backdrop" style="display: none;">
+    <div class="modal-card modal-mp">
+      <div class="modal-mp-header">
+        <div class="modal-mp-title-wrap">
+          <span class="mp-icon">👥</span>
+          <h2 class="modal-mp-title">Multiplayer Arena</h2>
+        </div>
+        <button class="btn btn-icon modal-close" id="btn-close-mp-modal">✕</button>
+      </div>
+
+      <!-- Config View (if Supabase credentials not set) -->
+      <div id="mp-view-config" class="mp-view" style="display: none;">
+        <p class="mp-subtitle">Connect your Supabase project to enable real-time human-vs-human rooms on GitHub Pages & Vercel.</p>
+        <div class="mp-form-group">
+          <label for="mp-cfg-url">Supabase Project URL</label>
+          <input type="text" id="mp-cfg-url" placeholder="https://your-project.supabase.co" autocomplete="off">
+        </div>
+        <div class="mp-form-group">
+          <label for="mp-cfg-key">Supabase Public Anon Key</label>
+          <input type="password" id="mp-cfg-key" placeholder="eyJhbGciOiJIUzI1NiIsIn..." autocomplete="off">
+        </div>
+        <p class="mp-hint">💡 Found in <strong>Supabase Dashboard → Project Settings → API</strong>. Safe for public browser clients.</p>
+        <div class="mp-actions">
+          <button class="btn btn-primary" id="btn-save-mp-config">Connect Supabase</button>
+        </div>
+      </div>
+
+      <!-- Lobby View (when configured) -->
+      <div id="mp-view-lobby" class="mp-view">
+        <div class="mp-tabs">
+          <button class="mp-tab-btn active" data-tab="create" id="mp-tab-btn-create">Create Room</button>
+          <button class="mp-tab-btn" data-tab="join" id="mp-tab-btn-join">Join Room</button>
+          <button class="mp-tab-btn mp-tab-settings" data-tab="settings" id="mp-tab-btn-settings" title="Supabase Credentials">⚙️ Settings</button>
+        </div>
+
+        <div class="mp-mode-banner local" id="mp-mode-banner">
+          <span id="mp-mode-banner-text">⚡ Local Multi-tab Demo</span>
+          <a href="javascript:void(0)" id="link-open-mp-settings">Connect Supabase ⚙️</a>
+        </div>
+
+        <!-- Create Room Tab -->
+        <div id="mp-tab-create" class="mp-tab-content">
+          <div class="mp-field-row">
+            <label for="mp-host-name-input">Your Name</label>
+            <input type="text" id="mp-host-name-input" maxlength="16" placeholder="Your Name" value="Player 1">
+          </div>
+
+          <div class="mp-slots-container">
+            <div class="mp-slots-title">Room Slots (Max 4 Players)</div>
+            <div class="mp-slots-list" id="mp-slots-list">
+              <!-- Dynamically populated -->
+            </div>
+          </div>
+
+          <div class="mp-share-box" id="mp-share-box" style="display: none;">
+            <div class="mp-share-label">Invite Link</div>
+            <div class="mp-share-input-wrap">
+              <input type="text" id="mp-share-url" readonly>
+              <button class="btn btn-primary btn-sm" id="btn-copy-invite-link">Copy</button>
+            </div>
+          </div>
+
+          <div class="mp-actions">
+            <button class="btn btn-secondary" id="btn-action-create-room">Create New Room</button>
+            <button class="btn btn-primary" id="btn-action-start-mp" style="display: none;">Start Battle ▶</button>
+          </div>
+        </div>
+
+        <!-- Join Room Tab -->
+        <div id="mp-tab-join" class="mp-tab-content" style="display: none;">
+          <div class="mp-field-row">
+            <label for="mp-join-name-input">Your Name</label>
+            <input type="text" id="mp-join-name-input" maxlength="16" placeholder="Your Name" value="Player 2">
+          </div>
+          <div class="mp-field-row">
+            <label for="mp-join-code-input">Room Code</label>
+            <input type="text" id="mp-join-code-input" maxlength="8" placeholder="e.g. 8X2K7" style="text-transform: uppercase;">
+          </div>
+          <div class="mp-actions">
+            <button class="btn btn-primary" id="btn-action-join-room">Join Room</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+  <script src="supabase-config.js?v=2.5.0"></script>
   <script src="audio.js?v=2.5.0"></script>
+  <script src="multiplayer.js?v=2.5.0"></script>
   <script src="engine.js?v=2.5.0"></script>
   <script src="app.js?v=2.5.0"></script>
 </body>

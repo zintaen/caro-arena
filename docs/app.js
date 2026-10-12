@@ -92,6 +92,9 @@ window.CaroSandboxConfig = {
 document.addEventListener("DOMContentLoaded", async () => {
   loadSandboxConfig();
   setupEventListeners();
+  if (typeof initMultiplayerIntegration === "function") {
+    initMultiplayerIntegration();
+  }
   resizeCanvas();
   window.addEventListener("resize", resizeCanvas);
 
@@ -449,6 +452,14 @@ async function fetchBattleHistory() {
 async function toggleAutoPlay() {
   if (isReplayMode) exitReplayMode();
 
+  // If in multiplayer and battle finished:
+  if (isMultiplayerActive) {
+    if (window.CaroMultiplayer?.isHost && gameState?.status === "finished") {
+      startNextMultiplayerBattle();
+    }
+    return;
+  }
+
   // If battle is finished, this single button starts the next battle!
   if (gameState?.status === "finished") {
     await newBattle();
@@ -532,6 +543,29 @@ async function resetAll() {
 }
 
 async function sendHumanMove(r, c) {
+  if (isMultiplayerActive) {
+    if (!myMultiplayerSymbol) return;
+    const currSymbol = gameState?.current_player?.symbol;
+    if (currSymbol !== myMultiplayerSymbol) {
+      const p = symbolMap[currSymbol];
+      updateMultiplayerHudStatus(`Waiting for ${p?.name || "opponent"} to move...`);
+      return;
+    }
+
+    if (window.CaroAudio) window.CaroAudio.playStoneClick("human");
+    if (clientEngine) {
+      const nextState = clientEngine.humanMove(r, c);
+      if (nextState) {
+        handleStateUpdate(nextState);
+        if (window.CaroMultiplayer) {
+          window.CaroMultiplayer.sendMove(r, c, "human", myMultiplayerSymbol, nextState.board.moves.length);
+        }
+        scheduleHostAiMoveIfNeeded();
+      }
+    }
+    return;
+  }
+
   if (window.CaroAudio) window.CaroAudio.playStoneClick("human");
 
   if (isServerAvailable) {
@@ -606,16 +640,33 @@ function updateTurnBanner() {
     return;
   }
 
-  const bn = gameState.series?.battle_number || 1;
+  const bn = gameState.series?.battle_number || gameState.battle_number || 1;
   if (gameState.status === "finished") {
     const placements = gameState.board?.placements || [];
     if (placements.length > 0) {
       const winner = getPlayerMeta(placements[0].player);
       dot.style.background = winner.color;
       text.textContent = `Battle #${bn} · ${winner.name} wins!`;
+      if (isMultiplayerActive) updateMultiplayerHudStatus(`Battle finished · ${winner.name} wins!`);
     } else {
       dot.style.background = "#94a3b8";
       text.textContent = `Battle #${bn} · Draw`;
+      if (isMultiplayerActive) updateMultiplayerHudStatus(`Battle finished · Draw`);
+    }
+  } else if (isMultiplayerActive) {
+    const currSymbol = gameState.current_player?.symbol;
+    const curr = getPlayerMeta(currSymbol);
+    dot.style.background = curr.color;
+    const moveNum = (gameState.board?.move_count || 0) + 1;
+    if (currSymbol === myMultiplayerSymbol) {
+      text.textContent = `Battle #${bn} · Turn ${moveNum} · Your Turn!`;
+      updateMultiplayerHudStatus(`Your turn! Click empty cell to place stone`);
+    } else if (curr.type === "human") {
+      text.textContent = `Battle #${bn} · Turn ${moveNum} · ${curr.name}'s turn`;
+      updateMultiplayerHudStatus(`Waiting for ${curr.name}...`);
+    } else {
+      text.textContent = `Battle #${bn} · Turn ${moveNum} · ${curr.name} (AI) thinking...`;
+      updateMultiplayerHudStatus(`${curr.name} (AI) thinking...`);
     }
   } else if (gameState.is_human_turn) {
     dot.style.background = "#d97706";
@@ -1624,5 +1675,418 @@ class ConfettiEngine {
     };
     if (this.animId) cancelAnimationFrame(this.animId);
     this.animId = requestAnimationFrame(frame);
+  }
+}
+
+// ─────────────────────────────────────────
+// Multiplayer Integration (Supabase Realtime)
+// ─────────────────────────────────────────
+let isMultiplayerActive = false;
+let myMultiplayerSymbol = null;
+let multiplayerRoster = [];
+
+function initMultiplayerIntegration() {
+  if (!window.CaroMultiplayer) return;
+
+  window.CaroMultiplayer.setCallbacks({
+    onLobbyChange: handleMultiplayerLobbyUpdate,
+    onGameStart: handleMultiplayerGameStart,
+    onRemoteMove: handleMultiplayerRemoteMove,
+    onRemoteNextBattle: handleMultiplayerRemoteNextBattle,
+    onRoomLeave: handleMultiplayerRoomLeave,
+    onStatusMessage: (msg) => {
+      updateMultiplayerHudStatus(msg);
+    }
+  });
+
+  setupMultiplayerUI();
+  checkUrlForRoomInvite();
+}
+
+function setupMultiplayerUI() {
+  const btnMp = document.getElementById("btn-multiplayer");
+  const modal = document.getElementById("modal-multiplayer");
+  const btnClose = document.getElementById("btn-close-mp-modal");
+  const btnSaveCfg = document.getElementById("btn-save-mp-config");
+  const btnCreateRoom = document.getElementById("btn-action-create-room");
+  const btnStartMp = document.getElementById("btn-action-start-mp");
+  const btnJoinRoom = document.getElementById("btn-action-join-room");
+  const btnCopyInvite = document.getElementById("btn-copy-invite-link");
+  const btnHudCopy = document.getElementById("btn-hud-copy-link");
+  const btnHudLeave = document.getElementById("btn-hud-leave-room");
+
+  // Tabs
+  const tabCreate = document.getElementById("mp-tab-btn-create");
+  const tabJoin = document.getElementById("mp-tab-btn-join");
+  const tabSettings = document.getElementById("mp-tab-btn-settings");
+
+  btnMp?.addEventListener("click", () => openMultiplayerModal());
+  btnClose?.addEventListener("click", () => closeMultiplayerModal());
+
+  // Modal backdrop click
+  modal?.addEventListener("click", (e) => {
+    if (e.target.id === "modal-multiplayer") closeMultiplayerModal();
+  });
+
+  tabCreate?.addEventListener("click", () => switchMpTab("create"));
+  tabJoin?.addEventListener("click", () => switchMpTab("join"));
+  tabSettings?.addEventListener("click", () => showMpConfigView(true));
+  document.getElementById("link-open-mp-settings")?.addEventListener("click", () => showMpConfigView(true));
+
+  btnSaveCfg?.addEventListener("click", () => {
+    const url = document.getElementById("mp-cfg-url")?.value;
+    const key = document.getElementById("mp-cfg-key")?.value;
+    if (!url || !key) {
+      alert("Please provide both Supabase Project URL and Anon Key.");
+      return;
+    }
+    window.CaroMultiplayer.saveCredentials(url, key);
+    showMpConfigView(false);
+    updateMultiplayerModeBadge();
+    renderMultiplayerSlots();
+  });
+
+  btnCreateRoom?.addEventListener("click", async () => {
+    const name = document.getElementById("mp-host-name-input")?.value || "Host";
+    try {
+      btnCreateRoom.disabled = true;
+      btnCreateRoom.textContent = "Connecting...";
+      await window.CaroMultiplayer.createRoom(name);
+      btnCreateRoom.textContent = "Room Created!";
+      btnCreateRoom.style.display = "none";
+      if (btnStartMp) btnStartMp.style.display = "inline-flex";
+      const shareBox = document.getElementById("mp-share-box");
+      const shareUrl = document.getElementById("mp-share-url");
+      if (shareBox) shareBox.style.display = "block";
+      if (shareUrl) shareUrl.value = window.CaroMultiplayer.getLobbyState().shareUrl;
+    } catch (err) {
+      alert(err.message);
+      btnCreateRoom.disabled = false;
+      btnCreateRoom.textContent = "Create New Room";
+    }
+  });
+
+  btnStartMp?.addEventListener("click", () => {
+    try {
+      window.CaroMultiplayer.startGame();
+    } catch (err) {
+      alert(err.message);
+    }
+  });
+
+  btnJoinRoom?.addEventListener("click", async () => {
+    const name = document.getElementById("mp-join-name-input")?.value || "Player";
+    const code = document.getElementById("mp-join-code-input")?.value || "";
+    if (!code) {
+      alert("Please enter a room code.");
+      return;
+    }
+    try {
+      btnJoinRoom.disabled = true;
+      btnJoinRoom.textContent = "Joining...";
+      await window.CaroMultiplayer.joinRoom(code, name);
+      btnJoinRoom.textContent = "Connected! Waiting for host to start...";
+    } catch (err) {
+      alert(err.message);
+      btnJoinRoom.disabled = false;
+      btnJoinRoom.textContent = "Join Room";
+    }
+  });
+
+  const copyHandler = (inputElem, btnElem) => {
+    const val = inputElem?.value || window.CaroMultiplayer.getLobbyState().shareUrl;
+    if (val && navigator.clipboard) {
+      navigator.clipboard.writeText(val).then(() => {
+        const orig = btnElem.textContent;
+        btnElem.textContent = "✓ Copied!";
+        setTimeout(() => { btnElem.textContent = orig; }, 2000);
+      });
+    }
+  };
+
+  btnCopyInvite?.addEventListener("click", () => copyHandler(document.getElementById("mp-share-url"), btnCopyInvite));
+  btnHudCopy?.addEventListener("click", () => copyHandler(null, btnHudCopy));
+  btnHudLeave?.addEventListener("click", () => {
+    if (confirm("Leave this multiplayer room?")) {
+      window.CaroMultiplayer.leaveRoom();
+    }
+  });
+}
+
+function openMultiplayerModal(forceTab = null) {
+  const modal = document.getElementById("modal-multiplayer");
+  if (!modal) return;
+  modal.style.display = "flex";
+
+  showMpConfigView(false);
+  if (forceTab) switchMpTab(forceTab);
+  renderMultiplayerSlots();
+  updateMultiplayerModeBadge();
+}
+
+function updateMultiplayerModeBadge() {
+  const banner = document.getElementById("mp-mode-banner");
+  const text = document.getElementById("mp-mode-banner-text");
+  const link = document.getElementById("link-open-mp-settings");
+  if (!banner || !text) return;
+
+  const isOnline = window.CaroMultiplayer && window.CaroMultiplayer.isOnline;
+  if (isOnline) {
+    banner.className = "mp-mode-banner online";
+    text.textContent = "🟢 Online (Supabase Realtime)";
+    if (link) link.textContent = "Supabase Settings ⚙️";
+  } else {
+    banner.className = "mp-mode-banner local";
+    text.textContent = "⚡ Local Multi-tab Demo";
+    if (link) link.textContent = "Connect Supabase ⚙️";
+  }
+}
+
+function closeMultiplayerModal() {
+  const modal = document.getElementById("modal-multiplayer");
+  if (modal) modal.style.display = "none";
+}
+
+function showMpConfigView(show) {
+  const cfgView = document.getElementById("mp-view-config");
+  const lobbyView = document.getElementById("mp-view-lobby");
+  if (cfgView && lobbyView) {
+    cfgView.style.display = show ? "block" : "none";
+    lobbyView.style.display = show ? "none" : "block";
+  }
+  if (show) {
+    const creds = window.CaroMultiplayer.getSavedCredentials();
+    const u = document.getElementById("mp-cfg-url");
+    const k = document.getElementById("mp-cfg-key");
+    if (u) u.value = creds.url;
+    if (k) k.value = creds.key;
+  }
+}
+
+function switchMpTab(tab) {
+  const tCreate = document.getElementById("mp-tab-create");
+  const tJoin = document.getElementById("mp-tab-join");
+  const bCreate = document.getElementById("mp-tab-btn-create");
+  const bJoin = document.getElementById("mp-tab-btn-join");
+
+  if (tab === "create") {
+    if (tCreate) tCreate.style.display = "block";
+    if (tJoin) tJoin.style.display = "none";
+    bCreate?.classList.add("active");
+    bJoin?.classList.remove("active");
+  } else {
+    if (tCreate) tCreate.style.display = "none";
+    if (tJoin) tJoin.style.display = "block";
+    bCreate?.classList.remove("active");
+    bJoin?.classList.add("active");
+  }
+}
+
+function handleMultiplayerLobbyUpdate(lobbyState) {
+  renderMultiplayerSlots();
+  const shareBox = document.getElementById("mp-share-box");
+  const shareUrl = document.getElementById("mp-share-url");
+  if (lobbyState.roomId && shareBox && shareUrl) {
+    shareBox.style.display = "block";
+    shareUrl.value = lobbyState.shareUrl;
+  }
+}
+
+function renderMultiplayerSlots() {
+  const list = document.getElementById("mp-slots-list");
+  if (!list) return;
+
+  const lobby = window.CaroMultiplayer.getLobbyState();
+  const slots = lobby.slots || [];
+  const isHost = lobby.isHost;
+
+  list.innerHTML = "";
+  slots.forEach((s, idx) => {
+    const item = document.createElement("div");
+    item.className = "mp-slot-item";
+
+    const isSlotHost = idx === 0;
+    const avatar = isSlotHost ? "👑" : (s.type === "human" ? "👤" : (s.type === "ai" ? "🤖" : "⛔"));
+
+    let controlsHtml = "";
+    if (isSlotHost) {
+      controlsHtml = `<span class="mp-slot-badge ready">Host</span>`;
+    } else if (isHost) {
+      // Host can configure slot 2-4
+      controlsHtml = `
+        <select class="mp-slot-select" data-slot="${idx}">
+          <option value="human" ${s.type === "human" ? "selected" : ""}>👤 Human (Friend)</option>
+          <option value="von" ${s.type === "ai" && s.model === "von" ? "selected" : ""}>🤖 Von (AI)</option>
+          <option value="mojev" ${s.type === "ai" && s.model === "mojev" ? "selected" : ""}>🤖 MoJev (AI)</option>
+          <option value="laya" ${s.type === "ai" && s.model === "laya" ? "selected" : ""}>🤖 Laya (AI)</option>
+          <option value="jev" ${s.type === "ai" && s.model === "jev" ? "selected" : ""}>🤖 Jev (AI)</option>
+          <option value="closed" ${s.type === "closed" ? "selected" : ""}>⛔ Closed</option>
+        </select>
+      `;
+    } else {
+      controlsHtml = `<span class="mp-slot-badge ${s.ready ? 'ready' : ''}">${s.name}</span>`;
+    }
+
+    item.innerHTML = `
+      <div class="mp-slot-left">
+        <span class="mp-slot-num">#${idx + 1}</span>
+        <span class="mp-slot-avatar">${avatar}</span>
+        <span class="mp-slot-name">${s.name}</span>
+      </div>
+      <div class="mp-slot-right">
+        ${controlsHtml}
+      </div>
+    `;
+
+    list.appendChild(item);
+  });
+
+  list.querySelectorAll(".mp-slot-select").forEach(sel => {
+    sel.addEventListener("change", (e) => {
+      const slotIdx = parseInt(e.target.dataset.slot, 10);
+      const val = e.target.value;
+      if (val === "human") {
+        window.CaroMultiplayer.updateSlot(slotIdx, { type: "human", name: "Waiting for friend...", id: null, ready: false });
+      } else if (val === "closed") {
+        window.CaroMultiplayer.updateSlot(slotIdx, { type: "closed", name: "Closed", id: null, ready: false });
+      } else {
+        const aiNames = { von: "Von (AI)", mojev: "MoJev (AI)", laya: "Laya (AI)", jev: "Jev (AI)" };
+        window.CaroMultiplayer.updateSlot(slotIdx, { type: "ai", model: val, name: aiNames[val] || "AI", id: null, ready: true });
+      }
+    });
+  });
+}
+
+function handleMultiplayerGameStart(data) {
+  isMultiplayerActive = true;
+  multiplayerRoster = data.roster || [];
+
+  const mySlot = multiplayerRoster.find(r => r.playerId === window.CaroMultiplayer.myId);
+  myMultiplayerSymbol = mySlot ? mySlot.symbol : (window.CaroMultiplayer.isHost ? "A" : null);
+
+  if (!clientEngine && window.CaroEngine) {
+    clientEngine = new window.CaroEngine.ClientGameManager();
+    clientEngine.onStateChange = (state) => handleStateUpdate(state);
+  }
+
+  const playerTypes = multiplayerRoster.map(p => p.type);
+  clientEngine.selectedPlayerTypes = playerTypes;
+  clientEngine.battleNumber = data.battleNumber || 1;
+  const nextState = clientEngine.newGame(playerTypes, false);
+
+  closeMultiplayerModal();
+  showMultiplayerHud(data.roomId);
+  userInteractedWithCamera = false;
+  autoScaleCamera(true);
+  handleStateUpdate(nextState);
+
+  if (window.CaroMultiplayer.isHost) {
+    scheduleHostAiMoveIfNeeded();
+  }
+}
+
+function handleMultiplayerRemoteMove(data) {
+  if (!isMultiplayerActive || !clientEngine) return;
+  if (data.senderId === window.CaroMultiplayer.myId) return;
+
+  const moves = clientEngine.board?.moves || [];
+  const occupied = moves.some(m => m.row === data.row && m.col === data.col);
+  if (occupied) return;
+
+  const meta = { row: data.row, col: data.col, latency_ms: 0, reasoning: `Remote move (${data.symbol || 'remote'})` };
+  const ok = clientEngine.playMove(data.row, data.col, meta);
+  if (ok) {
+    const nextState = clientEngine.getState();
+    handleStateUpdate(nextState);
+  }
+
+  scheduleHostAiMoveIfNeeded();
+}
+
+function handleMultiplayerRemoteNextBattle(data) {
+  if (!isMultiplayerActive || !clientEngine) return;
+  clientEngine.battleNumber = data.battleNumber || (clientEngine.battleNumber + 1);
+  const playerTypes = multiplayerRoster.map(p => p.type);
+  const nextState = clientEngine.newGame(playerTypes, false);
+  userInteractedWithCamera = false;
+  autoScaleCamera(true);
+  handleStateUpdate(nextState);
+}
+
+function handleMultiplayerRoomLeave() {
+  isMultiplayerActive = false;
+  myMultiplayerSymbol = null;
+  multiplayerRoster = [];
+
+  const hud = document.getElementById("multiplayer-hud");
+  if (hud) hud.style.display = "none";
+
+  if (clientEngine) {
+    clientEngine.newGame(["laya", "jev", "von", "mojev"]);
+    fetchState();
+  }
+}
+
+function showMultiplayerHud(roomId) {
+  const hud = document.getElementById("multiplayer-hud");
+  if (hud) {
+    hud.style.display = "flex";
+    const rm = document.getElementById("mp-hud-room");
+    if (rm) rm.textContent = roomId;
+    updateMultiplayerHudStatus("Battle underway!");
+  }
+}
+
+function updateMultiplayerHudStatus(text) {
+  const st = document.getElementById("mp-hud-status");
+  if (st) st.textContent = text;
+}
+
+function scheduleHostAiMoveIfNeeded() {
+  if (!isMultiplayerActive || !window.CaroMultiplayer || !window.CaroMultiplayer.isHost) return;
+  if (!clientEngine || clientEngine.status === "finished") return;
+
+  const currPlayer = clientEngine.players.find(p => p.symbol === clientEngine.board.currentPlayer);
+  if (!currPlayer || currPlayer.type === "human") return;
+
+  setTimeout(() => {
+    if (!isMultiplayerActive || !window.CaroMultiplayer.isHost) return;
+    if (clientEngine.status === "finished") return;
+    const aiPlayer = clientEngine.players.find(p => p.symbol === clientEngine.board.currentPlayer);
+    if (!aiPlayer || aiPlayer.type === "human") return;
+
+    clientEngine.step();
+    const nextState = clientEngine.getState();
+    handleStateUpdate(nextState);
+
+    const moves = nextState.board.moves;
+    if (moves && moves.length > 0) {
+      const last = moves[moves.length - 1];
+      window.CaroMultiplayer.sendMove(last.row, last.col, aiPlayer.type, last.player, moves.length);
+    }
+
+    scheduleHostAiMoveIfNeeded();
+  }, 220);
+}
+
+function startNextMultiplayerBattle() {
+  if (!isMultiplayerActive || !clientEngine) return;
+  clientEngine.battleNumber += 1;
+  const playerTypes = multiplayerRoster.map(p => p.type);
+  const nextState = clientEngine.newGame(playerTypes, false);
+  userInteractedWithCamera = false;
+  autoScaleCamera(true);
+  handleStateUpdate(nextState);
+  window.CaroMultiplayer.sendNextBattle(clientEngine.battleNumber);
+  scheduleHostAiMoveIfNeeded();
+}
+
+function checkUrlForRoomInvite() {
+  const params = new URLSearchParams(window.location.search);
+  const room = params.get("room");
+  if (room) {
+    openMultiplayerModal("join");
+    const codeInput = document.getElementById("mp-join-code-input");
+    if (codeInput) codeInput.value = room.toUpperCase();
   }
 }

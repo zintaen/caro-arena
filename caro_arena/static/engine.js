@@ -597,17 +597,18 @@ class ClientGameManager {
     return null;
   }
 
-  newGame(playerTypes) {
+  newGame(playerTypes, shouldShuffle = true) {
     if (playerTypes) this.selectedPlayerTypes = playerTypes;
     this.gameId = Math.random().toString(36).substring(2, 10);
     this.startedAt = Date.now();
     this.endedAt = null;
 
     const types = [...this.selectedPlayerTypes];
-    // Shuffle
-    for (let i = types.length - 1; i > 0; i--) {
-      const j = Math.floor(Math.random() * (i + 1));
-      [types[i], types[j]] = [types[j], types[i]];
+    if (shouldShuffle) {
+      for (let i = types.length - 1; i > 0; i--) {
+        const j = Math.floor(Math.random() * (i + 1));
+        [types[i], types[j]] = [types[j], types[i]];
+      }
     }
 
     const symbols = PLAYERS.slice(0, types.length);
