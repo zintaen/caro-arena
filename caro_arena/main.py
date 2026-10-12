@@ -33,6 +33,7 @@ active_websockets: List[WebSocket] = []
 class AutoPlayRequest(BaseModel):
     enabled: bool
     delay_sec: float = 0.02
+    non_stop: bool = False
 
 
 class NewBattleRequest(BaseModel):
@@ -193,9 +194,16 @@ async def _run_auto_play():
                 await asyncio.sleep(manager.auto_delay_sec)
 
             if manager.status == "finished":
-                manager.is_auto_playing = False
-                await broadcast_state()
-                break
+                if getattr(manager, "non_stop", False):
+                    await asyncio.sleep(1.2)
+                    manager.battle_number += 1
+                    manager.new_game(player_types=manager.selected_player_types)
+                    await broadcast_state()
+                    continue
+                else:
+                    manager.is_auto_playing = False
+                    await broadcast_state()
+                    break
     except asyncio.CancelledError:
         pass
     except Exception as e:
@@ -208,7 +216,8 @@ async def _run_auto_play():
 async def toggle_auto_play(req: AutoPlayRequest):
     global auto_play_task
     manager.is_auto_playing = req.enabled
-    manager.auto_delay_sec = max(0.02, req.delay_sec)
+    manager.auto_delay_sec = max(0.01, req.delay_sec)
+    manager.non_stop = req.non_stop
 
     if req.enabled:
         if auto_play_task is None or auto_play_task.done():
@@ -218,7 +227,7 @@ async def toggle_auto_play(req: AutoPlayRequest):
             auto_play_task.cancel()
 
     await broadcast_state()
-    return {"is_auto_playing": manager.is_auto_playing, "delay_sec": manager.auto_delay_sec}
+    return {"is_auto_playing": manager.is_auto_playing, "delay_sec": manager.auto_delay_sec, "non_stop": manager.non_stop}
 
 
 @app.get("/api/leaderboard")

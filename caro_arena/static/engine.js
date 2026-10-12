@@ -576,6 +576,7 @@ class ClientGameManager {
     this.players = [];
     this.status = "ready";
     this.isAutoPlaying = false;
+    this.nonStop = false;
     this.autoDelaySec = 0.02;
     this.battleNumber = 1;
     this.selectedPlayerTypes = ["laya", "jev", "von", "mojev"];
@@ -782,9 +783,19 @@ class ClientGameManager {
   scheduleNextStep() {
     if (!this.isAutoPlaying) return;
     if (this.status === "finished") {
-      // Always stop and require user confirmation before starting next battle
       this.isAutoPlaying = false;
-      if (this.onStateChange) this.onStateChange(this.getState());
+      if (this.nonStop) {
+        // In non-stop mode, wait 1.2s to show victory line then start next battle!
+        this.autoPlayTimer = setTimeout(() => {
+          this.battleNumber += 1;
+          this.newGame(this.selectedPlayerTypes);
+          this.isAutoPlaying = true;
+          this.scheduleNextStep();
+          if (this.onStateChange) this.onStateChange(this.getState());
+        }, 1200);
+      } else {
+        if (this.onStateChange) this.onStateChange(this.getState());
+      }
       return;
     }
 
@@ -807,6 +818,7 @@ class ClientGameManager {
       game_id: this.gameId,
       status: this.status,
       is_auto_playing: this.isAutoPlaying,
+      non_stop: this.nonStop,
       auto_delay_sec: this.autoDelaySec,
       board: this.board.toDict(),
       players: this.players.map(p => ({ type: p.type, name: p.name, symbol: p.symbol })),

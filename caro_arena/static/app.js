@@ -43,6 +43,34 @@ let clientEngine = null;
 let isServerAvailable = false;
 let confettiEngine = null;
 
+let isNonStop = false;
+try {
+  isNonStop = localStorage.getItem("caro_nonstop") === "true";
+} catch {}
+
+function setNonStop(val) {
+  isNonStop = !!val;
+  try { localStorage.setItem("caro_nonstop", isNonStop ? "true" : "false"); } catch {}
+  const h = document.getElementById("toggle-nonstop");
+  if (h) {
+    h.checked = isNonStop;
+    h.closest(".toggle-nonstop-wrap")?.classList.toggle("active", isNonStop);
+  }
+  const f = document.getElementById("toggle-nonstop-footer");
+  if (f) f.checked = isNonStop;
+
+  if (clientEngine) {
+    clientEngine.nonStop = isNonStop;
+  }
+  if (isServerAvailable && gameState?.is_auto_playing) {
+    fetch("/api/battle/auto-play", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ enabled: true, delay_sec: 0.01, non_stop: isNonStop })
+    }).catch(() => {});
+  }
+}
+
 // Touch gestures
 let touchStartDistance = 0, touchStartZoom = 1.0;
 
@@ -174,7 +202,8 @@ function handleStateUpdate(data) {
   if (data.status === "finished" && !wasFinished) {
     fetchLeaderboard();
     fetchBattleHistory();
-    showWinnerModal(data);
+    if (window.CaroAudio) window.CaroAudio.playChampionshipFanfare();
+    if (confettiEngine) confettiEngine.launch(3000);
   }
 }
 
@@ -192,8 +221,21 @@ function rebuildSymbolMap() {
 // ─────────────────────────────────────────
 function setupEventListeners() {
   document.getElementById("btn-auto").addEventListener("click", toggleAutoPlay);
-  document.getElementById("btn-new").addEventListener("click", newBattle);
+  document.getElementById("btn-new")?.addEventListener("click", newBattle);
   document.getElementById("btn-reset").addEventListener("click", resetAll);
+
+  // Non-stop toggles
+  const nonstopToggle = document.getElementById("toggle-nonstop");
+  const nonstopFooterToggle = document.getElementById("toggle-nonstop-footer");
+  if (nonstopToggle) {
+    nonstopToggle.checked = isNonStop;
+    nonstopToggle.closest(".toggle-nonstop-wrap")?.classList.toggle("active", isNonStop);
+    nonstopToggle.addEventListener("change", e => setNonStop(e.target.checked));
+  }
+  if (nonstopFooterToggle) {
+    nonstopFooterToggle.checked = isNonStop;
+    nonstopFooterToggle.addEventListener("change", e => setNonStop(e.target.checked));
+  }
 
   // Sound toggle button
   const soundBtn = document.getElementById("btn-sound");
@@ -217,24 +259,6 @@ function setupEventListeners() {
       }
     });
   }
-
-  // Battle Winner Modal confirmation actions
-  document.getElementById("btn-next-battle")?.addEventListener("click", onConfirmNextBattle);
-  document.getElementById("btn-inspect-board")?.addEventListener("click", closeWinnerModal);
-  document.getElementById("winner-modal")?.addEventListener("click", (e) => {
-    if (e.target.id === "winner-modal") closeWinnerModal();
-  });
-  window.addEventListener("keydown", (e) => {
-    const wm = document.getElementById("winner-modal");
-    if (wm && wm.style.display !== "none") {
-      if (e.key === "Enter" || e.key === " ") {
-        e.preventDefault();
-        onConfirmNextBattle();
-      } else if (e.key === "Escape") {
-        closeWinnerModal();
-      }
-    }
-  });
 
   // Human Undo
   document.getElementById("btn-undo-move")?.addEventListener("click", undoHumanMove);
@@ -424,20 +448,41 @@ async function fetchBattleHistory() {
 
 async function toggleAutoPlay() {
   if (isReplayMode) exitReplayMode();
+
+  // If battle is finished, this single button starts the next battle!
+  if (gameState?.status === "finished") {
+    await newBattle();
+    if (clientEngine) {
+      clientEngine.nonStop = isNonStop;
+      clientEngine.toggleAutoPlay(true, 0.01);
+    } else if (isServerAvailable) {
+      try {
+        await fetch("/api/battle/auto-play", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ enabled: true, delay_sec: 0.01, non_stop: isNonStop })
+        });
+        await fetchState();
+      } catch {}
+    }
+    return;
+  }
+
   const currentlyPlaying = gameState?.is_auto_playing;
   const targetState = !currentlyPlaying;
-  const delaySec = window.CaroSandboxConfig.delaySec || 0.02;
+  const delaySec = 0.01;
 
   if (isServerAvailable) {
     try {
       await fetch("/api/battle/auto-play", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ enabled: targetState, delay_sec: delaySec })
+        body: JSON.stringify({ enabled: targetState, delay_sec: delaySec, non_stop: isNonStop })
       });
       await fetchState();
     } catch {}
   } else if (clientEngine) {
+    clientEngine.nonStop = isNonStop;
     clientEngine.toggleAutoPlay(targetState, delaySec);
   }
 }
@@ -591,11 +636,17 @@ function updateAutoPlayButton() {
   const btn = document.getElementById("btn-auto");
   if (!btn) return;
   const isPlaying = gameState?.is_auto_playing;
+  const isFinished = gameState?.status === "finished";
+
   if (isPlaying) {
     btn.innerHTML = `<svg viewBox="0 0 16 16" width="13" height="13" fill="currentColor"><path d="M4 3h3v10H4V3zm5 0h3v10H9V3z"/></svg><span>Pause</span>`;
     btn.classList.add("btn-active");
+  } else if (isFinished) {
+    btn.innerHTML = `<svg viewBox="0 0 16 16" width="13" height="13" fill="currentColor"><path d="M4 2.5l9 5.5-9 5.5V2.5z"/></svg><span>Next battle</span>`;
+    btn.classList.remove("btn-active");
   } else {
-    btn.innerHTML = `<svg viewBox="0 0 16 16" width="13" height="13" fill="currentColor"><path d="M4 2.5l9 5.5-9 5.5V2.5z"/></svg><span>Battle</span>`;
+    const hasStarted = (gameState?.board?.move_count || 0) > 0;
+    btn.innerHTML = `<svg viewBox="0 0 16 16" width="13" height="13" fill="currentColor"><path d="M4 2.5l9 5.5-9 5.5V2.5z"/></svg><span>${hasStarted ? "Resume" : "Battle"}</span>`;
     btn.classList.remove("btn-active");
   }
 }
@@ -1488,10 +1539,8 @@ function stepReplay(delta) {
 }
 
 // ─────────────────────────────────────────
-// Battle Flow & Winner Confirmation Modal
+// Arena Config & Storage
 // ─────────────────────────────────────────
-let lastWinnerModalGameId = null;
-
 function loadSandboxConfig() {
   try {
     const saved = localStorage.getItem("caro_sandbox_config");
@@ -1508,68 +1557,6 @@ function saveSandboxConfig() {
   try {
     localStorage.setItem("caro_sandbox_config", JSON.stringify(window.CaroSandboxConfig));
   } catch {}
-}
-
-function showWinnerModal(data) {
-  if (!data || data.status !== "finished") return;
-  const gameKey = data.game_id || (data.series?.battle_number ? `battle_${data.series.battle_number}` : null);
-  if (gameKey && gameKey === lastWinnerModalGameId) return;
-  lastWinnerModalGameId = gameKey;
-
-  const modal = document.getElementById("winner-modal");
-  if (!modal) return;
-
-  const bn = data.series?.battle_number || data.battle_number || 1;
-  const placements = data.board?.placements || [];
-  const headline = document.getElementById("winner-headline");
-  const avatar = document.getElementById("winner-avatar");
-  const name = document.getElementById("winner-name");
-  const details = document.getElementById("winner-details");
-  const totalMoves = data.board?.moves?.length || 0;
-
-  if (placements.length > 0 && placements[0].winning_line) {
-    const winnerMeta = getPlayerMeta(placements[0].player);
-    if (headline) headline.textContent = `Battle #${bn} Finished!`;
-    if (avatar) {
-      avatar.style.color = winnerMeta.color;
-      avatar.textContent = "●";
-    }
-    if (name) {
-      name.textContent = winnerMeta.name;
-      name.style.color = winnerMeta.color;
-    }
-    if (details) {
-      details.textContent = `Claimed 5-in-a-row in ${totalMoves} moves`;
-    }
-  } else {
-    if (headline) headline.textContent = `Battle #${bn} Ended`;
-    if (avatar) {
-      avatar.style.color = "#94a3b8";
-      avatar.textContent = "⚖";
-    }
-    if (name) {
-      name.textContent = "Draw Game";
-      name.style.color = "var(--text-primary)";
-    }
-    if (details) {
-      details.textContent = `Board reached draw after ${totalMoves} moves`;
-    }
-  }
-
-  modal.style.display = "flex";
-
-  if (window.CaroAudio) window.CaroAudio.playChampionshipFanfare();
-  if (confettiEngine) confettiEngine.launch(3500);
-}
-
-function closeWinnerModal() {
-  const modal = document.getElementById("winner-modal");
-  if (modal) modal.style.display = "none";
-}
-
-function onConfirmNextBattle() {
-  closeWinnerModal();
-  newBattle();
 }
 
 // ─────────────────────────────────────────

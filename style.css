@@ -713,49 +713,39 @@ html, body {
   background: radial-gradient(circle at 50% 10%, #fffbeb 0%, white 70%);
 }
 /* ==========================================================================
-   Battle Winner Confirmation Modal
+   Non-stop Battle Toggle
    ========================================================================== */
-.winner-card {
-  text-align: center;
-  padding: 32px 28px;
-  max-width: 420px;
-}
-.winner-trophy {
-  font-size: 3rem;
-  line-height: 1;
-  margin-bottom: 6px;
-  display: inline-block;
-  animation: bounce 1.8s infinite ease-in-out;
-}
-.winner-headline {
-  margin: 8px 0 6px;
-  font-size: 1.35rem;
-  font-weight: 800;
-  color: var(--text-primary);
-}
-.winner-badge-wrap {
+.toggle-nonstop-wrap {
   display: inline-flex;
   align-items: center;
-  justify-content: center;
-  gap: 8px;
-  margin: 10px auto 6px;
-  padding: 6px 18px;
-  background: var(--bg-raised);
-  border-radius: 999px;
-  border: 1.5px solid var(--border);
-}
-.winner-avatar { font-size: 1.25rem; line-height: 1; }
-.winner-name { font-size: 1.25rem; font-weight: 800; letter-spacing: -0.01em; }
-.winner-details {
-  margin: 8px 0 22px;
-  font-size: 0.84rem;
+  gap: 6px;
+  font-size: 0.8rem;
+  font-weight: 600;
   color: var(--text-secondary);
+  cursor: pointer;
+  padding: 4px 10px;
+  border-radius: var(--radius-sm);
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  user-select: none;
+  transition: all var(--transition);
 }
-.winner-modal-actions {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 12px;
+.toggle-nonstop-wrap:hover {
+  color: var(--text-primary);
+  border-color: var(--border-hover);
+  background: var(--bg-hover);
+}
+.toggle-nonstop-wrap.active {
+  color: var(--primary);
+  border-color: var(--primary);
+  background: rgba(37, 99, 235, 0.08);
+}
+.toggle-nonstop-wrap input[type="checkbox"] {
+  cursor: pointer;
+  accent-color: var(--primary);
+  width: 14px;
+  height: 14px;
+  margin: 0;
 }
 
 .confetti-canvas {

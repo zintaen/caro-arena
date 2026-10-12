@@ -55,51 +55,41 @@
       display: flex !important;
     }
 
-    /* Winner Modal Critical Styles */
-    .winner-card {
-      text-align: center !important;
-      padding: 32px 28px !important;
-      max-width: 420px !important;
-      background: #ffffff !important;
-    }
-    .winner-trophy {
-      font-size: 3rem !important;
-      line-height: 1 !important;
-      margin-bottom: 6px !important;
-      display: inline-block !important;
-    }
-    .winner-headline {
-      margin: 8px 0 6px !important;
-      font-size: 1.35rem !important;
-      font-weight: 800 !important;
-      color: #0f172a !important;
-    }
-    .winner-badge-wrap {
+    /* Non-stop Toggle Styles */
+    .toggle-nonstop-wrap {
       display: inline-flex !important;
       align-items: center !important;
-      justify-content: center !important;
-      gap: 8px !important;
-      margin: 10px auto 6px !important;
-      padding: 6px 18px !important;
-      background: #f8fafc !important;
-      border-radius: 999px !important;
-      border: 1.5px solid #e2e8f0 !important;
-    }
-    .winner-avatar { font-size: 1.25rem !important; line-height: 1 !important; }
-    .winner-name { font-size: 1.25rem !important; font-weight: 800 !important; letter-spacing: -0.01em !important; }
-    .winner-details {
-      margin: 8px 0 22px !important;
-      font-size: 0.84rem !important;
+      gap: 6px !important;
+      font-size: 0.8rem !important;
+      font-weight: 600 !important;
       color: #64748b !important;
+      cursor: pointer !important;
+      padding: 4px 10px !important;
+      border-radius: 6px !important;
+      background: #f1f5f9 !important;
+      border: 1px solid #cbd5e1 !important;
+      user-select: none !important;
+      transition: all 0.15s ease !important;
     }
-    .winner-modal-actions {
-      display: flex !important;
-      align-items: center !important;
-      justify-content: center !important;
-      gap: 12px !important;
+    .toggle-nonstop-wrap:hover {
+      color: #0f172a !important;
+      border-color: #94a3b8 !important;
+      background: #e2e8f0 !important;
+    }
+    .toggle-nonstop-wrap.active {
+      color: #2563eb !important;
+      border-color: #2563eb !important;
+      background: #eff6ff !important;
+    }
+    .toggle-nonstop-wrap input[type="checkbox"] {
+      cursor: pointer !important;
+      accent-color: #2563eb !important;
+      width: 14px !important;
+      height: 14px !important;
+      margin: 0 !important;
     }
   </style>
-  <script src="audio.js?v=2.4.0"></script>
+  <script src="audio.js?v=2.5.0"></script>
 </head>
 <body>
   <header class="app-header">
@@ -121,11 +111,14 @@
       <div class="header-actions">
         <button class="btn btn-ghost btn-sm" id="btn-sound" title="Toggle Sound (Mute/Unmute)">🔊</button>
         <button class="btn btn-ghost btn-sm" id="btn-fullscreen" title="Toggle Fullscreen">⛶</button>
+        <label class="toggle-nonstop-wrap" id="nonstop-wrap" title="Continuous battles without stopping">
+          <input type="checkbox" id="toggle-nonstop">
+          <span class="toggle-nonstop-text">Non-stop</span>
+        </label>
         <button class="btn btn-primary btn-sm" id="btn-auto">
           <svg viewBox="0 0 16 16" width="13" height="13" fill="currentColor"><path d="M4 2.5l9 5.5-9 5.5V2.5z"/></svg>
           <span id="btn-auto-text">Battle</span>
         </button>
-        <button class="btn btn-ghost btn-sm" id="btn-new">New battle</button>
         <button class="btn btn-ghost btn-sm" id="btn-reset">Reset all</button>
       </div>
     </div>
@@ -183,6 +176,7 @@
             <label><input type="checkbox" id="toggle-numbers" checked><span>Numbers</span></label>
             <label><input type="checkbox" id="toggle-coords"><span>Coords</span></label>
             <label><input type="checkbox" id="toggle-heatmap" checked><span>🔥 Heatmap</span></label>
+            <label><input type="checkbox" id="toggle-nonstop-footer"><span>Non-stop</span></label>
           </div>
         </footer>
       </div>
@@ -268,29 +262,11 @@
     </aside>
   </main>
 
-  <!-- Battle Winner Confirmation Modal -->
-  <div id="winner-modal" class="modal-backdrop" style="display: none;">
-    <div class="modal-card winner-card">
-      <div class="winner-trophy">🏆</div>
-      <h2 class="winner-headline" id="winner-headline">Battle Finished!</h2>
-      <div class="winner-badge-wrap" id="winner-badge-wrap">
-        <span class="winner-avatar" id="winner-avatar">●</span>
-        <span class="winner-name" id="winner-name">Laya</span>
-      </div>
-      <p class="winner-details" id="winner-details">Claimed 5-in-a-row in 54 moves</p>
-      
-      <div class="winner-modal-actions">
-        <button class="btn btn-ghost" id="btn-inspect-board">Inspect Board</button>
-        <button class="btn btn-primary" id="btn-next-battle">Next Battle ▶</button>
-      </div>
-    </div>
-  </div>
-
   <!-- Confetti Canvas for Victory Celebrations -->
   <canvas id="confetti-canvas" class="confetti-canvas" style="display: none;"></canvas>
 
-  <script src="audio.js?v=2.4.0"></script>
-  <script src="engine.js?v=2.4.0"></script>
-  <script src="app.js?v=2.4.0"></script>
+  <script src="audio.js?v=2.5.0"></script>
+  <script src="engine.js?v=2.5.0"></script>
+  <script src="app.js?v=2.5.0"></script>
 </body>
 </html>
