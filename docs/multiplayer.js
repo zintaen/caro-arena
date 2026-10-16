@@ -37,7 +37,7 @@
   // Dynamic room slots (2 to 4 players)
   let roomSlots = [
     { type: "human", name: "Host", id: null, ready: true },
-    { type: "human", name: "Open Human Slot", id: null, ready: false },
+    { type: "human", name: "Open human slot", id: null, ready: false },
     { type: "ai", model: "von", name: "Von (AI)", id: null, ready: true }
   ];
   let spectators = []; // [{ id, name, joinedAt }]
@@ -695,7 +695,7 @@
     } else {
       roomSlots = [
         { type: "human", name: myPlayerName, id: myPlayerId, ready: true },
-        { type: "human", name: "Open Human Slot", id: null, ready: false },
+        { type: "human", name: "Open human slot", id: null, ready: false },
         { type: "ai", model: "von", name: "Von (AI)", id: null, ready: true }
       ];
     }
@@ -797,7 +797,7 @@
             hostPlayerId = p.id;
           }
           if (onStatusMessageCallback && p.name && p.id !== myPlayerId) {
-            onStatusMessageCallback(`👁️ ${p.name} entered the room.`);
+            onStatusMessageCallback(`${p.name} entered the room.`);
           }
         });
       }
@@ -892,8 +892,8 @@
       pendingRequests.push(req);
       if (onStatusMessageCallback) {
         const label = req.kind === "takeover"
-          ? `⚡ ${req.fromName} requested to take over Slot ${req.targetSymbol || (req.slotIndex + 1)}!`
-          : `✋ ${req.fromName} requested to join the match!`;
+          ? `${req.fromName} requested to take over Slot ${req.targetSymbol || (req.slotIndex + 1)}.`
+          : `${req.fromName} requested to join the match.`;
         onStatusMessageCallback(label);
       }
       if (onRequestsChangeCallback) onRequestsChangeCallback(pendingRequests.slice());
@@ -909,7 +909,7 @@
           myRole = "player";
         }
         if (onStatusMessageCallback) {
-          onStatusMessageCallback(payload.message || "✓ Host approved your request! You are now in the match.");
+          onStatusMessageCallback(payload.message || "Host approved your request. You are now in the match.");
         }
       } else {
         lastRejectedAt = Date.now();
@@ -1135,7 +1135,7 @@
       payload: req
     });
     if (onStatusMessageCallback) {
-      onStatusMessageCallback("✋ Join request sent to the Host — waiting for approval...");
+      onStatusMessageCallback("Join request sent to the host — waiting for approval.");
     }
     if (onLobbyChangeCallback) onLobbyChangeCallback(getLobbyState());
     return true;
@@ -1177,7 +1177,7 @@
       payload: req
     });
     if (onStatusMessageCallback) {
-      onStatusMessageCallback(`⚡ Takeover request for Slot ${targetSymbol || ""} sent to Host...`);
+      onStatusMessageCallback(`Takeover request for Slot ${targetSymbol || ""} sent to host.`);
     }
     if (onLobbyChangeCallback) onLobbyChangeCallback(getLobbyState());
     return true;
@@ -1236,7 +1236,7 @@
             approved: true,
             slotIndex: targetIdx,
             symbol: sym,
-            message: `✓ Host approved! You are now playing as Slot #${targetIdx + 1} (${sym}).`
+            message: `Host approved. You are now playing as Slot #${targetIdx + 1} (${sym}).`
           }
         });
 
@@ -1297,7 +1297,7 @@
             approved: true,
             slotIndex: targetIdx,
             symbol: symbols[targetIdx] || "B",
-            message: `✓ Host approved! You joined Slot #${targetIdx + 1}.`
+            message: `Host approved. You joined Slot #${targetIdx + 1}.`
           }
         });
         broadcastLobbyUpdate();
@@ -1362,7 +1362,7 @@
     } else {
       roomSlots.push({
         type: "human",
-        name: "Open Human Slot",
+        name: "Open human slot",
         id: null,
         ready: false
       });
@@ -1479,7 +1479,7 @@
     } else {
       roomSlots[index] = {
         type: "human",
-        name: "Open Human Slot",
+        name: "Open human slot",
         id: null,
         ready: false
       };
@@ -1675,7 +1675,7 @@
       if (slotIdx !== -1) {
         if (!inGame) {
           roomSlots[slotIdx].id = null;
-          roomSlots[slotIdx].name = "Open Human Slot";
+          roomSlots[slotIdx].name = "Open human slot";
           roomSlots[slotIdx].ready = false;
         }
       }
@@ -2003,10 +2003,10 @@
   const LOCKOUT_DURATION_MS = 5 * 60 * 1000; // 5 minutes
 
   const BOARD_THEMES_CATALOG = {
-    classic: { id: "classic", name: "Classic Kaya", cost: 0, icon: "🪵", desc: "Warm traditional Kaya wood grain" },
-    obsidian: { id: "obsidian", name: "Obsidian Slate", cost: 50, icon: "🌑", desc: "Deep volcanic slate with silver grid" },
-    jade: { id: "jade", name: "Jade Pavilion", cost: 75, icon: "🐉", desc: "Imperial celadon jade with gold lines" },
-    cyber: { id: "cyber", name: "Cyber Grid", cost: 100, icon: "⚡", desc: "High-contrast neon tactical matrix" }
+    classic: { id: "classic", name: "Classic Kaya", cost: 0, desc: "Warm Kaya wood grain" },
+    obsidian: { id: "obsidian", name: "Obsidian Slate", cost: 50, desc: "Dark slate with silver lines" },
+    jade: { id: "jade", name: "Jade Pavilion", cost: 75, desc: "Celadon jade with gold lines" },
+    cyber: { id: "cyber", name: "Cyber Grid", cost: 100, desc: "Dark grid with cyan lines" }
   };
 
   let authChangeCallbacks = [];
@@ -2210,7 +2210,12 @@
         setSessionUser(data);
         return data;
       }
-      if (error && !String(error.message || "").includes("Could not find the function")) {
+      const errMsg = String(error?.message || "");
+      const isSchemaOrMissingRpc =
+        errMsg.includes("Could not find the function") ||
+        errMsg.includes("has no field") ||
+        errMsg.includes("does not exist");
+      if (error && !isSchemaOrMissingRpc) {
         const lockAfter = recordFailedPinAttempt(cleanEmail);
         if (lockAfter && lockAfter.lockedUntil) {
           throw new Error("Too many failed PIN attempts (5/5). Account locked for 5 minutes.");
@@ -2445,7 +2450,7 @@
     }
     const balance = getCranesBalance();
     if (balance < entry.cost) {
-      throw new Error(`Need ${entry.cost} 🦢 Cranes to unlock ${entry.name} (you have ${balance} 🦢).`);
+      throw new Error(`Need ${entry.cost} Cranes to unlock ${entry.name} (you have ${balance}).`);
     }
     const newBalance = await adjustCranes(-entry.cost, `unlock_theme_${themeId}`);
     try {

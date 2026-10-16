@@ -583,12 +583,12 @@ function handleStateUpdate(data) {
           const potBonus = Number(currentMatchWagerPot) || 0;
           const totalReward = 25 + potBonus;
           window.CaroAuth.adjustCranes(totalReward, "multiplayer_win_1st").then(() => {
-            showArenaToast(`🏆 1st Place Victory! +${totalReward} 🦢 Cranes awarded${potBonus > 0 ? ` (includes ${potBonus} 🦢 pot)` : ""}!`);
+            showArenaToast(`1st place — +${totalReward} Cranes awarded${potBonus > 0 ? ` (includes ${potBonus} pot)` : ""}`);
             if (typeof renderLobbyHomeWalletAndThemes === "function") renderLobbyHomeWalletAndThemes();
           }).catch(() => {});
         } else if (!isMultiplayerActive && symbolMap[winSym]?.type === "human") {
           window.CaroAuth.adjustCranes(10, "solo_practice_win_1st").then(() => {
-            showArenaToast("🥇 1st Place Victory! +10 🦢 Cranes awarded!");
+            showArenaToast("1st place — +10 Cranes awarded");
             if (typeof renderLobbyHomeWalletAndThemes === "function") renderLobbyHomeWalletAndThemes();
           }).catch(() => {});
         }
@@ -608,7 +608,7 @@ function attemptHumanBoardMove(r, c) {
       hoverCoord = { r, c };
       const promptEl = document.getElementById("human-prompt-text") || document.querySelector(".human-prompt-text");
       if (promptEl) {
-        promptEl.textContent = `🎯 Target (${r}, ${c}) locked — Tap/Click (${r}, ${c}) again to place stone`;
+        promptEl.textContent = `Target (${r}, ${c}) selected — tap (${r}, ${c}) again to place stone`;
       }
       renderBoard();
       startFxAnimation();
@@ -666,12 +666,14 @@ function setupEventListeners() {
 
   // Sound toggle button
   const soundBtn = document.getElementById("btn-sound");
+  const svgSoundOn = `<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><path d="M15.54 8.46a5 5 0 0 1 0 7.07"/><path d="M19.07 4.93a10 10 0 0 1 0 14.14"/></svg>`;
+  const svgSoundOff = `<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><line x1="23" y1="9" x2="17" y2="15"/><line x1="17" y1="9" x2="23" y2="15"/></svg>`;
   if (soundBtn) {
-    soundBtn.textContent = (window.CaroAudio && window.CaroAudio.enabled) ? "🔊" : "🔇";
+    soundBtn.innerHTML = (window.CaroAudio && window.CaroAudio.enabled) ? svgSoundOn : svgSoundOff;
     soundBtn.addEventListener("click", () => {
       if (!window.CaroAudio) return;
       const on = window.CaroAudio.toggle();
-      soundBtn.textContent = on ? "🔊" : "🔇";
+      soundBtn.innerHTML = on ? svgSoundOn : svgSoundOff;
     });
   }
 
@@ -727,7 +729,7 @@ function setupEventListeners() {
         try {
           await window.CaroAuth.unlockTheme(targetTheme);
           const meta = window.CaroAuth.BOARD_THEMES_CATALOG?.[targetTheme];
-          showArenaToast(`🎨 Unlocked & equipped ${meta?.name || targetTheme}!`);
+          showArenaToast(`Unlocked and equipped ${meta?.name || targetTheme}`);
           if (typeof renderLobbyHomeWalletAndThemes === "function") renderLobbyHomeWalletAndThemes();
           renderBoard();
         } catch (err) {
@@ -1372,7 +1374,7 @@ function updateTurnBanner() {
       updateMultiplayerHudStatus(`Your turn! Click empty cell to place stone`);
     } else if (!myMultiplayerSymbol) {
       text.textContent = `Battle #${bn} · Turn ${moveNum} · Spectating (${curr.name})`;
-      updateMultiplayerHudStatus(`👁️ Spectating · ${curr.name}'s turn`);
+      updateMultiplayerHudStatus(`Spectating · ${curr.name}'s turn`);
     } else if (curr.type === "human") {
       text.textContent = `Battle #${bn} · Turn ${moveNum} · ${curr.name}'s turn`;
       updateMultiplayerHudStatus(`Waiting for ${curr.name}...`);
@@ -1439,10 +1441,10 @@ function renderLeaderboard() {
 
   tbody.innerHTML = data.map((r, i) => {
     const meta = PLAYER_COLORS[r.player_type] || { fill: "#94a3b8", name: r.player_type };
-    const medal = i === 0 ? "🥇" : i === 1 ? "🥈" : i === 2 ? "🥉" : (i + 1);
+    const rankNum = i + 1;
     const isLeader = i === 0 && totalBattles > 0;
     return `<tr class="${isLeader ? "leader" : ""}">
-      <td class="rank-cell">${medal}</td>
+      <td class="rank-cell mono">${rankNum}</td>
       <td><span class="model-dot" style="background:${escapeHtml(meta.fill)}"></span>${escapeHtml(meta.name)}</td>
       <td class="mono"><strong>${escapeHtml(r.total_points)}</strong></td>
       <td class="mono muted">${escapeHtml(r.wins)}</td>
@@ -1483,10 +1485,10 @@ function renderBattleRoster() {
     let statusClass = "";
     if (placement) {
       const rank = placement.rank;
-      statusText = rank === 1 ? "🥇 1st" : rank === 2 ? "🥈 2nd" : rank === 3 ? "🥉 3rd" : `${rank}th`;
+      statusText = rank === 1 ? "1st" : rank === 2 ? "2nd" : rank === 3 ? "3rd" : `${rank}th`;
       statusClass = rank === 1 ? "winner" : "eliminated";
     } else if (isHumanWaiting) {
-      statusText = "Your turn!";
+      statusText = "Your turn";
       statusClass = "active";
     } else if (isThinking) {
       statusText = "Thinking...";
@@ -1505,7 +1507,7 @@ function renderBattleRoster() {
     const moveCount = activeMoves.filter(m => m.player === p.symbol).length;
     const canRequestTakeover = isSpectatorInMp && idx > 0 && !isElim;
     const takeoverBtn = canRequestTakeover
-      ? `<button class="btn btn-xs btn-ghost btn-roster-takeover" data-symbol="${escapeHtml(p.symbol)}" title="Request Host approval to take over this player slot">⚡ Takeover</button>`
+      ? `<button class="btn btn-xs btn-ghost btn-roster-takeover" data-symbol="${escapeHtml(p.symbol)}" title="Request host approval to take over this player slot">Takeover</button>`
       : "";
 
     return `<div class="roster-slot ${statusClass}" style="--pc: ${escapeHtml(meta.fill)}">
@@ -2340,7 +2342,7 @@ function renderBoard() {
     ctx.arc(pt.x, pt.y, cs * (0.48 + pulse * 0.06), 0, Math.PI * 2);
     ctx.stroke();
 
-    const lbl = `🎯 Tap to Confirm (${pendingConfirmCoord.r}, ${pendingConfirmCoord.c})`;
+    const lbl = `Confirm (${pendingConfirmCoord.r}, ${pendingConfirmCoord.c})`;
     ctx.font = `700 ${Math.max(10, Math.round(10 * camera.zoom))}px var(--font-sans, sans-serif)`;
     ctx.textAlign = "center";
     ctx.textBaseline = "middle";
@@ -2475,7 +2477,7 @@ function renderBoard() {
       const badgeY = midPt.y + (yOffsets[rank] || -0.80) * cs;
       const badgeX = midPt.x + (xOffsets[rank] || 0);
       const lineLen = pl.winning_line.length;
-      const rankText = pl.rank === 1 ? `🥇 ${meta.name} · ${lineLen} in a row` : `#${pl.rank} ${meta.name} · ${lineLen} in a row`;
+      const rankText = `#${pl.rank || 1} ${meta.name} · ${lineLen} in a row`;
 
       ctx.save();
       ctx.font = `700 ${Math.max(10, Math.round(11 * camera.zoom))}px var(--font-sans, sans-serif)`;
@@ -2711,7 +2713,7 @@ function computeTacticalMomentumSeries(moves, players, placements) {
         row: r,
         col: c,
         player: sym,
-        label: `🥇 #${moveNum} Win`,
+        label: `#${moveNum} Win`,
         priority: 3
       });
     } else if (maxLen === 4 && openEndsForMax >= 1) {
@@ -2720,7 +2722,7 @@ function computeTacticalMomentumSeries(moves, players, placements) {
         row: r,
         col: c,
         player: sym,
-        label: `🔥 #${moveNum} ${openEndsForMax === 2 ? "Open-4" : "Four"}`,
+        label: `#${moveNum} ${openEndsForMax === 2 ? "Open-4" : "Four"}`,
         priority: 2
       });
     } else if (maxLen === 3 && openEndsForMax === 2 && turningPoints.length < 4) {
@@ -2729,7 +2731,7 @@ function computeTacticalMomentumSeries(moves, players, placements) {
         row: r,
         col: c,
         player: sym,
-        label: `⚡ #${moveNum} Open-3`,
+        label: `#${moveNum} Open-3`,
         priority: 1
       });
     }
@@ -3155,13 +3157,13 @@ function renderLobbyHomeWalletAndThemes() {
   const btnHomeDaily = document.getElementById("btn-lobby-home-daily-bonus");
   if (btnHomeDaily) {
     btnHomeDaily.disabled = !canDaily;
-    btnHomeDaily.textContent = canDaily ? "🎁 Claim +25 🦢 Daily" : "✓ Bonus Claimed Today";
+    btnHomeDaily.textContent = canDaily ? "Claim +25 daily" : "Claimed today";
   }
 
   const btnAuthDaily = document.getElementById("btn-auth-daily-bonus");
   if (btnAuthDaily) {
     btnAuthDaily.disabled = !canDaily;
-    btnAuthDaily.textContent = canDaily ? "🎁 Claim +25 🦢 Daily Bonus" : "✓ Bonus Claimed Today";
+    btnAuthDaily.textContent = canDaily ? "Claim +25 daily" : "Claimed today";
   }
 
   // Update header theme selector labels
@@ -3169,16 +3171,15 @@ function renderLobbyHomeWalletAndThemes() {
   const selectedTheme = window.CaroAuth.getSelectedTheme();
   const catalogObj = window.CaroAuth.BOARD_THEMES_CATALOG || {};
   const catalog = Object.values(catalogObj);
-  const themeIcons = { classic: "🪵", obsidian: "🌑", jade: "🐉", cyber: "⚡" };
   if (themeSel) {
     Array.from(themeSel.options).forEach(opt => {
       const item = catalog.find(t => t.id === opt.value);
       if (!item) return;
-      const icon = item.preview || themeIcons[item.id] || "🎨";
       const unlocked = window.CaroAuth.isThemeUnlocked(item.id);
+      const shortName = item.name.replace(" Board", "");
       opt.textContent = unlocked
-        ? `${icon} ${item.name.replace(" Board", "")}`
-        : `🔒 ${item.name.replace(" Board", "")} (${item.cost} 🦢)`;
+        ? `${shortName}`
+        : `${shortName} (${item.cost} Cranes)`;
     });
     themeSel.value = selectedTheme;
   }
@@ -3190,18 +3191,20 @@ function renderLobbyHomeWalletAndThemes() {
     catalog.forEach(item => {
       const unlocked = window.CaroAuth.isThemeUnlocked(item.id);
       const isSelected = selectedTheme === item.id;
-      const icon = item.preview || themeIcons[item.id] || "🎨";
       const palette = BOARD_THEMES_PALETTES[item.id] || BOARD_THEMES_PALETTES.classic;
       const card = document.createElement("div");
       card.className = `theme-cosmetic-card ${isSelected ? "active-theme" : ""}`;
       card.dataset.themeId = item.id;
       card.innerHTML = `
         <div class="theme-cosmetic-top">
-          <span class="theme-cosmetic-name">${escapeHtml(icon)} ${escapeHtml(item.name)}</span>
           <span class="theme-cosmetic-swatch" style="background: linear-gradient(135deg, ${palette.bgStops[0]}, ${palette.bgStops[2]});"></span>
+          <div class="theme-cosmetic-text">
+            <span class="theme-cosmetic-name">${escapeHtml(item.name)}</span>
+            <span class="theme-cosmetic-desc">${escapeHtml(item.desc || item.description || "")}</span>
+          </div>
         </div>
         <div class="theme-cosmetic-status ${isSelected ? "active" : (unlocked ? "unlocked" : "locked")}">
-          ${isSelected ? "✓ Equipped" : (unlocked ? "Click to Equip" : `🔒 Unlock (${item.cost} 🦢)`)}
+          ${isSelected ? "Equipped" : (unlocked ? "Equip" : `${item.cost} Cranes`)}
         </div>
       `;
       card.addEventListener("click", async () => {
@@ -3209,15 +3212,15 @@ function renderLobbyHomeWalletAndThemes() {
           window.CaroAuth.setSelectedTheme(item.id);
           renderLobbyHomeWalletAndThemes();
           renderBoard();
-          showArenaToast(`🎨 Equipped ${item.name}!`);
+          showArenaToast(`Equipped ${item.name}`);
         } else {
           try {
             await window.CaroAuth.unlockTheme(item.id);
             renderLobbyHomeWalletAndThemes();
             renderBoard();
-            showArenaToast(`🔓 Unlocked & equipped ${item.name}!`);
+            showArenaToast(`Unlocked and equipped ${item.name}`);
           } catch (err) {
-            showArenaToast(`⚠️ ${err.message}`);
+            showArenaToast(err.message);
           }
         }
       });
@@ -3252,9 +3255,9 @@ function setupLobbyHomeScreenUI() {
       const res = await window.CaroAuth.claimDailyBonus();
       const rewardAmt = res.reward || res.bonus || 25;
       renderLobbyHomeWalletAndThemes();
-      showArenaToast(`🎁 +${rewardAmt} 🦢 Daily Login Bonus claimed!`);
+      showArenaToast(`+${rewardAmt} Cranes daily bonus claimed`);
     } catch (err) {
-      showArenaToast(`⚠️ ${err.message}`);
+      showArenaToast(err.message);
     }
   };
 
@@ -3265,7 +3268,7 @@ function setupLobbyHomeScreenUI() {
     const codeInput = document.getElementById("lobby-home-code-input") || document.getElementById("lobby-home-join-code");
     const code = codeInput?.value?.trim() || "";
     if (!code) {
-      showArenaToast("⚠️ Enter a room code or custom slug first.");
+      showArenaToast("Enter a room code or URL slug first.");
       return;
     }
     const myName = window.CaroAuth?.getCurrentUser()?.display_name ||
@@ -3281,9 +3284,9 @@ function setupLobbyHomeScreenUI() {
       updateMultiplayerHudBadges();
       openMultiplayerModal("create");
     } catch (err) {
-      showArenaToast(`⚠️ ${err.message}`);
+      showArenaToast(err.message);
     } finally {
-      if (btn) { btn.disabled = false; btn.textContent = "Enter Room 👁️"; }
+      if (btn) { btn.disabled = false; btn.textContent = "Join"; }
     }
   });
 
@@ -3299,13 +3302,13 @@ function setupLobbyHomeScreenUI() {
     const isPublic = document.getElementById("lobby-home-public")?.checked ?? true;
 
     if (entryFee > 0 && (window.CaroAuth?.getCranesBalance() || 0) < entryFee) {
-      showArenaToast(`⚠️ You need at least ${entryFee} 🦢 Cranes to host this High-Stakes room.`);
+      showArenaToast(`You need at least ${entryFee} Cranes to host this room.`);
       return;
     }
 
     const btn = document.getElementById("btn-lobby-home-create");
     try {
-      if (btn) { btn.disabled = true; btn.textContent = "Creating Room..."; }
+      if (btn) { btn.disabled = true; btn.textContent = "Creating..."; }
       await window.CaroMultiplayer.createRoom(name, { roomName, roomSlug, isPublic, entryFee });
       // Sync modal inputs as well
       const modalHostName = document.getElementById("mp-host-name-input");
@@ -3322,9 +3325,9 @@ function setupLobbyHomeScreenUI() {
       updateMultiplayerHudBadges();
       openMultiplayerModal("create");
     } catch (err) {
-      showArenaToast(`⚠️ ${err.message}`);
+      showArenaToast(err.message);
     } finally {
-      if (btn) { btn.disabled = false; btn.textContent = "Create & Enter Room ▶"; }
+      if (btn) { btn.disabled = false; btn.textContent = "Create and enter room"; }
     }
   });
 }
@@ -3428,7 +3431,7 @@ function setupMultiplayerUI() {
       btnCreateRoom.textContent = "Creating...";
       await window.CaroMultiplayer.createRoom(name, { roomName, roomSlug, isPublic, entryFee });
       btnCreateRoom.disabled = false;
-      btnCreateRoom.textContent = "Recreate Room";
+      btnCreateRoom.textContent = "Recreate room";
       if (btnStartMp) btnStartMp.style.display = "inline-flex";
       const shareBox = document.getElementById("mp-share-box");
       const shareUrl = document.getElementById("mp-share-url");
@@ -3440,7 +3443,7 @@ function setupMultiplayerUI() {
     } catch (err) {
       alert(err.message);
       btnCreateRoom.disabled = false;
-      btnCreateRoom.textContent = "Create New Room";
+      btnCreateRoom.textContent = "Create room";
     }
   });
 
@@ -3456,15 +3459,15 @@ function setupMultiplayerUI() {
     const name = document.getElementById("mp-join-name-input")?.value || window.CaroMultiplayer?.myName || "Player";
     const code = document.getElementById("mp-join-code-input")?.value || "";
     if (!code.trim()) {
-      alert("Please enter a room code or custom URL slug.");
+      alert("Please enter a room code or URL slug.");
       return;
     }
     try {
       btnJoinRoom.disabled = true;
-      btnJoinRoom.textContent = "Entering Room...";
+      btnJoinRoom.textContent = "Joining...";
       await window.CaroMultiplayer.joinRoom(code, name);
       btnJoinRoom.disabled = false;
-      btnJoinRoom.textContent = "Enter Room 👁️";
+      btnJoinRoom.textContent = "Enter room";
       enterArenaBattleground();
       showMultiplayerHud(window.CaroMultiplayer.roomId);
       updateMultiplayerHudBadges();
@@ -3472,7 +3475,7 @@ function setupMultiplayerUI() {
     } catch (err) {
       alert(err.message);
       btnJoinRoom.disabled = false;
-      btnJoinRoom.textContent = "Enter Room 👁️";
+      btnJoinRoom.textContent = "Enter room";
     }
   });
 
@@ -3481,7 +3484,7 @@ function setupMultiplayerUI() {
     if (val && navigator.clipboard) {
       navigator.clipboard.writeText(val).then(() => {
         const orig = btnElem.textContent;
-        btnElem.textContent = "✓ Copied!";
+        btnElem.textContent = "Copied";
         setTimeout(() => { btnElem.textContent = orig; }, 2000);
       });
     }
@@ -3554,13 +3557,13 @@ function updateMultiplayerModeBadge() {
   if (isOnline) {
     banner.className = "mp-mode-banner online";
     text.textContent = lobby?.roomId
-      ? `🟢 Room: ${lobby.roomName} (${lobby.roomId})`
-      : "🟢 Connected to Caro Arena Live Server";
+      ? `Room: ${lobby.roomName} (${lobby.roomId})`
+      : "Connected to Caro Arena live server";
   } else {
     banner.className = "mp-mode-banner local";
     text.textContent = lobby?.roomId
-      ? `⚡ Room: ${lobby.roomName} (${lobby.roomId})`
-      : "⚡ Local Multi-tab Realtime Mode";
+      ? `Room: ${lobby.roomName} (${lobby.roomId})`
+      : "Local multi-tab realtime mode";
   }
 
   if (rolePill) {
@@ -3570,8 +3573,8 @@ function updateMultiplayerModeBadge() {
     } else {
       rolePill.style.display = "inline-block";
       rolePill.textContent = lobby.isHost
-        ? "👑 Host"
-        : (lobby.myRole === "player" ? `⚔️ Player #${lobby.myAssignedSlot + 1}` : "👁️ Spectator");
+        ? "Host"
+        : (lobby.myRole === "player" ? `Player #${lobby.myAssignedSlot + 1}` : "Spectator");
     }
   }
 }
@@ -3606,7 +3609,7 @@ function switchMpTab(tab) {
 function renderActiveRoomsLobby(rooms = []) {
   const countBadge = document.getElementById("lobby-home-room-count");
   if (countBadge) {
-    countBadge.textContent = `${Array.isArray(rooms) ? rooms.length : 0} Active`;
+    countBadge.textContent = `${Array.isArray(rooms) ? rooms.length : 0} active`;
   }
 
   const targets = [
@@ -3619,7 +3622,7 @@ function renderActiveRoomsLobby(rooms = []) {
     const btnClass = isHomeList ? "btn-lobby-home-enter-room" : "btn-enter-active-room";
 
     if (!Array.isArray(rooms) || rooms.length === 0) {
-      container.innerHTML = `<div class="mp-empty-rooms">No public rooms active right now. Use <strong>Quick Host Room</strong> or enter Practice Battleground!</div>`;
+      container.innerHTML = `<div class="mp-empty-rooms">No public rooms right now. Host a room on the right or launch a solo AI match.</div>`;
       return;
     }
 
@@ -3628,12 +3631,12 @@ function renderActiveRoomsLobby(rooms = []) {
       const card = document.createElement("div");
       card.className = "mp-room-card";
       const isPlaying = r.status === "playing";
-      const statusText = isPlaying ? `⚔️ Battle #${r.battleNumber || 1}` : `🟢 Waiting`;
+      const statusText = isPlaying ? `Battle #${r.battleNumber || 1}` : "Open";
       const isMyCurrentRoom = window.CaroMultiplayer?.roomId === r.roomId;
       const fee = Number(r.entryFee) || 0;
       const feeBadge = fee > 0
-        ? `<span class="mp-slot-badge" style="background:#fef3c7;color:#b45309;">🦢 ${fee} Entry</span>`
-        : `<span class="mp-slot-badge">🦢 Free</span>`;
+        ? `<span class="mp-slot-badge" style="background:#fef3c7;color:#b45309;">${fee} Entry</span>`
+        : `<span class="mp-slot-badge">Free</span>`;
 
       card.innerHTML = `
         <div>
@@ -3643,15 +3646,15 @@ function renderActiveRoomsLobby(rooms = []) {
             ${feeBadge}
           </div>
           <div class="mp-room-card-meta">
-            <span>👑 Host: <strong>${escapeHtml(r.hostName || "Host")}</strong></span>
-            <span>· 👥 ${Number(r.playerCount) || 1}/${Number(r.maxPlayers) || 2} Players</span>
-            <span>· 👁️ ${Number(r.spectatorCount) || 0} Spectators</span>
-            <span>· 🔗 <code>?room=${escapeHtml(r.roomId)}</code></span>
+            <span>Host: <strong>${escapeHtml(r.hostName || "Host")}</strong></span>
+            <span>· ${Number(r.playerCount) || 1}/${Number(r.maxPlayers) || 2} players</span>
+            <span>· ${Number(r.spectatorCount) || 0} watching</span>
+            <span>· <code>?room=${escapeHtml(r.roomId)}</code></span>
           </div>
         </div>
         <div>
           <button class="btn ${isMyCurrentRoom ? "btn-secondary" : "btn-primary"} btn-xs ${btnClass}" data-room="${escapeHtml(r.roomId)}">
-            ${isMyCurrentRoom ? "In Room" : "👁️ Enter"}
+            ${isMyCurrentRoom ? "In room" : "Enter"}
           </button>
         </div>
       `;
@@ -3708,11 +3711,11 @@ function handleMultiplayerLobbyUpdate(lobbyState) {
     if (wagerSelect && lobbyState.entryFee !== undefined) wagerSelect.value = String(lobbyState.entryFee || 0);
     if (btnStartMp) {
       btnStartMp.style.display = lobbyState.isHost ? "inline-flex" : "none";
-      btnStartMp.textContent = lobbyState.inGame ? "Restart Battle ▶" : "Start Battle ▶";
+      btnStartMp.textContent = lobbyState.inGame ? "Restart match" : "Start match";
     }
     if (btnCreateRoom) {
       btnCreateRoom.style.display = lobbyState.isHost ? "inline-flex" : "none";
-      btnCreateRoom.textContent = "New Room";
+      btnCreateRoom.textContent = "New room";
     }
     showMultiplayerHud(lobbyState.roomId);
   } else {
@@ -3720,7 +3723,7 @@ function handleMultiplayerLobbyUpdate(lobbyState) {
     if (btnStartMp) btnStartMp.style.display = "none";
     if (btnCreateRoom) {
       btnCreateRoom.style.display = "inline-flex";
-      btnCreateRoom.textContent = "Create New Room";
+      btnCreateRoom.textContent = "Create room";
     }
   }
 }
@@ -3750,8 +3753,8 @@ function renderSpectatorsAndRequests() {
   if (specLabel) {
     const names = specs.map(s => s.name).join(", ");
     specLabel.textContent = specs.length > 0
-      ? `👁️ Spectators (${specs.length}): ${names}`
-      : `👁️ Spectators (0): None`;
+      ? `Spectators (${specs.length}): ${names}`
+      : `Spectators (0): None`;
   }
 
   // Spectator "Request to Join" button
@@ -3759,10 +3762,10 @@ function renderSpectatorsAndRequests() {
     if (!lobby.isHost && lobby.myRole === "spectator") {
       btnReqJoin.style.display = "inline-flex";
       if (lobby.myPendingRequest) {
-        btnReqJoin.textContent = "⏳ Request Pending...";
+        btnReqJoin.textContent = "Request pending...";
         btnReqJoin.disabled = true;
       } else {
-        btnReqJoin.textContent = lobby.inGame ? "⚡ Request Takeover" : "✋ Request to Join Match";
+        btnReqJoin.textContent = lobby.inGame ? "Request takeover" : "Request to join match";
         btnReqJoin.disabled = false;
       }
     } else {
@@ -3780,13 +3783,13 @@ function renderSpectatorsAndRequests() {
         const row = document.createElement("div");
         row.className = "mp-request-item";
         const desc = r.kind === "takeover"
-          ? `⚡ <strong>${escapeHtml(r.fromName)}</strong> wants to take over Slot ${escapeHtml(r.targetSymbol || ("#" + ((r.slotIndex || 1) + 1)))}`
-          : `✋ <strong>${escapeHtml(r.fromName)}</strong> wants to join the match`;
+          ? `<strong>${escapeHtml(r.fromName)}</strong> wants to take over Slot ${escapeHtml(r.targetSymbol || ("#" + ((r.slotIndex || 1) + 1)))}`
+          : `<strong>${escapeHtml(r.fromName)}</strong> wants to join the match`;
         row.innerHTML = `
           <span>${desc}</span>
           <div style="display:flex;gap:6px;">
-            <button class="btn btn-primary btn-xs btn-approve-req" data-req="${escapeHtml(r.requestId)}">✓ Approve</button>
-            <button class="btn btn-ghost btn-xs btn-reject-req" data-req="${escapeHtml(r.requestId)}">✕ Reject</button>
+            <button class="btn btn-primary btn-xs btn-approve-req" data-req="${escapeHtml(r.requestId)}">Approve</button>
+            <button class="btn btn-ghost btn-xs btn-reject-req" data-req="${escapeHtml(r.requestId)}">Reject</button>
           </div>
         `;
         reqList.appendChild(row);
@@ -3822,15 +3825,15 @@ function renderHostApprovalBar() {
 
   const r = reqs[0];
   const desc = r.kind === "takeover"
-    ? `⚡ <strong>${escapeHtml(r.fromName)}</strong> requests to take over Slot ${escapeHtml(r.targetSymbol || ("#" + ((r.slotIndex || 1) + 1)))}`
-    : `✋ <strong>${escapeHtml(r.fromName)}</strong> requests to join the match`;
+    ? `<strong>${escapeHtml(r.fromName)}</strong> requests to take over Slot ${escapeHtml(r.targetSymbol || ("#" + ((r.slotIndex || 1) + 1)))}`
+    : `<strong>${escapeHtml(r.fromName)}</strong> requests to join the match`;
 
   bar.style.display = "flex";
   bar.innerHTML = `
     <div>${desc} ${reqs.length > 1 ? `<span class="mp-req-pill">+${reqs.length - 1} more</span>` : ""}</div>
     <div style="display:flex;gap:8px;">
-      <button class="btn btn-primary btn-xs" id="btn-hud-approve-req">✓ Approve</button>
-      <button class="btn btn-ghost btn-xs" id="btn-hud-reject-req">✕ Reject</button>
+      <button class="btn btn-primary btn-xs" id="btn-hud-approve-req">Approve</button>
+      <button class="btn btn-ghost btn-xs" id="btn-hud-reject-req">Reject</button>
     </div>
   `;
   document.getElementById("btn-hud-approve-req")?.addEventListener("click", () => {
@@ -3864,7 +3867,7 @@ function renderMultiplayerSlots() {
 
   const titleEl = document.getElementById("mp-slots-title");
   if (titleEl) {
-    titleEl.textContent = `Player Roster (${slots.length}/4 Players)`;
+    titleEl.textContent = `Player roster (${slots.length}/4)`;
   }
 
   list.innerHTML = "";
@@ -3874,8 +3877,7 @@ function renderMultiplayerSlots() {
 
     const isSlotHost = idx === 0;
     const sym = symbols[idx] || "";
-    const avatar = isSlotHost ? "👑" : (s.type === "human" ? "👤" : "🤖");
-    const safeName = escapeHtml(s.name || "Open Human Slot");
+    const safeName = escapeHtml(s.name || "Open human slot");
 
     let controlsHtml = "";
     if (isSlotHost) {
@@ -3883,18 +3885,18 @@ function renderMultiplayerSlots() {
     } else if (isHost || !lobby.roomId) {
       const hasSeatedHuman = s.type === "human" && Boolean(s.id);
       const kickBtn = hasSeatedHuman
-        ? `<button class="btn btn-ghost btn-xs btn-kick-slot" data-slot="${idx}" title="Move player to Spectator">Kick</button>`
+        ? `<button class="btn btn-ghost btn-xs btn-kick-slot" data-slot="${idx}" title="Move player to spectator">Kick</button>`
         : "";
       const removeBtn = (slots.length > 2 && !lobby.inGame)
-        ? `<button class="btn btn-ghost btn-xs btn-remove-slot" data-slot="${idx}" title="Remove slot">✕</button>`
+        ? `<button class="btn btn-ghost btn-xs btn-remove-slot" data-slot="${idx}" title="Remove slot">Remove</button>`
         : "";
       controlsHtml = `
         <select class="mp-slot-select" data-slot="${idx}">
-          <option value="human" ${s.type === "human" ? "selected" : ""}>👤 ${hasSeatedHuman ? safeName : "Open Human Slot"}</option>
-          <option value="von" ${s.type === "ai" && s.model === "von" ? "selected" : ""}>🤖 Von (AI)</option>
-          <option value="mojev" ${s.type === "ai" && s.model === "mojev" ? "selected" : ""}>🤖 MoJev (AI)</option>
-          <option value="laya" ${s.type === "ai" && s.model === "laya" ? "selected" : ""}>🤖 Laya (AI)</option>
-          <option value="jev" ${s.type === "ai" && s.model === "jev" ? "selected" : ""}>🤖 Jev (AI)</option>
+          <option value="human" ${s.type === "human" ? "selected" : ""}>${hasSeatedHuman ? safeName : "Open human slot"}</option>
+          <option value="von" ${s.type === "ai" && s.model === "von" ? "selected" : ""}>Von (AI)</option>
+          <option value="mojev" ${s.type === "ai" && s.model === "mojev" ? "selected" : ""}>MoJev (AI)</option>
+          <option value="laya" ${s.type === "ai" && s.model === "laya" ? "selected" : ""}>Laya (AI)</option>
+          <option value="jev" ${s.type === "ai" && s.model === "jev" ? "selected" : ""}>Jev (AI)</option>
         </select>
         ${kickBtn}
         ${removeBtn}
@@ -3902,8 +3904,8 @@ function renderMultiplayerSlots() {
     } else {
       const actionBtn = isSpectator
         ? (s.type === "human" && !s.id && !lobby.inGame
-          ? `<button class="btn btn-primary btn-xs btn-req-slot" data-slot="${idx}">✋ Request Slot</button>`
-          : `<button class="btn btn-ghost btn-xs btn-takeover-slot" data-slot="${idx}">⚡ Takeover</button>`)
+          ? `<button class="btn btn-primary btn-xs btn-req-slot" data-slot="${idx}">Request slot</button>`
+          : `<button class="btn btn-ghost btn-xs btn-takeover-slot" data-slot="${idx}">Takeover</button>`)
         : "";
       controlsHtml = `
         <span class="mp-slot-badge ${s.ready ? "ready" : ""}">${s.id === lobby.myPlayerId ? "You (" + sym + ")" : safeName}</span>
@@ -3914,7 +3916,6 @@ function renderMultiplayerSlots() {
     item.innerHTML = `
       <div class="mp-slot-left">
         <span class="mp-slot-num">${sym}</span>
-        <span class="mp-slot-avatar">${avatar}</span>
         <span class="mp-slot-name">${safeName}</span>
       </div>
       <div class="mp-slot-right">
@@ -3930,7 +3931,7 @@ function renderMultiplayerSlots() {
       const slotIdx = parseInt(e.target.dataset.slot, 10);
       const val = e.target.value;
       if (val === "human") {
-        window.CaroMultiplayer.updateSlot(slotIdx, { type: "human", name: "Open Human Slot", id: null, ready: false });
+        window.CaroMultiplayer.updateSlot(slotIdx, { type: "human", name: "Open human slot", id: null, ready: false });
       } else {
         const aiNames = { von: "Von (AI)", mojev: "MoJev (AI)", laya: "Laya (AI)", jev: "Jev (AI)" };
         window.CaroMultiplayer.updateSlot(slotIdx, { type: "ai", model: val, name: aiNames[val] || "AI", id: null, ready: true });
@@ -4009,9 +4010,9 @@ function applyRoomWagerForMatch(entryFee, gameId) {
   if (fee > 0 && myMultiplayerSymbol && wagerDeductedForGameId !== gameId) {
     wagerDeductedForGameId = gameId;
     if (window.CaroAuth?.adjustCranes) {
-      window.CaroAuth.adjustCranes(-fee, "High-Stakes Match Entry").then(() => {
+      window.CaroAuth.adjustCranes(-fee, "Match entry fee").then(() => {
         renderLobbyHomeWalletAndThemes();
-        showArenaToast(`🎟️ -${fee} 🦢 Entry Fee staked (Match Pot: ${currentMatchWagerPot} 🦢)`, "info");
+        showArenaToast(`-${fee} Cranes entry fee staked (Pot: ${currentMatchWagerPot} Cranes)`, "info");
       }).catch(() => {});
     }
   }
@@ -4316,23 +4317,23 @@ function updateMultiplayerHudBadges() {
   }
   if (roleBadge) {
     if (lobby.isHost) {
-      roleBadge.textContent = `👑 Host (${myMultiplayerSymbol || "A"})`;
+      roleBadge.textContent = `Host (${myMultiplayerSymbol || "A"})`;
     } else if (myMultiplayerSymbol) {
-      roleBadge.textContent = `⚔️ Player ${myMultiplayerSymbol}`;
+      roleBadge.textContent = `Player ${myMultiplayerSymbol}`;
     } else {
-      roleBadge.textContent = "👁️ Spectating";
+      roleBadge.textContent = "Spectating";
     }
   }
   if (specBadge) {
     const count = (lobby.spectators || []).length;
-    specBadge.textContent = `👁️ ${count}`;
+    specBadge.textContent = `${count} watching`;
   }
   if (wagerBadge) {
     const fee = Number(lobby.entryFee) || 0;
     if (fee > 0) {
       wagerBadge.style.display = "inline-block";
       const pot = currentMatchWagerPot || fee * Math.max(1, (lobby.slots || []).filter(s => s.type === "human").length);
-      wagerBadge.textContent = `🦢 Pot: ${pot} (${fee} Entry)`;
+      wagerBadge.textContent = `Pot: ${pot} (${fee} Entry)`;
     } else {
       wagerBadge.style.display = "none";
     }
@@ -4341,8 +4342,8 @@ function updateMultiplayerHudBadges() {
     if (!lobby.isHost && !myMultiplayerSymbol) {
       reqJoinBtn.style.display = "inline-flex";
       reqJoinBtn.textContent = lobby.myPendingRequest
-        ? "⏳ Requested"
-        : (lobby.inGame ? "⚡ Request Takeover" : "✋ Request to Join");
+        ? "Requested"
+        : (lobby.inGame ? "Request takeover" : "Request to join");
       reqJoinBtn.disabled = Boolean(lobby.myPendingRequest);
     } else {
       reqJoinBtn.style.display = "none";
@@ -4418,7 +4419,7 @@ function syncMultiplayerTurnTimer() {
     const badge = document.getElementById("mp-hud-timer");
     if (badge) {
       badge.style.display = "inline-block";
-      badge.textContent = `⏱ ${remSec}s`;
+      badge.textContent = `${remSec}s`;
       badge.style.color = remSec <= 5 ? "#ef4444" : "";
     }
 
@@ -4427,7 +4428,7 @@ function syncMultiplayerTurnTimer() {
       if (isLocalHumanAllowedToMove()) {
         mpTurnAutoPlayedKey = mpTurnTimerKey;
         const autoCoord = chooseTacticalAutoMove(myMultiplayerSymbol);
-        updateMultiplayerHudStatus("⏱ Shot clock expired — auto-played tactical move!");
+        updateMultiplayerHudStatus("Shot clock expired — auto-played tactical move");
         sendHumanMove(autoCoord.r, autoCoord.c);
       } else if (
         window.CaroMultiplayer?.isHost &&
@@ -4547,14 +4548,16 @@ function setupAuthUI() {
   const btnSaveProfile = document.getElementById("btn-auth-save-profile");
   const btnLogout = document.getElementById("btn-auth-logout");
 
+  const svgUser = `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>`;
+
   const updateAuthHeaderBtn = (user) => {
     if (!btnOpenAuth) return;
     if (user && user.display_name) {
       const cranes = user.cranes ?? 100;
-      btnOpenAuth.textContent = `🦢 ${cranes} · 👤 ${user.display_name}`;
+      btnOpenAuth.innerHTML = `${svgUser}<span>${cranes} Cranes · ${escapeHtml(user.display_name)}</span>`;
     } else {
       const guestCranes = window.CaroAuth.getCranesBalance();
-      btnOpenAuth.textContent = `🦢 ${guestCranes} · 👤 Sign In`;
+      btnOpenAuth.innerHTML = `${svgUser}<span>${guestCranes} Cranes · Sign in</span>`;
     }
   };
 
@@ -4639,7 +4642,7 @@ function setupAuthUI() {
     try {
       btnSubmitLogin.disabled = true;
       await window.CaroAuth.login({ email, pin });
-      showAuthMsg("auth-profile-msg", "Signed in!", false);
+      showAuthMsg("auth-profile-msg", "Signed in.", false);
     } catch (err) {
       showAuthMsg("auth-status-msg", err.message, true);
     } finally {
@@ -4654,7 +4657,7 @@ function setupAuthUI() {
     try {
       btnSubmitRegister.disabled = true;
       await window.CaroAuth.register({ displayName, email, pin });
-      showAuthMsg("auth-profile-msg", "Account created with 100 🦢 Cranes!", false);
+      showAuthMsg("auth-profile-msg", "Account created with 100 Cranes.", false);
     } catch (err) {
       showAuthMsg("auth-status-msg", err.message, true);
     } finally {
@@ -4670,7 +4673,7 @@ function setupAuthUI() {
     try {
       btnSaveProfile.disabled = true;
       await window.CaroAuth.updateProfile({ displayName, email, currentPin, newPin });
-      showAuthMsg("auth-profile-msg", "✓ Profile updated!", false);
+      showAuthMsg("auth-profile-msg", "Profile updated.", false);
       const currPinEl = document.getElementById("auth-profile-current-pin");
       const newPinEl = document.getElementById("auth-profile-new-pin");
       if (currPinEl) currPinEl.value = "";

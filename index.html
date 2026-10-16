@@ -3,11 +3,11 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Caro Arena · Battle Royale</title>
-  <meta name="theme-color" content="#d97706">
+  <title>Caro Arena</title>
+  <meta name="theme-color" content="#1c1917">
   <link rel="icon" type="image/svg+xml" href="icon.svg">
   <link rel="manifest" href="manifest.json">
-  <link rel="stylesheet" href="style.css?v=2.5.2">
+  <link rel="stylesheet" href="style.css?v=2.8.0">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
@@ -93,8 +93,8 @@
 <body>
   <header class="app-header">
     <div class="header-left">
-      <div class="brand" id="brand-logo-home" title="Return to Caro Arena Lobby" style="cursor: pointer;">
-        <svg viewBox="0 0 20 20" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round">
+      <div class="brand" id="brand-logo-home" title="Return to lobby" style="cursor: pointer;">
+        <svg viewBox="0 0 20 20" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" aria-hidden="true">
           <circle cx="10" cy="10" r="7"/>
           <path d="M10 3v14M3 10h14"/>
         </svg>
@@ -108,18 +108,43 @@
 
     <div class="header-right">
       <div class="header-actions">
-        <button class="btn btn-ghost btn-sm" id="btn-home-lobby" title="Return to Lobby Start Screen">🏠 Lobby</button>
-        <button class="btn btn-ghost btn-sm" id="btn-auth-profile" title="Sign in or manage Profile & Cranes">👤 Sign In</button>
-        <button class="btn btn-ghost btn-sm" id="btn-multiplayer" title="Browse active rooms or host a match">👥 Rooms</button>
-        <button class="btn btn-ghost btn-sm" id="btn-sound" title="Toggle Sound (Mute/Unmute)">🔊</button>
-        <button class="btn btn-ghost btn-sm" id="btn-fullscreen" title="Toggle Fullscreen">⛶</button>
+        <button class="btn btn-ghost btn-sm" id="btn-home-lobby" title="Return to lobby">
+          <svg viewBox="0 0 16 16" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <rect x="2" y="2" width="5" height="5" rx="1"/>
+            <rect x="9" y="2" width="5" height="5" rx="1"/>
+            <rect x="2" y="9" width="5" height="5" rx="1"/>
+            <rect x="9" y="9" width="5" height="5" rx="1"/>
+          </svg>
+          <span>Lobby</span>
+        </button>
+        <button class="btn btn-ghost btn-sm" id="btn-auth-profile" title="Account and Cranes balance">100 · Sign in</button>
+        <button class="btn btn-ghost btn-sm" id="btn-multiplayer" title="Browse or manage rooms">
+          <svg viewBox="0 0 16 16" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <circle cx="6" cy="5.5" r="2.3"/>
+            <path d="M2 13c0-2.1 1.8-3.6 4-3.6s4 1.5 4 3.6"/>
+            <circle cx="11.5" cy="6" r="1.8"/>
+            <path d="M11.5 9.8c1.5 0 2.7 1.1 2.7 2.7"/>
+          </svg>
+          <span>Rooms</span>
+        </button>
+        <button class="btn btn-ghost btn-sm btn-icon-only" id="btn-sound" title="Toggle sound" aria-label="Toggle sound">
+          <svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M3 6.2h2.3L8.8 3.5v9L5.3 9.8H3z"/>
+            <path d="M11.2 5.6a3.5 3.5 0 0 1 0 4.8"/>
+          </svg>
+        </button>
+        <button class="btn btn-ghost btn-sm btn-icon-only" id="btn-fullscreen" title="Toggle fullscreen" aria-label="Toggle fullscreen">
+          <svg viewBox="0 0 16 16" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M2.5 6V2.5H6M10 2.5h3.5V6M13.5 10v3.5H10M6 13.5H2.5V10"/>
+          </svg>
+        </button>
         <span id="header-arena-controls" style="display: none; align-items: center; gap: 6px;">
-          <label class="toggle-nonstop-wrap" id="nonstop-wrap" title="Continuous battles without stopping">
+          <label class="toggle-nonstop-wrap" id="nonstop-wrap" title="Run matches continuously">
             <input type="checkbox" id="toggle-nonstop">
             <span class="toggle-nonstop-text">Non-stop</span>
           </label>
           <button class="btn btn-primary btn-sm" id="btn-auto">
-            <svg viewBox="0 0 16 16" width="13" height="13" fill="currentColor"><path d="M4 2.5l9 5.5-9 5.5V2.5z"/></svg>
+            <svg viewBox="0 0 16 16" width="12" height="12" fill="currentColor" aria-hidden="true"><path d="M4 2.5l9 5.5-9 5.5V2.5z"/></svg>
             <span id="btn-auto-text">Battle</span>
           </button>
           <button class="btn btn-ghost btn-sm" id="btn-reset">Reset all</button>
@@ -131,97 +156,97 @@
   <!-- In-game Multiplayer Room HUD -->
   <div id="multiplayer-hud" class="multiplayer-hud" style="display: none;">
     <div class="mp-hud-left">
-      <span class="mp-live-dot">●</span>
+      <span class="mp-live-dot" aria-hidden="true">●</span>
       <span class="mp-hud-title" id="mp-hud-room-name">Room:</span>
       <span class="mp-room-badge" id="mp-hud-room">------</span>
-      <span class="mp-room-badge" id="mp-hud-role" title="Your role in this room">👁️ Spectator</span>
-      <span class="mp-room-badge" id="mp-hud-spectators" title="Spectators watching">👁️ 0</span>
-      <span class="mp-room-badge mp-wager-badge" id="mp-hud-wager" title="Room Entry Fee & Winner Pot">🦢 Free</span>
-      <button class="btn-copy-code" id="btn-hud-copy-link" title="Copy Invite Link">📋 Copy Link</button>
+      <span class="mp-room-badge" id="mp-hud-role" title="Your role in this room">Spectator</span>
+      <span class="mp-room-badge" id="mp-hud-spectators" title="Spectators watching">0 watching</span>
+      <span class="mp-room-badge mp-wager-badge" id="mp-hud-wager" title="Room entry fee and match pot">Free</span>
+      <button class="btn-copy-code" id="btn-hud-copy-link" title="Copy room invite link">Copy link</button>
     </div>
     <div class="mp-hud-center" id="mp-hud-status">
       Waiting for players...
     </div>
     <div class="mp-hud-right">
-      <div class="mp-emote-bar" id="mp-emote-bar" title="Send quick reaction to room">
-        <button class="btn-mp-emote" data-emote="👏" title="Applaud">👏</button>
-        <button class="btn-mp-emote" data-emote="🔥" title="Fire">🔥</button>
-        <button class="btn-mp-emote" data-emote="🤔" title="Thinking">🤔</button>
-        <button class="btn-mp-emote" data-emote="⚡" title="Shock">⚡</button>
-        <button class="btn-mp-emote" data-emote="🦢" title="Crane">🦢</button>
+      <div class="mp-emote-bar" id="mp-emote-bar" title="Send reaction to room">
+        <button class="btn-mp-emote" data-emote="👏" title="Applaud" aria-label="Applaud">👏</button>
+        <button class="btn-mp-emote" data-emote="🔥" title="Fire" aria-label="Fire">🔥</button>
+        <button class="btn-mp-emote" data-emote="🤔" title="Thinking" aria-label="Thinking">🤔</button>
+        <button class="btn-mp-emote" data-emote="⚡" title="Sharp move" aria-label="Sharp move">⚡</button>
+        <button class="btn-mp-emote" data-emote="🦢" title="Crane" aria-label="Crane">🦢</button>
       </div>
-      <span class="mp-room-badge" id="mp-hud-timer" title="Per-turn shot clock" style="display: none; margin-right: 6px;">⏱ 30s</span>
-      <button class="btn btn-primary btn-xs" id="btn-mp-hud-request-join" style="display: none; margin-right: 6px;">✋ Request to Join</button>
+      <span class="mp-room-badge" id="mp-hud-timer" title="Per-turn clock" style="display: none; margin-right: 6px;">30s</span>
+      <button class="btn btn-primary btn-xs" id="btn-mp-hud-request-join" style="display: none; margin-right: 6px;">Request seat</button>
       <button class="btn btn-ghost btn-xs" id="btn-mp-hud-room-drawer" style="margin-right: 6px;">
-        👥 Room <span id="mp-hud-req-badge" class="mp-req-pill" style="display: none;">0</span>
+        Room <span id="mp-hud-req-badge" class="mp-req-pill" style="display: none;">0</span>
       </button>
-      <button class="btn btn-ghost btn-xs" id="btn-hud-leave-room">Leave Room</button>
+      <button class="btn btn-ghost btn-xs" id="btn-hud-leave-room">Leave</button>
     </div>
   </div>
   <!-- Inline Host Approval Bar for Join / Takeover Requests -->
   <div id="mp-host-approval-bar" class="mp-host-approval-bar" style="display: none;"></div>
 
-  <!-- Start Page: Global Multiplayer & Practice Lobby Screen -->
+  <!-- Start Page: Lobby Screen -->
   <section id="lobby-home-screen" class="lobby-home-screen">
     <div class="lobby-home-container">
       <div class="lobby-home-hero">
         <div class="lobby-home-hero-text">
           <div class="lobby-live-pill">
-            <span class="mp-live-dot">●</span>
-            <span id="lobby-home-server-status">Caro Arena Live Lobby</span>
+            <span class="mp-live-dot" aria-hidden="true"></span>
+            <span id="lobby-home-server-status">Live lobby</span>
           </div>
-          <h1 class="lobby-home-title">Tactical 5-in-a-Row Battle Royale</h1>
-          <p class="lobby-home-subtitle">Enter an active room as a live spectator, request a seat or mid-game takeover, host your own custom arena, or train against AI bots to earn <strong>🦢 Cranes</strong>.</p>
+          <h1 class="lobby-home-title">Five-in-a-row on an open grid</h1>
+          <p class="lobby-home-subtitle">Watch live rooms, take an open seat, or play local matches against the four built-in AI engines.</p>
         </div>
         <div class="lobby-home-wallet-card">
           <div class="lobby-wallet-top">
             <div>
-              <div class="lobby-wallet-label">🦢 Cranes Balance</div>
-              <div class="lobby-wallet-user" id="lobby-home-account-status">Guest Wallet</div>
+              <div class="lobby-wallet-label">Cranes balance</div>
+              <div class="lobby-wallet-user" id="lobby-home-account-status">Guest wallet</div>
             </div>
             <div class="lobby-wallet-amount" id="lobby-home-cranes-count">100</div>
           </div>
           <div class="lobby-wallet-actions">
-            <button class="btn btn-primary btn-xs" id="btn-lobby-home-daily-bonus" title="Claim +25 Cranes every 24h">🎁 Daily +25 🦢</button>
-            <button class="btn btn-ghost btn-xs" id="btn-lobby-home-account">👤 Account &amp; PIN</button>
+            <button class="btn btn-primary btn-xs" id="btn-lobby-home-daily-bonus" title="Claim 25 Cranes once every 24 hours">Claim +25 daily</button>
+            <button class="btn btn-ghost btn-xs" id="btn-lobby-home-account">Account &amp; PIN</button>
           </div>
         </div>
       </div>
 
       <div class="lobby-home-grid">
-        <!-- Left Column: Live Active Rooms Directory + Direct Join -->
+        <!-- Left Column: Active Rooms Directory + Board Themes -->
         <div class="lobby-home-col-main">
           <div class="lobby-card lobby-rooms-card">
             <div class="lobby-card-header">
               <div class="lobby-card-title-wrap">
-                <h2 class="lobby-card-title">🌐 Active Public Rooms</h2>
+                <h2 class="lobby-card-title">Active rooms</h2>
                 <span class="panel-badge" id="lobby-home-room-count">0 active</span>
               </div>
               <div class="lobby-card-actions">
-                <button class="btn btn-ghost btn-xs" id="btn-lobby-home-refresh">↻ Refresh</button>
-                <button class="btn btn-primary btn-xs" id="btn-lobby-home-open-custom">+ Advanced Host Setup</button>
+                <button class="btn btn-ghost btn-xs" id="btn-lobby-home-refresh">Refresh</button>
+                <button class="btn btn-ghost btn-xs" id="btn-lobby-home-open-custom">Room options</button>
               </div>
             </div>
 
             <div id="lobby-home-rooms-list" class="lobby-home-rooms-list">
-              <div class="mp-empty-rooms">No public rooms active right now. Create a room on the right to start the first live match!</div>
+              <div class="mp-empty-rooms">No public rooms are open right now. Create a room on the right or open the practice board.</div>
             </div>
 
             <div class="lobby-quick-join-bar">
-              <label for="lobby-home-code-input" class="lobby-quick-join-label">🔗 Have a Room Code or Slug?</label>
+              <label for="lobby-home-code-input" class="lobby-quick-join-label">Join by code or slug</label>
               <div class="lobby-quick-join-controls">
-                <input type="text" id="lobby-home-code-input" maxlength="24" placeholder="e.g. 8X2K7 or dragon-arena">
-                <button class="btn btn-secondary btn-sm" id="btn-lobby-home-join-code">Enter Room 👁️</button>
+                <input type="text" id="lobby-home-code-input" maxlength="24" placeholder="e.g. 8X2K7 or friday-match">
+                <button class="btn btn-secondary btn-sm" id="btn-lobby-home-join-code">Join room</button>
               </div>
             </div>
           </div>
 
-          <!-- Unlockable Board Cosmetics -->
+          <!-- Unlockable Board Themes -->
           <div class="lobby-card lobby-themes-card">
             <div class="lobby-card-header">
               <div class="lobby-card-title-wrap">
-                <h2 class="lobby-card-title">🎨 Board &amp; Stone Cosmetics</h2>
-                <span class="panel-badge">Unlock with 🦢 Cranes</span>
+                <h2 class="lobby-card-title">Board themes</h2>
+                <span class="panel-badge">4 surfaces</span>
               </div>
             </div>
             <div class="lobby-themes-grid" id="lobby-home-themes-grid">
@@ -230,48 +255,52 @@
           </div>
         </div>
 
-        <!-- Right Column: Quick Host Room + AI / Solo Practice Arena -->
+        <!-- Right Column: Host Room + Practice Board -->
         <div class="lobby-home-col-side">
           <div class="lobby-card lobby-host-card">
             <div class="lobby-card-header">
-              <h2 class="lobby-card-title">➕ Host a Multiplayer Room</h2>
-              <span class="panel-badge">2–4 Players</span>
+              <h2 class="lobby-card-title">Host a room</h2>
+              <span class="panel-badge">2–4 players</span>
             </div>
-            <div class="mp-grid-fields">
-              <div class="mp-field-row">
-                <label for="lobby-home-host-name">Your Display Name</label>
-                <input type="text" id="lobby-home-host-name" maxlength="20" placeholder="e.g. Grandmaster Alex">
+            <div class="lobby-host-form">
+              <div class="lobby-form-row-2col">
+                <div class="mp-field-row">
+                  <label for="lobby-home-host-name">Display name</label>
+                  <input type="text" id="lobby-home-host-name" maxlength="20" placeholder="e.g. Alex">
+                </div>
+                <div class="mp-field-row">
+                  <label for="lobby-home-room-name">Room name</label>
+                  <input type="text" id="lobby-home-room-name" maxlength="32" placeholder="e.g. Evening table">
+                </div>
               </div>
-              <div class="mp-field-row">
-                <label for="lobby-home-room-name">Room Name</label>
-                <input type="text" id="lobby-home-room-name" maxlength="32" placeholder="e.g. Grandmaster Arena">
-              </div>
-              <div class="mp-field-row">
-                <label for="lobby-home-room-slug">Custom URL Slug <span style="font-weight:400;color:#94a3b8;">(optional)</span></label>
-                <input type="text" id="lobby-home-room-slug" maxlength="24" placeholder="e.g. grandmaster-arena">
-              </div>
-              <div class="mp-field-row">
-                <label for="lobby-home-wager-select">Match Stakes (🦢 Cranes Entry)</label>
-                <select id="lobby-home-wager-select" class="mp-slot-select">
-                  <option value="0">🦢 Free Friendly Match (0 🦢)</option>
-                  <option value="10">🦢 10 Cranes Entry (Winner Takes Pot)</option>
-                  <option value="25">🦢 25 Cranes Contender Stakes</option>
-                  <option value="50">🔥 50 Cranes High-Roller Arena</option>
-                </select>
+              <div class="lobby-form-row-2col">
+                <div class="mp-field-row">
+                  <label for="lobby-home-room-slug">URL slug <span class="field-optional">(optional)</span></label>
+                  <input type="text" id="lobby-home-room-slug" maxlength="24" placeholder="e.g. evening-table">
+                </div>
+                <div class="mp-field-row">
+                  <label for="lobby-home-wager-select">Entry stakes</label>
+                  <select id="lobby-home-wager-select" class="mp-slot-select">
+                    <option value="0">Free match (0 Cranes)</option>
+                    <option value="10">10 Cranes entry</option>
+                    <option value="25">25 Cranes entry</option>
+                    <option value="50">50 Cranes entry</option>
+                  </select>
+                </div>
               </div>
             </div>
             <div class="lobby-host-buttons">
-              <button class="btn btn-primary" id="btn-lobby-home-create" style="width: 100%; justify-content: center; padding: 10px 16px;">Create &amp; Enter Room ▶</button>
+              <button class="btn btn-primary lobby-btn-block" id="btn-lobby-home-create">Create room</button>
             </div>
           </div>
 
           <div class="lobby-card lobby-practice-card">
             <div class="lobby-card-header">
-              <h2 class="lobby-card-title">🤖 Solo &amp; AI Practice Arena</h2>
-              <span class="panel-badge">+10 🦢 / Win</span>
+              <h2 class="lobby-card-title">Practice &amp; AI arena</h2>
+              <span class="panel-badge">+10 Cranes / win</span>
             </div>
-            <p class="lobby-practice-desc">Jump into the local battleground to play against Laya, Jev, Von &amp; MoJev or run AI simulations with full tactical heatmaps and post-match momentum graphs.</p>
-            <button class="btn btn-secondary" id="btn-enter-practice-arena" style="width: 100%; justify-content: center; padding: 10px 16px;">Enter Practice Battleground →</button>
+            <p class="lobby-practice-desc">Play locally against Laya, Jev, Von, and MoJev, or let the AI engines play each other.</p>
+            <button class="btn btn-secondary lobby-btn-block" id="btn-enter-practice-arena">Open practice board</button>
           </div>
         </div>
       </div>
@@ -289,7 +318,7 @@
           <div class="replay-controls">
             <button class="btn btn-xs" onclick="stepReplay(-1)">Prev</button>
             <button class="btn btn-xs" onclick="stepReplay(1)">Next</button>
-            <button class="btn btn-xs" id="btn-share-replay" onclick="shareCurrentReplay()" title="Copy shareable stateless replay link">🔗 Share</button>
+            <button class="btn btn-xs" id="btn-share-replay" onclick="shareCurrentReplay()" title="Copy shareable replay link">Share</button>
             <button class="btn btn-xs btn-danger" onclick="exitReplayMode()">Exit</button>
           </div>
         </div>
@@ -297,8 +326,8 @@
         <!-- Post-Match & Replay Tactical Momentum Sparkline Bar -->
         <div id="tactical-graph-bar" class="tactical-graph-bar" style="display: none;">
           <div class="tactical-graph-left">
-            <span class="tactical-graph-title">📈 Momentum</span>
-            <canvas id="tactical-sparkline-canvas" width="260" height="32" title="Click any turn on the momentum sparkline to jump to that move"></canvas>
+            <span class="tactical-graph-title">Momentum</span>
+            <canvas id="tactical-sparkline-canvas" width="260" height="32" title="Click any turn on the sparkline to inspect that move"></canvas>
           </div>
           <div id="tactical-turning-points" class="tactical-turning-points"></div>
         </div>
@@ -306,25 +335,25 @@
         <!-- Human turn indicator with Undo -->
         <div id="human-turn-bar" class="human-turn-bar" style="display: none;" role="status" aria-live="polite">
           <div class="human-turn-content">
-            <span class="pulse-icon">🎯</span>
-            <span class="human-prompt-text" id="human-prompt-text">Your turn — click any empty cell or use arrow keys + Enter to place your stone</span>
+            <span class="pulse-icon" aria-hidden="true">●</span>
+            <span class="human-prompt-text" id="human-prompt-text">Your turn: click any empty cell or use arrow keys + Enter to place a stone</span>
           </div>
-          <button class="btn btn-xs btn-outline" id="btn-undo-move" title="Undo your last move">↩ Undo</button>
+          <button class="btn btn-xs btn-outline" id="btn-undo-move" title="Undo your last move">Undo</button>
         </div>
 
         <div class="canvas-wrap" id="canvas-wrap">
-          <canvas id="caro-canvas" width="700" height="700" tabindex="0" role="application" aria-label="Caro Arena tactical game board. Use arrow keys to move target cursor, Enter or Space to place stone, Plus or Minus to zoom, C to recenter."></canvas>
+          <canvas id="caro-canvas" width="700" height="700" tabindex="0" role="application" aria-label="Caro Arena game board. Use arrow keys to move target cursor, Enter or Space to place stone, Plus or Minus to zoom, C to recenter."></canvas>
           <div id="ghost-hud" class="ghost-hud" style="display: none;"></div>
           <div id="mp-floating-emotes" class="mp-floating-emotes" aria-live="polite"></div>
           <div class="viewport-hud">
-            <button class="hud-btn" id="btn-zoom-in" title="Zoom in (+)">
-              <svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M8 3.5v9M3.5 8h9"/></svg>
+            <button class="hud-btn" id="btn-zoom-in" title="Zoom in (+)" aria-label="Zoom in">
+              <svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="M8 3.5v9M3.5 8h9"/></svg>
             </button>
-            <button class="hud-btn" id="btn-zoom-out" title="Zoom out (-)">
-              <svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M3.5 8h9"/></svg>
+            <button class="hud-btn" id="btn-zoom-out" title="Zoom out (-)" aria-label="Zoom out">
+              <svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="M3.5 8h9"/></svg>
             </button>
-            <button class="hud-btn" id="btn-recenter" title="Center (C)">
-              <svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="8" cy="8" r="4.5"/><path d="M8 1.5v2.5M8 12v2.5M1.5 8h2.5M12 8h2.5"/></svg>
+            <button class="hud-btn" id="btn-recenter" title="Center (C)" aria-label="Recenter board">
+              <svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><circle cx="8" cy="8" r="4.5"/><path d="M8 1.5v2.5M8 12v2.5M1.5 8h2.5M12 8h2.5"/></svg>
             </button>
           </div>
         </div>
@@ -341,14 +370,13 @@
           <div class="board-toggles">
             <label><input type="checkbox" id="toggle-numbers" checked><span>Numbers</span></label>
             <label><input type="checkbox" id="toggle-coords"><span>Coords</span></label>
-            <label><input type="checkbox" id="toggle-heatmap" checked><span>🔥 Heatmap</span></label>
-            <label title="Precision 2-Tap Confirmation: first tap aims reticle, second tap places stone"><input type="checkbox" id="toggle-twotap"><span>🎯 2-Tap</span></label>
-            <label><input type="checkbox" id="toggle-nonstop-footer"><span>Non-stop</span></label>
-            <select id="select-board-theme" class="board-theme-select" title="Board & Stone Cosmetic Theme">
-              <option value="classic">🪵 Classic Kaya</option>
-              <option value="obsidian">🌑 Obsidian (50🦢)</option>
-              <option value="jade">🐉 Jade (75🦢)</option>
-              <option value="cyber">⚡ Cyber (100🦢)</option>
+            <label><input type="checkbox" id="toggle-heatmap" checked><span>Heatmap</span></label>
+            <label title="Two-tap confirmation: first tap aims reticle, second tap places stone"><input type="checkbox" id="toggle-twotap"><span>2-tap</span></label>
+            <select id="select-board-theme" class="board-theme-select" title="Board surface theme">
+              <option value="classic">Classic Kaya</option>
+              <option value="obsidian">Obsidian Slate (50)</option>
+              <option value="jade">Jade Pavilion (75)</option>
+              <option value="cyber">Cyber Grid (100)</option>
             </select>
           </div>
         </footer>
@@ -443,35 +471,40 @@
     <div class="modal-card modal-mp">
       <div class="modal-mp-header">
         <div class="modal-mp-title-wrap">
-          <span class="mp-icon">👥</span>
-          <h2 class="modal-mp-title" id="modal-mp-title-text">Multiplayer Arena</h2>
+          <svg viewBox="0 0 18 18" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <circle cx="7" cy="6" r="2.5"/>
+            <path d="M2.5 14.5c0-2.4 2-4 4.5-4s4.5 1.6 4.5 4"/>
+            <circle cx="13" cy="6.5" r="2"/>
+            <path d="M13 10.8c1.7 0 3 1.2 3 3"/>
+          </svg>
+          <h2 class="modal-mp-title" id="modal-mp-title-text">Multiplayer rooms</h2>
         </div>
-        <button class="btn btn-icon modal-close" id="btn-close-mp-modal">✕</button>
+        <button class="btn btn-icon modal-close" id="btn-close-mp-modal" aria-label="Close modal">✕</button>
       </div>
 
       <div id="mp-view-lobby" class="mp-view">
         <div class="mp-tabs">
-          <button class="mp-tab-btn" data-tab="lobby" id="mp-tab-btn-lobby">🌐 Active Rooms</button>
-          <button class="mp-tab-btn active" data-tab="create" id="mp-tab-btn-create">➕ Host / Room</button>
-          <button class="mp-tab-btn" data-tab="join" id="mp-tab-btn-join">🔗 Join by URL/Code</button>
+          <button class="mp-tab-btn" data-tab="lobby" id="mp-tab-btn-lobby">Active rooms</button>
+          <button class="mp-tab-btn active" data-tab="create" id="mp-tab-btn-create">Room setup</button>
+          <button class="mp-tab-btn" data-tab="join" id="mp-tab-btn-join">Join by code</button>
         </div>
 
         <div class="mp-mode-banner online" id="mp-mode-banner">
-          <span id="mp-mode-banner-text">🟢 Connected to Caro Arena Live Server</span>
+          <span id="mp-mode-banner-text">Connected to live relay</span>
           <span id="mp-role-pill" class="mp-role-pill"></span>
         </div>
 
         <!-- Active Rooms Lobby Tab -->
         <div id="mp-tab-lobby" class="mp-tab-content" style="display: none;">
           <div class="mp-lobby-toolbar">
-            <span class="mp-slots-title" style="margin: 0;">Live Public Rooms</span>
+            <span class="mp-slots-title" style="margin: 0;">Public rooms</span>
             <div style="display: flex; gap: 6px;">
-              <button class="btn btn-ghost btn-xs" id="btn-mp-refresh-rooms">↻ Refresh</button>
-              <button class="btn btn-primary btn-xs" id="btn-mp-new-room-from-lobby">+ Host Room</button>
+              <button class="btn btn-ghost btn-xs" id="btn-mp-refresh-rooms">Refresh</button>
+              <button class="btn btn-primary btn-xs" id="btn-mp-new-room-from-lobby">Host room</button>
             </div>
           </div>
           <div id="mp-active-rooms-list" class="mp-active-rooms-list">
-            <div class="mp-empty-rooms">No public rooms active right now. Click <strong>+ Host Room</strong> to start one!</div>
+            <div class="mp-empty-rooms">No public rooms are open right now.</div>
           </div>
         </div>
 
@@ -479,40 +512,40 @@
         <div id="mp-tab-create" class="mp-tab-content">
           <div class="mp-grid-fields" id="mp-host-config-fields">
             <div class="mp-field-row">
-              <label for="mp-host-name-input">Your Display Name</label>
-              <input type="text" id="mp-host-name-input" maxlength="20" placeholder="Your Name" value="Player 1">
+              <label for="mp-host-name-input">Display name</label>
+              <input type="text" id="mp-host-name-input" maxlength="20" placeholder="Your name" value="Player 1">
             </div>
             <div class="mp-field-row">
-              <label for="mp-room-name-input">Room Name</label>
-              <input type="text" id="mp-room-name-input" maxlength="32" placeholder="e.g. Friday Night Arena">
+              <label for="mp-room-name-input">Room name</label>
+              <input type="text" id="mp-room-name-input" maxlength="32" placeholder="e.g. Friday match">
             </div>
             <div class="mp-field-row">
-              <label for="mp-room-slug-input">Custom URL Slug <span style="font-weight:400;color:#94a3b8;">(optional)</span></label>
-              <input type="text" id="mp-room-slug-input" maxlength="24" placeholder="e.g. friday-night">
+              <label for="mp-room-slug-input">URL slug <span class="field-optional">(optional)</span></label>
+              <input type="text" id="mp-room-slug-input" maxlength="24" placeholder="e.g. friday-match">
             </div>
             <div class="mp-field-row">
-              <label for="mp-room-wager-select">Room Entry Wager (🦢 Cranes)</label>
+              <label for="mp-room-wager-select">Entry stakes</label>
               <select id="mp-room-wager-select" class="mp-slot-select">
-                <option value="0">🦢 Free Friendly Match (0 🦢)</option>
-                <option value="10">🦢 10 Cranes Entry (Winner Takes Pot)</option>
-                <option value="25">🦢 25 Cranes Contender Stakes</option>
-                <option value="50">🔥 50 Cranes High-Roller Arena</option>
+                <option value="0">Free match (0 Cranes)</option>
+                <option value="10">10 Cranes entry</option>
+                <option value="25">25 Cranes entry</option>
+                <option value="50">50 Cranes entry</option>
               </select>
             </div>
             <div class="mp-field-row mp-checkbox-row">
               <label class="mp-public-label">
                 <input type="checkbox" id="mp-room-public-toggle" checked>
-                <span>🌐 Show room in Public Active Rooms Lobby</span>
+                <span>List room in the public lobby</span>
               </label>
             </div>
           </div>
 
           <div class="mp-slots-container">
             <div class="mp-slots-header-row">
-              <div class="mp-slots-title" id="mp-slots-title">Player Roster (2–4 Players)</div>
+              <div class="mp-slots-title" id="mp-slots-title">Players (2–4)</div>
               <div class="mp-slot-add-bar" id="mp-slot-add-bar">
-                <button class="btn btn-ghost btn-xs" id="btn-mp-add-human" title="Add an open Human slot">+ Human</button>
-                <button class="btn btn-ghost btn-xs" id="btn-mp-add-ai" title="Add an AI Bot slot">+ AI Bot</button>
+                <button class="btn btn-ghost btn-xs" id="btn-mp-add-human" title="Add an open human slot">+ Human</button>
+                <button class="btn btn-ghost btn-xs" id="btn-mp-add-ai" title="Add an AI slot">+ AI</button>
               </div>
             </div>
             <div class="mp-slots-list" id="mp-slots-list">
@@ -523,17 +556,17 @@
           <!-- Spectators & Pending Join/Takeover Requests -->
           <div class="mp-spectators-section" id="mp-spectators-section" style="display: none;">
             <div id="mp-requests-container" style="display: none;">
-              <div class="mp-slots-title" style="color: #b45309;">Pending Requests (Host Approval)</div>
+              <div class="mp-slots-title" style="color: #b45309;">Pending requests</div>
               <div id="mp-requests-list" class="mp-requests-list"></div>
             </div>
             <div class="mp-spectators-bar">
-              <span class="mp-spectators-label" id="mp-spectators-label">👁️ Spectators (0): None</span>
-              <button class="btn btn-primary btn-xs" id="btn-mp-request-join" style="display: none;">✋ Request to Join Match</button>
+              <span class="mp-spectators-label" id="mp-spectators-label">Spectators (0): none</span>
+              <button class="btn btn-primary btn-xs" id="btn-mp-request-join" style="display: none;">Request seat</button>
             </div>
           </div>
 
           <div class="mp-share-box" id="mp-share-box" style="display: none;">
-            <div class="mp-share-label">Room URL (Share with friends or spectators)</div>
+            <div class="mp-share-label">Invite link</div>
             <div class="mp-share-input-wrap">
               <input type="text" id="mp-share-url" readonly>
               <button class="btn btn-primary btn-sm" id="btn-copy-invite-link">Copy</button>
@@ -541,47 +574,50 @@
           </div>
 
           <div class="mp-actions">
-            <button class="btn btn-secondary" id="btn-action-create-room">Create New Room</button>
-            <button class="btn btn-primary" id="btn-action-start-mp" style="display: none;">Start Battle ▶</button>
+            <button class="btn btn-secondary" id="btn-action-create-room">Create room</button>
+            <button class="btn btn-primary" id="btn-action-start-mp" style="display: none;">Start match</button>
           </div>
         </div>
 
         <!-- Join Room by Code / Slug Tab -->
         <div id="mp-tab-join" class="mp-tab-content" style="display: none;">
           <div class="mp-field-row">
-            <label for="mp-join-name-input">Your Display Name</label>
-            <input type="text" id="mp-join-name-input" maxlength="20" placeholder="Your Name" value="Player 2">
+            <label for="mp-join-name-input">Display name</label>
+            <input type="text" id="mp-join-name-input" maxlength="20" placeholder="Your name" value="Player 2">
           </div>
           <div class="mp-field-row">
-            <label for="mp-join-code-input">Room Code or Custom URL Slug</label>
-            <input type="text" id="mp-join-code-input" maxlength="24" placeholder="e.g. 8X2K7 or friday-night">
+            <label for="mp-join-code-input">Room code or URL slug</label>
+            <input type="text" id="mp-join-code-input" maxlength="24" placeholder="e.g. 8X2K7 or friday-match">
           </div>
-          <p class="mp-hint" style="margin-top: 4px;">You will enter the room as a <strong>Spectator 👁️</strong> first and can watch live or click <strong>Request to Join / Takeover</strong>.</p>
+          <p class="mp-hint" style="margin-top: 4px;">You join as a spectator first and can request an open seat or a mid-game takeover.</p>
           <div class="mp-actions">
-            <button class="btn btn-primary" id="btn-action-join-room">Enter Room 👁️</button>
+            <button class="btn btn-primary" id="btn-action-join-room">Join room</button>
           </div>
         </div>
       </div>
     </div>
   </div>
 
-  <!-- Simple Account & Cranes Auth Modal -->
+  <!-- Account & Cranes Modal -->
   <div id="modal-auth" class="modal-backdrop" style="display: none;">
     <div class="modal-card modal-mp">
       <div class="modal-mp-header">
         <div class="modal-mp-title-wrap">
-          <span class="mp-icon">🦢</span>
+          <svg viewBox="0 0 18 18" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <circle cx="9" cy="6" r="3"/>
+            <path d="M3.5 15c0-2.8 2.5-4.8 5.5-4.8s5.5 2 5.5 4.8"/>
+          </svg>
           <h2 class="modal-mp-title">Account &amp; Cranes</h2>
         </div>
-        <button class="btn btn-icon modal-close" id="btn-close-auth-modal">✕</button>
+        <button class="btn btn-icon modal-close" id="btn-close-auth-modal" aria-label="Close modal">✕</button>
       </div>
 
       <div class="mp-view">
         <!-- Guest View (Sign In / Create Account) -->
         <div id="auth-view-guest">
           <div class="mp-tabs">
-            <button class="mp-tab-btn active" id="auth-tab-btn-login">Sign In</button>
-            <button class="mp-tab-btn" id="auth-tab-btn-register">Create Account</button>
+            <button class="mp-tab-btn active" id="auth-tab-btn-login">Sign in</button>
+            <button class="mp-tab-btn" id="auth-tab-btn-register">Create account</button>
           </div>
 
           <div id="auth-status-msg" class="auth-status-msg" style="display: none;"></div>
@@ -593,18 +629,18 @@
               <input type="email" id="auth-login-email" placeholder="you@example.com" autocomplete="email">
             </div>
             <div class="mp-field-row">
-              <label for="auth-login-pin">6-Digit PIN</label>
+              <label for="auth-login-pin">6-digit PIN</label>
               <input type="password" id="auth-login-pin" inputmode="numeric" maxlength="6" pattern="[0-9]{6}" placeholder="••••••" autocomplete="current-password">
             </div>
             <div class="mp-actions">
-              <button class="btn btn-primary" id="btn-auth-submit-login">Sign In</button>
+              <button class="btn btn-primary" id="btn-auth-submit-login">Sign in</button>
             </div>
           </div>
 
           <!-- Register Form -->
           <div id="auth-tab-register" class="mp-tab-content" style="display: none;">
             <div class="mp-field-row">
-              <label for="auth-reg-name">Display Name</label>
+              <label for="auth-reg-name">Display name</label>
               <input type="text" id="auth-reg-name" maxlength="20" placeholder="e.g. Stephen Cheng" autocomplete="nickname">
             </div>
             <div class="mp-field-row">
@@ -612,12 +648,12 @@
               <input type="email" id="auth-reg-email" placeholder="you@example.com" autocomplete="email">
             </div>
             <div class="mp-field-row">
-              <label for="auth-reg-pin">6-Digit PIN</label>
+              <label for="auth-reg-pin">6-digit PIN</label>
               <input type="password" id="auth-reg-pin" inputmode="numeric" maxlength="6" pattern="[0-9]{6}" placeholder="6 digits (e.g. 123456)" autocomplete="new-password">
             </div>
-            <p class="mp-hint">🎁 New accounts start with <strong>100 🦢 Cranes</strong> (platform currency).</p>
+            <p class="mp-hint">New accounts start with 100 Cranes.</p>
             <div class="mp-actions">
-              <button class="btn btn-primary" id="btn-auth-submit-register">Create Account</button>
+              <button class="btn btn-primary" id="btn-auth-submit-register">Create account</button>
             </div>
           </div>
         </div>
@@ -626,9 +662,9 @@
         <div id="auth-view-profile" style="display: none;">
           <div class="auth-cranes-banner">
             <div>
-              <div class="auth-cranes-title">🦢 Cranes Balance</div>
-              <div class="auth-cranes-sub">Saved to your Caro Arena account</div>
-              <button class="btn btn-primary btn-xs" id="btn-auth-daily-bonus" style="margin-top: 6px;">🎁 Claim Daily +25 🦢</button>
+              <div class="auth-cranes-title">Cranes balance</div>
+              <div class="auth-cranes-sub">Synced to your account</div>
+              <button class="btn btn-primary btn-xs" id="btn-auth-daily-bonus" style="margin-top: 8px;">Claim +25 daily</button>
             </div>
             <div class="auth-cranes-amount" id="auth-cranes-count">100</div>
           </div>
@@ -636,24 +672,24 @@
           <div id="auth-profile-msg" class="auth-status-msg" style="display: none;"></div>
 
           <div class="mp-field-row">
-            <label for="auth-profile-name">Display Name</label>
-            <input type="text" id="auth-profile-name" maxlength="20" placeholder="Display Name">
+            <label for="auth-profile-name">Display name</label>
+            <input type="text" id="auth-profile-name" maxlength="20" placeholder="Display name">
           </div>
           <div class="mp-field-row">
             <label for="auth-profile-email">Email</label>
             <input type="email" id="auth-profile-email" placeholder="you@example.com">
           </div>
           <div class="mp-field-row">
-            <label for="auth-profile-current-pin">Current 6-Digit PIN <span style="font-weight:400;color:#94a3b8;">(required to save)</span></label>
+            <label for="auth-profile-current-pin">Current 6-digit PIN <span class="field-optional">(required to save)</span></label>
             <input type="password" id="auth-profile-current-pin" inputmode="numeric" maxlength="6" placeholder="••••••">
           </div>
           <div class="mp-field-row">
-            <label for="auth-profile-new-pin">New 6-Digit PIN <span style="font-weight:400;color:#94a3b8;">(optional)</span></label>
+            <label for="auth-profile-new-pin">New 6-digit PIN <span class="field-optional">(optional)</span></label>
             <input type="password" id="auth-profile-new-pin" inputmode="numeric" maxlength="6" placeholder="Leave blank to keep current PIN">
           </div>
           <div class="mp-actions" style="display: flex; justify-content: space-between; gap: 8px;">
-            <button class="btn btn-ghost" id="btn-auth-logout">Sign Out</button>
-            <button class="btn btn-primary" id="btn-auth-save-profile">Save Profile</button>
+            <button class="btn btn-ghost" id="btn-auth-logout">Sign out</button>
+            <button class="btn btn-primary" id="btn-auth-save-profile">Save changes</button>
           </div>
         </div>
       </div>
@@ -664,10 +700,10 @@
   <div id="arena-toast-container" class="arena-toast-container" aria-live="polite"></div>
 
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
-  <script src="supabase-config.js?v=2.7.0"></script>
-  <script src="audio.js?v=2.7.0"></script>
-  <script src="multiplayer.js?v=2.7.0"></script>
-  <script src="engine.js?v=2.7.0"></script>
-  <script src="app.js?v=2.7.0"></script>
+  <script src="supabase-config.js?v=2.8.0"></script>
+  <script src="audio.js?v=2.8.0"></script>
+  <script src="multiplayer.js?v=2.8.0"></script>
+  <script src="engine.js?v=2.8.0"></script>
+  <script src="app.js?v=2.8.0"></script>
 </body>
 </html>

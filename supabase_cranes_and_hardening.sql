@@ -1,6 +1,6 @@
 -- ============================================================================
 -- CARO ARENA — PIN Lockout Hardening & Cranes Economy RPCs
--- Run this script in your Supabase SQL Editor (Project: fdfchdlogebbqabvtwbd)
+-- Run this script in your Supabase SQL Editor (Project: lvnzcwjxreamelewdwql)
 -- Safe to run multiple times (idempotent).
 -- ============================================================================
 
@@ -50,7 +50,7 @@ BEGIN
         THEN now() + interval '5 minutes'
         ELSE NULL
       END
-    WHERE id = v_user.id
+    WHERE user_id = v_user.user_id
     RETURNING * INTO v_user;
 
     IF v_user.locked_until IS NOT NULL AND v_user.locked_until > now() THEN
@@ -61,11 +61,11 @@ BEGIN
 
   UPDATE public.caro_arena_users
   SET failed_attempts = 0, locked_until = NULL
-  WHERE id = v_user.id
+  WHERE user_id = v_user.user_id
   RETURNING * INTO v_user;
 
   RETURN jsonb_build_object(
-    'user_id', v_user.id,
+    'user_id', v_user.user_id,
     'email', v_user.email,
     'display_name', v_user.display_name,
     'cranes', v_user.cranes,
@@ -75,8 +75,9 @@ END;
 $$;
 
 -- 3. Cranes Balance Adjustment RPC (Match Rewards, Wagers, Theme Unlocks)
+DROP FUNCTION IF EXISTS public.caro_arena_adjust_cranes(uuid, integer, text);
 CREATE OR REPLACE FUNCTION public.caro_arena_adjust_cranes(
-  p_user_id uuid,
+  p_user_id text,
   p_delta integer,
   p_reason text DEFAULT 'match_reward'
 )
@@ -92,7 +93,7 @@ BEGIN
   SET
     cranes = greatest(0, cranes + coalesce(p_delta, 0)),
     updated_at = now()
-  WHERE id = p_user_id
+  WHERE user_id = p_user_id
   RETURNING * INTO v_user;
 
   IF NOT FOUND THEN
@@ -100,7 +101,7 @@ BEGIN
   END IF;
 
   RETURN jsonb_build_object(
-    'user_id', v_user.id,
+    'user_id', v_user.user_id,
     'email', v_user.email,
     'display_name', v_user.display_name,
     'cranes', v_user.cranes,
@@ -111,8 +112,9 @@ END;
 $$;
 
 -- 4. Daily Login Bonus RPC (+25 Cranes once per 24h)
+DROP FUNCTION IF EXISTS public.caro_arena_claim_daily_bonus(uuid);
 CREATE OR REPLACE FUNCTION public.caro_arena_claim_daily_bonus(
-  p_user_id uuid
+  p_user_id text
 )
 RETURNS jsonb
 LANGUAGE plpgsql
@@ -124,7 +126,7 @@ DECLARE
 BEGIN
   SELECT * INTO v_user
   FROM public.caro_arena_users
-  WHERE id = p_user_id;
+  WHERE user_id = p_user_id;
 
   IF NOT FOUND THEN
     RAISE EXCEPTION 'Account not found.';
@@ -139,11 +141,11 @@ BEGIN
     cranes = cranes + 25,
     last_daily_bonus_at = now(),
     updated_at = now()
-  WHERE id = p_user_id
+  WHERE user_id = p_user_id
   RETURNING * INTO v_user;
 
   RETURN jsonb_build_object(
-    'user_id', v_user.id,
+    'user_id', v_user.user_id,
     'cranes', v_user.cranes,
     'bonus', 25,
     'last_daily_bonus_at', v_user.last_daily_bonus_at
@@ -152,5 +154,5 @@ END;
 $$;
 
 GRANT EXECUTE ON FUNCTION public.caro_arena_auth_login(text, text) TO anon, authenticated;
-GRANT EXECUTE ON FUNCTION public.caro_arena_adjust_cranes(uuid, integer, text) TO anon, authenticated;
-GRANT EXECUTE ON FUNCTION public.caro_arena_claim_daily_bonus(uuid) TO anon, authenticated;
+GRANT EXECUTE ON FUNCTION public.caro_arena_adjust_cranes(text, integer, text) TO anon, authenticated;
+GRANT EXECUTE ON FUNCTION public.caro_arena_claim_daily_bonus(text) TO anon, authenticated;
