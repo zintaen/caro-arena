@@ -7,10 +7,85 @@ const canvas = document.getElementById("caro-canvas");
 const ctx = canvas.getContext("2d");
 
 let camera = { x: canvas.width / 2, y: canvas.height / 2, zoom: 1.0, baseCellSize: 38 };
+let cameraTarget = { x: canvas.width / 2, y: canvas.height / 2, zoom: 1.0, active: false };
 let isDragging = false, dragStartX = 0, dragStartY = 0, camStartX = 0, camStartY = 0;
 let hasDragged = false, userInteractedWithCamera = false;
 let hoverCoord = null;
+let highlightedMoveCoord = null;
 let _lastAutoScaleMoveCount = -1;
+
+// Gameplay motion & particle FX state
+const stoneSpawnTimes = new Map(); // "r,c" -> performance.now()
+let boardRipples = []; // { row, col, color, createdAt, duration }
+let boardSparks = [];  // { row, col, vx, vy, color, size, createdAt, duration }
+const _reducedMotionQuery = (typeof window !== "undefined" && typeof window.matchMedia === "function")
+  ? window.matchMedia("(prefers-reduced-motion: reduce)")
+  : null;
+
+function prefersReducedMotion() {
+  return Boolean(_reducedMotionQuery && _reducedMotionQuery.matches);
+}
+
+function triggerStonePlacementFx(r, c, symbol) {
+  if (prefersReducedMotion()) return;
+  const now = performance.now();
+  stoneSpawnTimes.set(`${r},${c}`, now);
+  if (stoneSpawnTimes.size > 160) {
+    const oldestKey = stoneSpawnTimes.keys().next().value;
+    if (oldestKey !== undefined) stoneSpawnTimes.delete(oldestKey);
+  }
+  const meta = getPlayerMeta(symbol);
+  boardRipples.push({
+    row: r,
+    col: c,
+    color: meta.color || "#d97706",
+    createdAt: now,
+    duration: 460
+  });
+  if (boardRipples.length > 24) boardRipples.shift();
+  startFxAnimation();
+}
+
+function triggerWinningLineBurstFx(winningLine, symbol) {
+  if (prefersReducedMotion() || !Array.isArray(winningLine) || winningLine.length === 0) return;
+  const now = performance.now();
+  const meta = getPlayerMeta(symbol);
+  const baseColor = meta.color || "#f59e0b";
+  const palette = [baseColor, "#fbbf24", "#ffffff", "#f59e0b"];
+  for (const [wr, wc] of winningLine) {
+    boardRipples.push({
+      row: wr,
+      col: wc,
+      color: "#fbbf24",
+      createdAt: now,
+      duration: 620
+    });
+    for (let i = 0; i < 10; i++) {
+      const angle = (Math.PI * 2 * i) / 10 + (Math.random() - 0.5) * 0.35;
+      const speed = 0.7 + Math.random() * 1.45;
+      boardSparks.push({
+        row: wr,
+        col: wc,
+        vx: Math.cos(angle) * speed,
+        vy: Math.sin(angle) * speed,
+        color: palette[i % palette.length],
+        size: 2.2 + Math.random() * 2.0,
+        createdAt: now,
+        duration: 540 + Math.random() * 220
+      });
+    }
+  }
+  if (boardSparks.length > 160) boardSparks.splice(0, boardSparks.length - 160);
+  startFxAnimation();
+}
+
+function hasActiveStoneSpring(now = performance.now()) {
+  if (prefersReducedMotion() || stoneSpawnTimes.size === 0) return false;
+  for (const t of stoneSpawnTimes.values()) {
+    if (now - t < 290) return true;
+  }
+  return false;
+}
 
 function escapeHtml(str) {
   if (str === null || str === undefined) return "";
@@ -282,18 +357,57 @@ function ensureBackendSyncPolling() {
   backendPollTimer = setTimeout(pollTick, initialDelay);
 }
 
+let _hasReceivedInitialState = false;
+let _trackedGameId = null;
+let _trackedMoveCount = 0;
+let _trackedPlacementsCount = 0;
+let _trackedFinished = false;
+
 function handleStateUpdate(data) {
   if (isReplayMode || !data) return;
-  const wasFinished = gameState?.status === "finished";
-  const isNewGame = gameState?.game_id && data.game_id !== gameState.game_id;
-  const prevMoveCount = isNewGame ? 0 : (gameState?.board?.moves?.length || 0);
+  const wasInitialFetch = !_hasReceivedInitialState;
+  _hasReceivedInitialState = true;
+  const wasFinished = _trackedFinished;
+  const isNewGame = Boolean(_trackedGameId && data.game_id && data.game_id !== _trackedGameId);
+  const prevMoveCount = isNewGame ? 0 : _trackedMoveCount;
   const newMoveCount = data?.board?.moves?.length || 0;
-  const prevPlacementsCount = isNewGame ? 0 : (gameState?.board?.placements?.length || 0);
+  const prevPlacementsCount = isNewGame ? 0 : _trackedPlacementsCount;
   const newPlacements = data?.board?.placements || [];
 
+  _trackedGameId = data.game_id || _trackedGameId;
+  _trackedMoveCount = newMoveCount;
+  _trackedPlacementsCount = newPlacements.length;
+  _trackedFinished = data.status === "finished";
+
   gameState = data;
-  if (isNewGame) userInteractedWithCamera = false;
+  if (isNewGame) {
+    userInteractedWithCamera = false;
+    stoneSpawnTimes.clear();
+    boardRipples = [];
+    boardSparks = [];
+    highlightedMoveCoord = null;
+  }
   rebuildSymbolMap();
+
+  // Trigger stone placement spring & shockwave ripple for newly played moves
+  if (!wasInitialFetch && newMoveCount > prevMoveCount && Array.isArray(data.board?.moves)) {
+    const startIdx = Math.max(prevMoveCount, newMoveCount - 2);
+    for (let i = startIdx; i < newMoveCount; i++) {
+      const m = data.board.moves[i];
+      if (m) triggerStonePlacementFx(m.row, m.col, m.player);
+    }
+  }
+
+  // Trigger winning line radial spark burst for newly achieved 5-in-a-row placements
+  if (!wasInitialFetch && newPlacements.length > prevPlacementsCount) {
+    for (let i = prevPlacementsCount; i < newPlacements.length; i++) {
+      const pl = newPlacements[i];
+      if (pl?.winning_line) {
+        triggerWinningLineBurstFx(pl.winning_line, pl.symbol || pl.player);
+      }
+    }
+  }
+
   updateUI();
   ensureBackendSyncPolling();
   if (typeof syncMultiplayerTurnTimer === "function") {
@@ -316,11 +430,21 @@ function handleStateUpdate(data) {
     }
   }
 
-  // Human turn chime (only alert when it is the local player's turn)
+  // Human turn chime & board glow (only alert when it is the local player's turn)
   const isHumanTurn = isMultiplayerActive
     ? (data.current_player?.symbol === myMultiplayerSymbol && data.status !== "finished")
     : (data.is_human_turn && data.status !== "finished");
+  const canvasWrap = document.getElementById("canvas-wrap") || canvas?.parentElement;
+  if (canvasWrap) {
+    canvasWrap.classList.toggle("human-turn-glow", Boolean(isHumanTurn));
+  }
   if (isHumanTurn && !lastWasHumanTurn) {
+    const turnBanner = document.getElementById("turn-banner");
+    if (turnBanner && !prefersReducedMotion()) {
+      turnBanner.classList.remove("turn-pulse");
+      void turnBanner.offsetWidth;
+      turnBanner.classList.add("turn-pulse");
+    }
     if (typeof window.CaroAudio?.playHumanTurnAlert === "function") {
       try {
         window.CaroAudio.playHumanTurnAlert();
@@ -335,7 +459,7 @@ function handleStateUpdate(data) {
     fetchLeaderboard();
     fetchBattleHistory();
     try { window.CaroAudio?.playChampionshipFanfare?.(); } catch {}
-    if (confettiEngine) confettiEngine.launch(3000);
+    if (confettiEngine && !prefersReducedMotion()) confettiEngine.launch(3000);
   }
 }
 
@@ -410,6 +534,64 @@ function setupEventListeners() {
   document.getElementById("btn-tab-moves")?.addEventListener("click", () => switchHistoryTab("moves"));
   document.getElementById("btn-tab-battles")?.addEventListener("click", () => switchHistoryTab("battles"));
 
+  // Interactive Move History Hover & Click-to-Locate delegation
+  const moveListEl = document.getElementById("move-list");
+  if (moveListEl) {
+    const activateMoveItemHighlight = (item) => {
+      if (!item) return;
+      const r = Number(item.dataset.row);
+      const c = Number(item.dataset.col);
+      if (!Number.isFinite(r) || !Number.isFinite(c)) return;
+      const meta = getPlayerMeta(item.dataset.player);
+      highlightedMoveCoord = {
+        r,
+        c,
+        moveNumber: Number(item.dataset.move) || null,
+        color: meta.color || "#f59e0b"
+      };
+      renderBoard();
+      startFxAnimation();
+    };
+    const clearMoveItemHighlight = () => {
+      if (!highlightedMoveCoord) return;
+      highlightedMoveCoord = null;
+      renderBoard();
+    };
+    moveListEl.addEventListener("mouseover", e => {
+      const item = e.target.closest(".move-item[data-row]");
+      if (item) activateMoveItemHighlight(item);
+    });
+    moveListEl.addEventListener("mouseout", e => {
+      const related = e.relatedTarget?.closest?.(".move-item[data-row]");
+      if (!related) clearMoveItemHighlight();
+    });
+    moveListEl.addEventListener("focusin", e => {
+      const item = e.target.closest(".move-item[data-row]");
+      if (item) activateMoveItemHighlight(item);
+    });
+    moveListEl.addEventListener("focusout", () => clearMoveItemHighlight());
+    moveListEl.addEventListener("click", e => {
+      const item = e.target.closest(".move-item[data-row]");
+      if (!item) return;
+      const r = Number(item.dataset.row);
+      const c = Number(item.dataset.col);
+      if (Number.isFinite(r) && Number.isFinite(c)) {
+        activateMoveItemHighlight(item);
+        panCameraToCoord(r, c);
+        triggerStonePlacementFx(r, c, item.dataset.player);
+      }
+    });
+    moveListEl.addEventListener("keydown", e => {
+      if (e.key === "Enter" || e.key === " ") {
+        const item = e.target.closest(".move-item[data-row]");
+        if (item) {
+          e.preventDefault();
+          item.click();
+        }
+      }
+    });
+  }
+
   // Mouse controls
   canvas.addEventListener("mousedown", onMouseDown);
   window.addEventListener("mousemove", onMouseMove);
@@ -430,12 +612,59 @@ function setupEventListeners() {
     cb.addEventListener("change", onRosterChange);
   });
 
-  // Replay keyboard shortcuts
+  // Keyboard shortcuts (Replay & Accessible Board Navigation)
   window.addEventListener("keydown", e => {
+    const tag = (e.target?.tagName || "").toUpperCase();
+    if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT" || e.target?.isContentEditable) {
+      return;
+    }
+    // Ignore if any modal is open
+    const openModal = document.querySelector('.modal-backdrop[style*="display: flex"]');
+    if (openModal) return;
+
     if (isReplayMode) {
-      if (e.key === "ArrowLeft") stepReplay(-1);
-      else if (e.key === "ArrowRight") stepReplay(1);
-      else if (e.key === "Escape") exitReplayMode();
+      if (e.key === "ArrowLeft") { e.preventDefault(); stepReplay(-1); }
+      else if (e.key === "ArrowRight") { e.preventDefault(); stepReplay(1); }
+      else if (e.key === "Escape") { e.preventDefault(); exitReplayMode(); }
+      return;
+    }
+
+    const isCanvasFocused = document.activeElement === canvas;
+    const canHumanMove = isLocalHumanAllowedToMove();
+
+    if (isCanvasFocused || canHumanMove) {
+      if (e.key === "ArrowUp" || e.key === "ArrowDown" || e.key === "ArrowLeft" || e.key === "ArrowRight") {
+        e.preventDefault();
+        if (!hoverCoord) {
+          const moves = gameState?.board?.moves || [];
+          const lastM = moves.length ? moves[moves.length - 1] : null;
+          hoverCoord = lastM ? { r: lastM.row, c: lastM.col } : { r: 0, c: 0 };
+        } else {
+          if (e.key === "ArrowUp") hoverCoord = { r: hoverCoord.r - 1, c: hoverCoord.c };
+          else if (e.key === "ArrowDown") hoverCoord = { r: hoverCoord.r + 1, c: hoverCoord.c };
+          else if (e.key === "ArrowLeft") hoverCoord = { r: hoverCoord.r, c: hoverCoord.c - 1 };
+          else if (e.key === "ArrowRight") hoverCoord = { r: hoverCoord.r, c: hoverCoord.c + 1 };
+        }
+        updateGhostHudForHoverCoord();
+        renderBoard();
+        startFxAnimation();
+        return;
+      }
+      if ((e.key === "Enter" || e.key === " ") && canHumanMove && hoverCoord && (isCanvasFocused || !e.target.closest("button, a, [role='button']"))) {
+        e.preventDefault();
+        const moves = gameState?.board?.moves || [];
+        const occupied = moves.some(m => m.row === hoverCoord.r && m.col === hoverCoord.c);
+        if (!occupied) {
+          sendHumanMove(hoverCoord.r, hoverCoord.c);
+        }
+        return;
+      }
+    }
+
+    if (isCanvasFocused) {
+      if (e.key === "+" || e.key === "=") { e.preventDefault(); zoomCamera(1.2); }
+      else if (e.key === "-" || e.key === "_") { e.preventDefault(); zoomCamera(0.833); }
+      else if (e.key === "0" || e.key === "c" || e.key === "C") { e.preventDefault(); recenterCamera(); }
     }
   });
 
@@ -1160,10 +1389,12 @@ function updateMoveHistory() {
     return;
   }
 
-  list.innerHTML = moves.map(m => {
+  const lastIdx = moves.length - 1;
+  list.innerHTML = moves.map((m, idx) => {
     const meta = getPlayerMeta(m.player);
     const lat = m.metadata?.latency_ms ? `${m.metadata.latency_ms}ms` : "";
-    return `<li class="move-item">
+    const latestCls = idx === lastIdx ? " is-latest" : "";
+    return `<li class="move-item${latestCls}" data-row="${escapeHtml(m.row)}" data-col="${escapeHtml(m.col)}" data-move="${escapeHtml(m.move_number)}" data-player="${escapeHtml(m.player)}" tabindex="0" role="button" title="Click to locate move #${escapeHtml(m.move_number)} at (${escapeHtml(m.row)}, ${escapeHtml(m.col)})">
       <span class="mono" style="color: ${escapeHtml(meta.color)}; font-weight: 600;">#${escapeHtml(m.move_number)}</span>
       <span style="font-weight: 600;">${escapeHtml(meta.name)}</span>
       <span class="mono">(${escapeHtml(m.row)}, ${escapeHtml(m.col)})</span>
@@ -1175,10 +1406,11 @@ function updateMoveHistory() {
 }
 
 // ─────────────────────────────────────────
-// Camera Controls
+// Camera Controls & Smooth Interpolation
 // ─────────────────────────────────────────
 function zoomCamera(factor) {
   userInteractedWithCamera = true;
+  cameraTarget.active = false;
   const newZ = Math.max(0.2, Math.min(4.0, camera.zoom * factor));
   camera.x = canvas.width / 2 - (canvas.width / 2 - camera.x) * (newZ / camera.zoom);
   camera.y = canvas.height / 2 - (canvas.height / 2 - camera.y) * (newZ / camera.zoom);
@@ -1192,6 +1424,47 @@ function recenterCamera() {
   renderBoard();
 }
 
+function panCameraToCoord(r, c) {
+  userInteractedWithCamera = true;
+  const targetZoom = Math.max(camera.zoom, 0.9);
+  const targetX = canvas.width / 2 - c * camera.baseCellSize * targetZoom;
+  const targetY = canvas.height / 2 - r * camera.baseCellSize * targetZoom;
+  if (prefersReducedMotion()) {
+    camera.x = targetX;
+    camera.y = targetY;
+    camera.zoom = targetZoom;
+    cameraTarget.active = false;
+    renderBoard();
+  } else {
+    cameraTarget = { x: targetX, y: targetY, zoom: targetZoom, active: true };
+    startFxAnimation();
+  }
+}
+
+function stepCameraInterpolation() {
+  if (!cameraTarget.active) return;
+  if (prefersReducedMotion()) {
+    camera.x = cameraTarget.x;
+    camera.y = cameraTarget.y;
+    camera.zoom = cameraTarget.zoom;
+    cameraTarget.active = false;
+    return;
+  }
+  const dx = cameraTarget.x - camera.x;
+  const dy = cameraTarget.y - camera.y;
+  const dz = cameraTarget.zoom - camera.zoom;
+  if (Math.abs(dx) < 0.35 && Math.abs(dy) < 0.35 && Math.abs(dz) < 0.002) {
+    camera.x = cameraTarget.x;
+    camera.y = cameraTarget.y;
+    camera.zoom = cameraTarget.zoom;
+    cameraTarget.active = false;
+  } else {
+    camera.x += dx * 0.22;
+    camera.y += dy * 0.22;
+    camera.zoom += dz * 0.22;
+  }
+}
+
 function autoScaleCamera(force = false) {
   if (userInteractedWithCamera && !force) return;
   const moves = isReplayMode ? replayMoves.slice(0, replayIndex) : gameState?.board?.moves || [];
@@ -1199,10 +1472,15 @@ function autoScaleCamera(force = false) {
     camera.x = canvas.width / 2;
     camera.y = canvas.height / 2;
     camera.zoom = 1.0;
+    cameraTarget.active = false;
+    _lastAutoScaleMoveCount = 0;
     return;
   }
 
-  if (!force && moves.length === _lastAutoScaleMoveCount) return;
+  if (!force && moves.length === _lastAutoScaleMoveCount) {
+    stepCameraInterpolation();
+    return;
+  }
   _lastAutoScaleMoveCount = moves.length;
 
   let minR = Infinity, maxR = -Infinity, minC = Infinity, maxC = -Infinity;
@@ -1222,19 +1500,64 @@ function autoScaleCamera(force = false) {
   const targetX = canvas.width / 2 - centerC * camera.baseCellSize * targetZoom;
   const targetY = canvas.height / 2 - centerR * camera.baseCellSize * targetZoom;
 
-  if (force) {
+  if (force || prefersReducedMotion()) {
     camera.zoom = targetZoom;
     camera.x = targetX;
     camera.y = targetY;
+    cameraTarget = { x: targetX, y: targetY, zoom: targetZoom, active: false };
   } else {
-    camera.zoom += (targetZoom - camera.zoom) * 0.15;
-    camera.x += (targetX - camera.x) * 0.15;
-    camera.y += (targetY - camera.y) * 0.15;
+    cameraTarget = { x: targetX, y: targetY, zoom: targetZoom, active: true };
+    stepCameraInterpolation();
+    startFxAnimation();
   }
 }
 
 function boardToScreen(r, c) { const cs = camera.baseCellSize * camera.zoom; return { x: camera.x + c * cs, y: camera.y + r * cs }; }
 function screenToBoard(sx, sy) { const cs = camera.baseCellSize * camera.zoom; return { r: Math.round((sy - camera.y) / cs) || 0, c: Math.round((sx - camera.x) / cs) || 0 }; }
+
+function updateGhostHudForHoverCoord(clientX = null, clientY = null) {
+  const hud = document.getElementById("ghost-hud");
+  if (!hud) return;
+  const isAllowedToMove = isLocalHumanAllowedToMove();
+  if (!hoverCoord || !isAllowedToMove || !window.CaroEngine?.TacticalEvaluator) {
+    hud.style.display = "none";
+    return;
+  }
+  const moves = gameState?.board?.moves || [];
+  const occupied = moves.some(m => m.row === hoverCoord.r && m.col === hoverCoord.c);
+  if (occupied) {
+    hud.style.display = "none";
+    return;
+  }
+  const boardObj = (!useBackend() && clientEngine) ? clientEngine.board : reconstructBoardFromState(gameState);
+  if (!boardObj) {
+    hud.style.display = "none";
+    return;
+  }
+  const humanSymbol = isMultiplayerActive ? myMultiplayerSymbol : (gameState.players.find(p => p.type === "human")?.symbol || "E");
+  let sumR = 0, sumC = 0;
+  for (const key of boardObj.stones.keys()) {
+    const [kr, kc] = key.split(",").map(Number);
+    sumR += kr; sumC += kc;
+  }
+  const centroid = boardObj.stones.size ? [sumR / boardObj.stones.size, sumC / boardObj.stones.size] : [0, 0];
+  const evalRes = window.CaroEngine.TacticalEvaluator.evaluateMove(boardObj, hoverCoord.r, hoverCoord.c, humanSymbol, centroid);
+
+  const scoreText = evalRes.total_score >= 20000 ? "🔥 WIN / BLOCK" : `Score: ${evalRes.total_score}`;
+  hud.innerHTML = `<span class="score-badge">${escapeHtml(scoreText)}</span> ${escapeHtml(evalRes.summary)}`;
+  hud.style.display = "block";
+  const rect = canvas.getBoundingClientRect();
+  if (clientX !== null && clientY !== null) {
+    hud.style.left = `${clientX - rect.left}px`;
+    hud.style.top = `${clientY - rect.top}px`;
+  } else {
+    const pt = boardToScreen(hoverCoord.r, hoverCoord.c);
+    const scX = rect.width / (canvas.width || 1);
+    const scY = rect.height / (canvas.height || 1);
+    hud.style.left = `${pt.x * scX}px`;
+    hud.style.top = `${pt.y * scY}px`;
+  }
+}
 
 function onMouseDown(e) {
   if (e.button === 0) {
@@ -1251,43 +1574,19 @@ function onMouseMove(e) {
 
   if (isDragging) {
     const dx = (e.clientX - dragStartX) * scX, dy = (e.clientY - dragStartY) * scY;
-    if (Math.abs(dx) > 3 || Math.abs(dy) > 3) { hasDragged = true; userInteractedWithCamera = true; }
+    if (Math.abs(dx) > 3 || Math.abs(dy) > 3) {
+      hasDragged = true;
+      userInteractedWithCamera = true;
+      cameraTarget.active = false;
+    }
     camera.x = camStartX + dx; camera.y = camStartY + dy;
     renderBoard();
   } else {
     if (sx >= 0 && sx <= canvas.width && sy >= 0 && sy <= canvas.height) {
       hoverCoord = screenToBoard(sx, sy);
       const isAllowedToMove = isLocalHumanAllowedToMove();
-
       canvas.style.cursor = isAllowedToMove ? "pointer" : "crosshair";
-
-      // Tactical Ghost HUD tooltip for human turn
-      const hud = document.getElementById("ghost-hud");
-      if (isAllowedToMove && hud && window.CaroEngine?.TacticalEvaluator) {
-        const moves = gameState?.board?.moves || [];
-        const occupied = moves.some(m => m.row === hoverCoord.r && m.col === hoverCoord.c);
-        if (!occupied) {
-          const boardObj = (!useBackend() && clientEngine) ? clientEngine.board : reconstructBoardFromState(gameState);
-          if (boardObj) {
-            const humanSymbol = isMultiplayerActive ? myMultiplayerSymbol : (gameState.players.find(p => p.type === "human")?.symbol || "E");
-            let sumR = 0, sumC = 0;
-            for (const key of boardObj.stones.keys()) {
-              const [kr, kc] = key.split(",").map(Number);
-              sumR += kr; sumC += kc;
-            }
-            const centroid = boardObj.stones.size ? [sumR / boardObj.stones.size, sumC / boardObj.stones.size] : [0, 0];
-            const evalRes = window.CaroEngine.TacticalEvaluator.evaluateMove(boardObj, hoverCoord.r, hoverCoord.c, humanSymbol, centroid);
-
-            const scoreText = evalRes.total_score >= 20000 ? "🔥 WIN / BLOCK" : `Score: ${evalRes.total_score}`;
-            hud.innerHTML = `<span class="score-badge">${escapeHtml(scoreText)}</span> ${escapeHtml(evalRes.summary)}`;
-            hud.style.display = "block";
-            hud.style.left = `${e.clientX - rect.left}px`;
-            hud.style.top = `${e.clientY - rect.top}px`;
-          }
-        } else {
-          hud.style.display = "none";
-        }
-      }
+      updateGhostHudForHoverCoord(e.clientX, e.clientY);
     } else {
       hoverCoord = null;
       const hud = document.getElementById("ghost-hud");
@@ -1321,7 +1620,9 @@ function onMouseUp(e) {
 }
 
 function onWheel(e) {
-  e.preventDefault(); userInteractedWithCamera = true;
+  e.preventDefault();
+  userInteractedWithCamera = true;
+  cameraTarget.active = false;
   const rect = canvas.getBoundingClientRect(), scX = canvas.width / rect.width, scY = canvas.height / rect.height;
   const mx = (e.clientX - rect.left) * scX, my = (e.clientY - rect.top) * scY;
   const factor = e.deltaY < 0 ? 1.15 : 0.87;
@@ -1373,7 +1674,7 @@ function drawThreatHeatmap(cs) {
   if (!heatmap || heatmap.length === 0) return;
 
   const now = Date.now();
-  const pulse = (Math.sin(now / 180) + 1) / 2;
+  const pulse = prefersReducedMotion() ? 0.5 : (Math.sin(now / 180) + 1) / 2;
 
   ctx.save();
   for (const h of heatmap) {
@@ -1455,8 +1756,9 @@ function drawActiveThreatLasers(cs) {
   if (!threatLines || threatLines.length === 0) return;
 
   const now = Date.now();
-  const pulse = (Math.sin(now / 150) + 1) / 2;
-  const fastPulse = (Math.sin(now / 70) + 1) / 2;
+  const reduced = prefersReducedMotion();
+  const pulse = reduced ? 0.5 : (Math.sin(now / 150) + 1) / 2;
+  const fastPulse = reduced ? 0.5 : (Math.sin(now / 70) + 1) / 2;
 
   ctx.save();
   for (const t of threatLines) {
@@ -1562,11 +1864,144 @@ function drawActiveThreatLasers(cs) {
   ctx.restore();
 }
 
+function drawBoardRipples(cs, now = performance.now()) {
+  if (boardRipples.length === 0) return;
+  ctx.save();
+  const remaining = [];
+  for (const rp of boardRipples) {
+    const elapsed = now - rp.createdAt;
+    if (elapsed < 0 || elapsed >= rp.duration) continue;
+    remaining.push(rp);
+    const t = elapsed / rp.duration;
+    const easeOut = 1 - Math.pow(1 - t, 3);
+    const pt = boardToScreen(rp.row, rp.col);
+
+    // Primary expanding shockwave ring
+    const r1 = cs * (0.42 + easeOut * 0.85);
+    ctx.strokeStyle = rp.color;
+    ctx.lineWidth = Math.max(1.2, (2.8 * (1 - t)) * camera.zoom);
+    ctx.globalAlpha = Math.max(0, (1 - t) * 0.85);
+    ctx.beginPath();
+    ctx.arc(pt.x, pt.y, r1, 0, Math.PI * 2);
+    ctx.stroke();
+
+    // Secondary trailing inner ring
+    if (t > 0.12) {
+      const t2 = (t - 0.12) / 0.88;
+      const ease2 = 1 - Math.pow(1 - t2, 2);
+      const r2 = cs * (0.40 + ease2 * 0.52);
+      ctx.lineWidth = Math.max(1.0, (1.6 * (1 - t2)) * camera.zoom);
+      ctx.globalAlpha = Math.max(0, (1 - t2) * 0.5);
+      ctx.beginPath();
+      ctx.arc(pt.x, pt.y, r2, 0, Math.PI * 2);
+      ctx.stroke();
+    }
+  }
+  boardRipples = remaining;
+  ctx.restore();
+}
+
+function drawBoardSparks(cs, now = performance.now()) {
+  if (boardSparks.length === 0) return;
+  ctx.save();
+  const remaining = [];
+  for (const sp of boardSparks) {
+    const elapsed = now - sp.createdAt;
+    if (elapsed < 0 || elapsed >= sp.duration) continue;
+    remaining.push(sp);
+    const t = elapsed / sp.duration;
+    const ease = 1 - Math.pow(1 - t, 2);
+    const origin = boardToScreen(sp.row, sp.col);
+    const dist = ease * cs * 0.95;
+    const x = origin.x + sp.vx * dist;
+    const y = origin.y + sp.vy * dist;
+    const radius = Math.max(0.8, sp.size * (1 - t * 0.7) * camera.zoom);
+
+    ctx.fillStyle = sp.color;
+    ctx.globalAlpha = Math.max(0, 1 - t);
+    ctx.shadowColor = sp.color;
+    ctx.shadowBlur = 6 * camera.zoom;
+    ctx.beginPath();
+    ctx.arc(x, y, radius, 0, Math.PI * 2);
+    ctx.fill();
+  }
+  boardSparks = remaining;
+  ctx.restore();
+}
+
+function drawHighlightedMoveBeacon(cs, now = performance.now()) {
+  if (!highlightedMoveCoord) return;
+  const { r, c, moveNumber, color } = highlightedMoveCoord;
+  const pt = boardToScreen(r, c);
+  const pulse = prefersReducedMotion() ? 0.5 : (Math.sin(now / 140) + 1) / 2;
+
+  ctx.save();
+  ctx.strokeStyle = color || "#f59e0b";
+  ctx.shadowColor = color || "#f59e0b";
+  ctx.shadowBlur = 12 * camera.zoom;
+  ctx.lineWidth = 2.6 * camera.zoom;
+  ctx.beginPath();
+  ctx.arc(pt.x, pt.y, cs * (0.52 + pulse * 0.08), 0, Math.PI * 2);
+  ctx.stroke();
+
+  // Outer dashed locator brackets
+  ctx.setLineDash([4 * camera.zoom, 3 * camera.zoom]);
+  ctx.lineWidth = 1.6 * camera.zoom;
+  ctx.beginPath();
+  ctx.arc(pt.x, pt.y, cs * (0.68 + pulse * 0.05), 0, Math.PI * 2);
+  ctx.stroke();
+  ctx.setLineDash([]);
+
+  // Coordinate callout tag above stone
+  const label = moveNumber ? `#${moveNumber} (${r}, ${c})` : `(${r}, ${c})`;
+  ctx.font = `700 ${Math.max(10, Math.round(10.5 * camera.zoom))}px var(--font-mono, monospace)`;
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
+  const padX = 10 * camera.zoom;
+  const w = ctx.measureText(label).width + padX;
+  const h = Math.max(16, 18 * camera.zoom);
+  const tagY = pt.y - cs * 0.85;
+
+  ctx.fillStyle = "rgba(15, 23, 42, 0.92)";
+  ctx.shadowBlur = 6;
+  ctx.beginPath();
+  if (ctx.roundRect) {
+    ctx.roundRect(pt.x - w / 2, tagY - h / 2, w, h, 999);
+  } else {
+    ctx.rect(pt.x - w / 2, tagY - h / 2, w, h);
+  }
+  ctx.fill();
+  ctx.strokeStyle = color || "#fbbf24";
+  ctx.lineWidth = 1.2;
+  ctx.stroke();
+
+  ctx.fillStyle = "#ffffff";
+  ctx.shadowBlur = 0;
+  ctx.fillText(label, pt.x, tagY);
+  ctx.restore();
+}
+
 let fxAnimId = null;
+function hasActiveBoardAnimations() {
+  if (prefersReducedMotion()) {
+    return Boolean(cameraTarget.active);
+  }
+  return Boolean(
+    showHeatmap ||
+    showLasers ||
+    (hoverCoord && isLocalHumanAllowedToMove()) ||
+    cameraTarget.active ||
+    boardRipples.length > 0 ||
+    boardSparks.length > 0 ||
+    highlightedMoveCoord !== null ||
+    hasActiveStoneSpring()
+  );
+}
+
 function startFxAnimation() {
   if (fxAnimId) return;
   function fxLoop() {
-    if (showHeatmap || showLasers || (hoverCoord && isLocalHumanAllowedToMove())) {
+    if (hasActiveBoardAnimations()) {
       renderBoard();
       fxAnimId = requestAnimationFrame(fxLoop);
     } else {
@@ -1578,7 +2013,9 @@ function startFxAnimation() {
 
 function renderBoard() {
   autoScaleCamera();
+  stepCameraInterpolation();
   const W = canvas.width, H = canvas.height, cs = camera.baseCellSize * camera.zoom;
+  const nowPerf = performance.now();
 
   ctx.clearRect(0, 0, W, H);
   const grad = ctx.createRadialGradient(W / 2, H / 2, Math.min(W, H) * 0.1, W / 2, H / 2, Math.max(W, H) * 0.85);
@@ -1630,10 +2067,13 @@ function renderBoard() {
     drawThreatHeatmap(cs);
   }
 
-  // Draw stones
+  // Draw stones (with spring scale-pop for newly placed stones)
   const moves = isReplayMode ? replayMoves.slice(0, replayIndex) : gameState?.board?.moves || [];
   const lastMove = moves.length > 0 ? moves[moves.length - 1] : null;
-  moves.forEach(m => drawStone(m.row, m.col, m.player, cs, m.move_number));
+  moves.forEach(m => drawStone(m.row, m.col, m.player, cs, m.move_number, nowPerf));
+
+  // Expanding stone placement shockwave ripples
+  drawBoardRipples(cs, nowPerf);
 
   // Live Threat Lasers (renders dynamic active threat beams over stones)
   if (showLasers && !isReplayMode && gameState?.board) {
@@ -1667,7 +2107,7 @@ function renderBoard() {
       ctx.fill();
 
       // Pulsing outer ring
-      const pulseTime = Date.now() / 200;
+      const pulseTime = prefersReducedMotion() ? 0 : Date.now() / 200;
       const ringRadius = cs * (0.42 + Math.sin(pulseTime) * 0.05);
       ctx.strokeStyle = ghostColor;
       ctx.lineWidth = 2 * camera.zoom;
@@ -1689,6 +2129,9 @@ function renderBoard() {
     ctx.fillStyle = meta.color;
     ctx.beginPath(); ctx.arc(pt.x, pt.y - cs * 0.46, 2 * camera.zoom, 0, Math.PI * 2); ctx.fill();
   }
+
+  // Move-list hover/click locator beacon
+  drawHighlightedMoveBeacon(cs, nowPerf);
 
   // Winning lines & highlights — draw for ALL placements with a winning line
   let placements = [];
@@ -1723,7 +2166,7 @@ function renderBoard() {
         ctx.restore();
       }
 
-      // 2. Bold, high-contrast laser strike-through line
+      // 2. Bold, high-contrast laser strike-through line + travelling plasma orb
       if (showLasers) {
         const firstCoord = pl.winning_line[0];
         const lastCoord = pl.winning_line[pl.winning_line.length - 1];
@@ -1765,6 +2208,21 @@ function renderBoard() {
         ctx.moveTo(startX, startY);
         ctx.lineTo(endX, endY);
         ctx.stroke();
+
+        // Travelling high-energy plasma pulse along the winning beam
+        if (!prefersReducedMotion()) {
+          const sweepPhase = (Math.sin(nowPerf / 260) + 1) / 2;
+          const orbX = startX + (endX - startX) * sweepPhase;
+          const orbY = startY + (endY - startY) * sweepPhase;
+          const orbGrad = ctx.createRadialGradient(orbX, orbY, 0, orbX, orbY, 10 * camera.zoom);
+          orbGrad.addColorStop(0, "rgba(255, 255, 255, 0.98)");
+          orbGrad.addColorStop(0.45, "rgba(251, 191, 36, 0.85)");
+          orbGrad.addColorStop(1, "rgba(245, 158, 11, 0)");
+          ctx.fillStyle = orbGrad;
+          ctx.beginPath();
+          ctx.arc(orbX, orbY, 10 * camera.zoom, 0, Math.PI * 2);
+          ctx.fill();
+        }
         ctx.restore();
       }
 
@@ -1818,20 +2276,42 @@ function renderBoard() {
       ctx.restore();
     }
   }
+
+  // Radial winning-line spark burst particles
+  drawBoardSparks(cs, nowPerf);
 }
 
-function drawStone(r, c, symbol, cs, moveNumber) {
+function drawStone(r, c, symbol, cs, moveNumber, nowPerf = performance.now()) {
   const pt = boardToScreen(r, c);
-  const radius = cs * 0.42;
+  let scale = 1.0;
+  if (!prefersReducedMotion()) {
+    const spawnedAt = stoneSpawnTimes.get(`${r},${c}`);
+    if (spawnedAt !== undefined) {
+      const elapsed = nowPerf - spawnedAt;
+      const duration = 260;
+      if (elapsed >= 0 && elapsed < duration) {
+        const t = elapsed / duration;
+        // Spring easeOutBack curve (overshoots slightly to ~1.13 then settles to 1.0)
+        const c1 = 2.4;
+        const c3 = c1 + 1;
+        const eased = 1 + c3 * Math.pow(t - 1, 3) + c1 * Math.pow(t - 1, 2);
+        scale = Math.max(0.25, 0.25 + 0.75 * eased);
+      } else if (elapsed >= duration) {
+        stoneSpawnTimes.delete(`${r},${c}`);
+      }
+    }
+  }
+
+  const radius = cs * 0.42 * scale;
   const meta = getPlayerMeta(symbol);
   const body = meta.body || STONE_STYLES.laya.body;
   const textCol = meta.text || "#fff";
 
   ctx.save();
   ctx.shadowColor = "rgba(60, 30, 10, 0.35)";
-  ctx.shadowBlur = 5 * camera.zoom;
-  ctx.shadowOffsetX = 1.2 * camera.zoom;
-  ctx.shadowOffsetY = 2.4 * camera.zoom;
+  ctx.shadowBlur = 5 * camera.zoom * scale;
+  ctx.shadowOffsetX = 1.2 * camera.zoom * scale;
+  ctx.shadowOffsetY = 2.4 * camera.zoom * scale;
 
   const stoneGrad = ctx.createRadialGradient(
     pt.x - radius * 0.35, pt.y - radius * 0.35, radius * 0.08,
@@ -2003,6 +2483,7 @@ function exitReplayMode() {
   replayIndex = 0;
   replayPlayers = [];
   replayPlacements = [];
+  highlightedMoveCoord = null;
   document.getElementById("replay-bar").style.display = "none";
   document.getElementById("btn-auto").disabled = false;
   userInteractedWithCamera = false;
@@ -2013,7 +2494,12 @@ function exitReplayMode() {
 
 function stepReplay(delta) {
   if (!isReplayMode) return;
+  const prevIdx = replayIndex;
   replayIndex = Math.max(0, Math.min(replayMoves.length, replayIndex + delta));
+  if (delta > 0 && replayIndex > prevIdx) {
+    const m = replayMoves[replayIndex - 1];
+    if (m) triggerStonePlacementFx(m.row, m.col, m.player);
+  }
   const lbl = document.getElementById("replay-label");
   if (lbl) lbl.textContent = `Move ${replayIndex} of ${replayMoves.length}`;
   updateUI();

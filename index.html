@@ -100,7 +100,7 @@
         </svg>
         <span class="brand-name">Caro Arena</span>
       </div>
-      <div class="header-chip" id="turn-banner">
+      <div class="header-chip" id="turn-banner" aria-live="polite" aria-atomic="true">
         <span class="chip-dot" id="turn-dot"></span>
         <span id="turn-text">Ready</span>
       </div>
@@ -167,25 +167,25 @@
         </div>
 
         <!-- Human turn indicator with Undo -->
-        <div id="human-turn-bar" class="human-turn-bar" style="display: none;">
+        <div id="human-turn-bar" class="human-turn-bar" style="display: none;" role="status" aria-live="polite">
           <div class="human-turn-content">
             <span class="pulse-icon">🎯</span>
-            <span>Your turn — click any empty cell to place your stone</span>
+            <span class="human-prompt-text">Your turn — click any empty cell or use arrow keys + Enter to place your stone</span>
           </div>
           <button class="btn btn-xs btn-outline" id="btn-undo-move" title="Undo your last move">↩ Undo</button>
         </div>
 
-        <div class="canvas-wrap">
-          <canvas id="caro-canvas" width="700" height="700"></canvas>
+        <div class="canvas-wrap" id="canvas-wrap">
+          <canvas id="caro-canvas" width="700" height="700" tabindex="0" role="application" aria-label="Caro Arena tactical game board. Use arrow keys to move target cursor, Enter or Space to place stone, Plus or Minus to zoom, C to recenter."></canvas>
           <div id="ghost-hud" class="ghost-hud" style="display: none;"></div>
           <div class="viewport-hud">
-            <button class="hud-btn" id="btn-zoom-in" title="Zoom in">
+            <button class="hud-btn" id="btn-zoom-in" title="Zoom in (+)">
               <svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M8 3.5v9M3.5 8h9"/></svg>
             </button>
-            <button class="hud-btn" id="btn-zoom-out" title="Zoom out">
+            <button class="hud-btn" id="btn-zoom-out" title="Zoom out (-)">
               <svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M3.5 8h9"/></svg>
             </button>
-            <button class="hud-btn" id="btn-recenter" title="Center">
+            <button class="hud-btn" id="btn-recenter" title="Center (C)">
               <svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="8" cy="8" r="4.5"/><path d="M8 1.5v2.5M8 12v2.5M1.5 8h2.5M12 8h2.5"/></svg>
             </button>
           </div>
@@ -197,6 +197,7 @@
           <div class="board-hints">
             <span>Drag to pan</span><span class="dot">·</span>
             <span>Scroll/pinch to zoom</span><span class="dot">·</span>
+            <span>Arrows + Enter to play</span><span class="dot">·</span>
             <span>5-in-a-row wins</span>
           </div>
           <div class="board-toggles">
