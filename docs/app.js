@@ -855,8 +855,8 @@ function getPlayerMeta(symbol) {
 function isLocalHumanAllowedToMove() {
   if (isReplayMode || !gameState || gameState.status === "finished") return false;
   if (isMultiplayerActive) {
-    if (!myMultiplayerSymbol) myMultiplayerSymbol = resolveMyMultiplayerSymbol(multiplayerRoster);
-    return gameState.current_player?.symbol === myMultiplayerSymbol;
+    myMultiplayerSymbol = resolveMyMultiplayerSymbol(multiplayerRoster);
+    return Boolean(myMultiplayerSymbol && gameState.current_player?.symbol === myMultiplayerSymbol);
   }
   return Boolean(gameState.is_human_turn);
 }
@@ -874,8 +874,8 @@ function updateHumanTurnBar() {
   }
 
   if (isMultiplayerActive) {
-    if (!myMultiplayerSymbol) myMultiplayerSymbol = resolveMyMultiplayerSymbol(multiplayerRoster);
-    const isMyTurn = (gameState?.current_player?.symbol === myMultiplayerSymbol) && gameState?.status !== "finished";
+    myMultiplayerSymbol = resolveMyMultiplayerSymbol(multiplayerRoster);
+    const isMyTurn = Boolean(myMultiplayerSymbol && gameState?.current_player?.symbol === myMultiplayerSymbol && gameState?.status !== "finished");
     if (undoBtn) undoBtn.style.display = "none";
     if (promptText) promptText.textContent = "Your Turn — Click any empty intersection to place your stone";
     bar.classList.toggle("active", isMyTurn);
@@ -933,9 +933,12 @@ function updateTurnBanner() {
     const curr = getPlayerMeta(currSymbol);
     dot.style.background = curr.color;
     const moveNum = (gameState.board?.move_count || 0) + 1;
-    if (currSymbol === myMultiplayerSymbol) {
+    if (myMultiplayerSymbol && currSymbol === myMultiplayerSymbol) {
       text.textContent = `Battle #${bn} · Turn ${moveNum} · Your Turn!`;
       updateMultiplayerHudStatus(`Your turn! Click empty cell to place stone`);
+    } else if (!myMultiplayerSymbol) {
+      text.textContent = `Battle #${bn} · Turn ${moveNum} · Spectating (${curr.name})`;
+      updateMultiplayerHudStatus(`👁️ Spectating · ${curr.name}'s turn`);
     } else if (curr.type === "human") {
       text.textContent = `Battle #${bn} · Turn ${moveNum} · ${curr.name}'s turn`;
       updateMultiplayerHudStatus(`Waiting for ${curr.name}...`);
@@ -1032,8 +1035,9 @@ function renderBattleRoster() {
     : (gameState.board?.eliminated_players || []);
   const activeMoves = isReplayMode ? replayMoves.slice(0, replayIndex) : (gameState.board?.moves || []);
   const current = isReplayMode ? null : gameState.current_player?.symbol;
+  const isSpectatorInMp = isMultiplayerActive && !isReplayMode && window.CaroMultiplayer?.myRole === "spectator" && gameState.status !== "finished";
 
-  el.innerHTML = players.map(p => {
+  el.innerHTML = players.map((p, idx) => {
     const meta = getPlayerMeta(p.symbol);
     const placement = placements.find(pl => pl.player === p.symbol);
     const isElim = eliminated.includes(p.symbol);
@@ -1065,6 +1069,10 @@ function renderBattleRoster() {
     }
 
     const moveCount = activeMoves.filter(m => m.player === p.symbol).length;
+    const canRequestTakeover = isSpectatorInMp && idx > 0 && !isElim;
+    const takeoverBtn = canRequestTakeover
+      ? `<button class="btn btn-xs btn-ghost btn-roster-takeover" data-symbol="${escapeHtml(p.symbol)}" title="Request Host approval to take over this player slot">⚡ Takeover</button>`
+      : "";
 
     return `<div class="roster-slot ${statusClass}" style="--pc: ${escapeHtml(meta.fill)}">
       <div class="roster-ident">
@@ -1073,11 +1081,23 @@ function renderBattleRoster() {
         <span class="roster-symbol">${escapeHtml(p.symbol)}</span>
       </div>
       <div class="roster-stats">
+        ${takeoverBtn}
         <span class="roster-moves">${moveCount} moves</span>
         <span class="roster-status ${statusClass}">${escapeHtml(statusText)}</span>
       </div>
     </div>`;
   }).join("");
+
+  if (isSpectatorInMp) {
+    el.querySelectorAll(".btn-roster-takeover").forEach(btn => {
+      btn.addEventListener("click", (e) => {
+        const sym = e.currentTarget.dataset.symbol;
+        if (sym && window.CaroMultiplayer?.requestTakeover) {
+          window.CaroMultiplayer.requestTakeover(sym);
+        }
+      });
+    });
+  }
 }
 
 function renderPlayerLegend() {
@@ -2104,6 +2124,9 @@ function initMultiplayerIntegration() {
 
   window.CaroMultiplayer.setCallbacks({
     onLobbyChange: handleMultiplayerLobbyUpdate,
+    onActiveRoomsChange: renderActiveRoomsLobby,
+    onRequestsChange: handleMultiplayerRequestsUpdate,
+    onSlotTakeover: handleMultiplayerSlotTakeover,
     onGameStart: handleMultiplayerGameStart,
     onRemoteMove: handleMultiplayerRemoteMove,
     onRemoteNextBattle: handleMultiplayerRemoteNextBattle,
@@ -2117,6 +2140,7 @@ function initMultiplayerIntegration() {
   });
 
   setupMultiplayerUI();
+  setupAuthUI();
   checkUrlForRoomInvite();
 }
 
@@ -2125,6 +2149,7 @@ function getMultiplayerHostState() {
   return {
     inGame: true,
     roomId: window.CaroMultiplayer?.roomId,
+    roomName: window.CaroMultiplayer?.roomName,
     roster: multiplayerRoster,
     battleNumber: clientEngine.battleNumber || 1,
     status: clientEngine.status || "playing",
@@ -2142,58 +2167,102 @@ function setupMultiplayerUI() {
   const btnMp = document.getElementById("btn-multiplayer");
   const modal = document.getElementById("modal-multiplayer");
   const btnClose = document.getElementById("btn-close-mp-modal");
-  const btnSaveCfg = document.getElementById("btn-save-mp-config");
   const btnCreateRoom = document.getElementById("btn-action-create-room");
   const btnStartMp = document.getElementById("btn-action-start-mp");
   const btnJoinRoom = document.getElementById("btn-action-join-room");
   const btnCopyInvite = document.getElementById("btn-copy-invite-link");
   const btnHudCopy = document.getElementById("btn-hud-copy-link");
   const btnHudLeave = document.getElementById("btn-hud-leave-room");
+  const btnHudRoomDrawer = document.getElementById("btn-mp-hud-room-drawer");
+  const btnHudRequestJoin = document.getElementById("btn-mp-hud-request-join");
+  const btnModalRequestJoin = document.getElementById("btn-mp-request-join");
+  const btnAddHuman = document.getElementById("btn-mp-add-human");
+  const btnAddAi = document.getElementById("btn-mp-add-ai");
+  const btnRefreshRooms = document.getElementById("btn-mp-refresh-rooms");
+  const btnNewRoomFromLobby = document.getElementById("btn-mp-new-room-from-lobby");
 
   // Tabs
+  const tabLobby = document.getElementById("mp-tab-btn-lobby");
   const tabCreate = document.getElementById("mp-tab-btn-create");
   const tabJoin = document.getElementById("mp-tab-btn-join");
-  const tabSettings = document.getElementById("mp-tab-btn-settings");
 
-  btnMp?.addEventListener("click", () => openMultiplayerModal());
+  btnMp?.addEventListener("click", () => {
+    const defaultTab = window.CaroMultiplayer?.roomId ? "create" : "lobby";
+    openMultiplayerModal(defaultTab);
+  });
   btnClose?.addEventListener("click", () => closeMultiplayerModal());
+  btnHudRoomDrawer?.addEventListener("click", () => openMultiplayerModal("create"));
+  btnHudRequestJoin?.addEventListener("click", () => {
+    window.CaroMultiplayer?.requestJoinSlot();
+  });
+  btnModalRequestJoin?.addEventListener("click", () => {
+    window.CaroMultiplayer?.requestJoinSlot();
+  });
 
-  // Modal backdrop click
   modal?.addEventListener("click", (e) => {
     if (e.target.id === "modal-multiplayer") closeMultiplayerModal();
   });
 
+  tabLobby?.addEventListener("click", () => switchMpTab("lobby"));
   tabCreate?.addEventListener("click", () => switchMpTab("create"));
   tabJoin?.addEventListener("click", () => switchMpTab("join"));
-  tabSettings?.addEventListener("click", () => showMpConfigView(true));
-  document.getElementById("link-open-mp-settings")?.addEventListener("click", () => showMpConfigView(true));
 
-  btnSaveCfg?.addEventListener("click", () => {
-    const url = document.getElementById("mp-cfg-url")?.value;
-    const key = document.getElementById("mp-cfg-key")?.value;
-    if (!url || !key) {
-      alert("Please provide both Supabase Project URL and Anon Key.");
-      return;
+  btnRefreshRooms?.addEventListener("click", () => {
+    window.CaroMultiplayer?.refreshActiveRooms();
+    renderActiveRoomsLobby(window.CaroMultiplayer?.getActiveRooms() || []);
+  });
+
+  btnNewRoomFromLobby?.addEventListener("click", () => switchMpTab("create"));
+
+  // Sync live room name / public toggle changes when already hosting
+  const roomNameInput = document.getElementById("mp-room-name-input");
+  const roomPublicToggle = document.getElementById("mp-room-public-toggle");
+  const hostNameInput = document.getElementById("mp-host-name-input");
+
+  roomNameInput?.addEventListener("change", () => {
+    if (window.CaroMultiplayer?.isHost && window.CaroMultiplayer?.roomId) {
+      window.CaroMultiplayer.setRoomMeta({ roomName: roomNameInput.value });
     }
-    window.CaroMultiplayer.saveCredentials(url, key);
-    showMpConfigView(false);
-    updateMultiplayerModeBadge();
-    renderMultiplayerSlots();
+  });
+  roomPublicToggle?.addEventListener("change", () => {
+    if (window.CaroMultiplayer?.isHost && window.CaroMultiplayer?.roomId) {
+      window.CaroMultiplayer.setRoomMeta({ isPublic: roomPublicToggle.checked });
+    }
+  });
+  hostNameInput?.addEventListener("change", () => {
+    if (hostNameInput.value.trim() && window.CaroMultiplayer) {
+      window.CaroMultiplayer.myName = hostNameInput.value.trim();
+    }
+  });
+
+  btnAddHuman?.addEventListener("click", () => {
+    if (!window.CaroMultiplayer?.isHost && window.CaroMultiplayer?.roomId) return;
+    window.CaroMultiplayer?.addSlot("human");
+  });
+
+  btnAddAi?.addEventListener("click", () => {
+    if (!window.CaroMultiplayer?.isHost && window.CaroMultiplayer?.roomId) return;
+    window.CaroMultiplayer?.addSlot("ai", "von");
   });
 
   btnCreateRoom?.addEventListener("click", async () => {
-    const name = document.getElementById("mp-host-name-input")?.value || "Host";
+    const name = document.getElementById("mp-host-name-input")?.value || window.CaroMultiplayer?.myName || "Host";
+    const roomName = document.getElementById("mp-room-name-input")?.value || "";
+    const roomSlug = document.getElementById("mp-room-slug-input")?.value || "";
+    const isPublic = document.getElementById("mp-room-public-toggle")?.checked ?? true;
     try {
       btnCreateRoom.disabled = true;
-      btnCreateRoom.textContent = "Connecting...";
-      await window.CaroMultiplayer.createRoom(name);
-      btnCreateRoom.textContent = "Room Created!";
-      btnCreateRoom.style.display = "none";
+      btnCreateRoom.textContent = "Creating...";
+      await window.CaroMultiplayer.createRoom(name, { roomName, roomSlug, isPublic });
+      btnCreateRoom.disabled = false;
+      btnCreateRoom.textContent = "Recreate Room";
       if (btnStartMp) btnStartMp.style.display = "inline-flex";
       const shareBox = document.getElementById("mp-share-box");
       const shareUrl = document.getElementById("mp-share-url");
       if (shareBox) shareBox.style.display = "block";
       if (shareUrl) shareUrl.value = window.CaroMultiplayer.getLobbyState().shareUrl;
+      showMultiplayerHud(window.CaroMultiplayer.roomId);
+      updateMultiplayerHudBadges();
     } catch (err) {
       alert(err.message);
       btnCreateRoom.disabled = false;
@@ -2210,21 +2279,25 @@ function setupMultiplayerUI() {
   });
 
   btnJoinRoom?.addEventListener("click", async () => {
-    const name = document.getElementById("mp-join-name-input")?.value || "Player";
+    const name = document.getElementById("mp-join-name-input")?.value || window.CaroMultiplayer?.myName || "Player";
     const code = document.getElementById("mp-join-code-input")?.value || "";
-    if (!code) {
-      alert("Please enter a room code.");
+    if (!code.trim()) {
+      alert("Please enter a room code or custom URL slug.");
       return;
     }
     try {
       btnJoinRoom.disabled = true;
-      btnJoinRoom.textContent = "Joining...";
+      btnJoinRoom.textContent = "Entering Room...";
       await window.CaroMultiplayer.joinRoom(code, name);
-      btnJoinRoom.textContent = "Connected! Waiting for host to start...";
+      btnJoinRoom.disabled = false;
+      btnJoinRoom.textContent = "Enter Room 👁️";
+      showMultiplayerHud(window.CaroMultiplayer.roomId);
+      updateMultiplayerHudBadges();
+      switchMpTab("create");
     } catch (err) {
       alert(err.message);
       btnJoinRoom.disabled = false;
-      btnJoinRoom.textContent = "Join Room";
+      btnJoinRoom.textContent = "Enter Room 👁️";
     }
   });
 
@@ -2242,9 +2315,7 @@ function setupMultiplayerUI() {
   btnCopyInvite?.addEventListener("click", () => copyHandler(document.getElementById("mp-share-url"), btnCopyInvite));
   btnHudCopy?.addEventListener("click", () => copyHandler(null, btnHudCopy));
   btnHudLeave?.addEventListener("click", () => {
-    if (confirm("Leave this multiplayer room?")) {
-      window.CaroMultiplayer.leaveRoom();
-    }
+    window.CaroMultiplayer.leaveRoom();
   });
 }
 
@@ -2253,27 +2324,51 @@ function openMultiplayerModal(forceTab = null) {
   if (!modal) return;
   modal.style.display = "flex";
 
-  showMpConfigView(false);
+  // Pre-fill display name from Auth or Multiplayer state
+  const currentName = window.CaroAuth?.getCurrentUser()?.display_name || window.CaroMultiplayer?.myName || "Player";
+  const hostInput = document.getElementById("mp-host-name-input");
+  const joinInput = document.getElementById("mp-join-name-input");
+  if (hostInput && (!hostInput.value || hostInput.value === "Player 1")) hostInput.value = currentName;
+  if (joinInput && (!joinInput.value || joinInput.value === "Player 2")) joinInput.value = currentName;
+
   if (forceTab) switchMpTab(forceTab);
+  window.CaroMultiplayer?.refreshActiveRooms();
+  renderActiveRoomsLobby(window.CaroMultiplayer?.getActiveRooms() || []);
   renderMultiplayerSlots();
+  renderSpectatorsAndRequests();
   updateMultiplayerModeBadge();
 }
 
 function updateMultiplayerModeBadge() {
   const banner = document.getElementById("mp-mode-banner");
   const text = document.getElementById("mp-mode-banner-text");
-  const link = document.getElementById("link-open-mp-settings");
+  const rolePill = document.getElementById("mp-role-pill");
   if (!banner || !text) return;
 
   const isOnline = window.CaroMultiplayer && window.CaroMultiplayer.isOnline;
+  const lobby = window.CaroMultiplayer ? window.CaroMultiplayer.getLobbyState() : null;
   if (isOnline) {
     banner.className = "mp-mode-banner online";
-    text.textContent = "🟢 Online (Supabase Realtime)";
-    if (link) link.textContent = "Supabase Settings ⚙️";
+    text.textContent = lobby?.roomId
+      ? `🟢 Room: ${lobby.roomName} (${lobby.roomId})`
+      : "🟢 Connected to Caro Arena Live Server";
   } else {
     banner.className = "mp-mode-banner local";
-    text.textContent = "⚡ Local Multi-tab Demo";
-    if (link) link.textContent = "Connect Supabase ⚙️";
+    text.textContent = lobby?.roomId
+      ? `⚡ Room: ${lobby.roomName} (${lobby.roomId})`
+      : "⚡ Local Multi-tab Realtime Mode";
+  }
+
+  if (rolePill) {
+    if (!lobby?.roomId) {
+      rolePill.textContent = "";
+      rolePill.style.display = "none";
+    } else {
+      rolePill.style.display = "inline-block";
+      rolePill.textContent = lobby.isHost
+        ? "👑 Host"
+        : (lobby.myRole === "player" ? `⚔️ Player #${lobby.myAssignedSlot + 1}` : "👁️ Spectator");
+    }
   }
 }
 
@@ -2282,58 +2377,267 @@ function closeMultiplayerModal() {
   if (modal) modal.style.display = "none";
 }
 
-function showMpConfigView(show) {
-  const cfgView = document.getElementById("mp-view-config");
-  const lobbyView = document.getElementById("mp-view-lobby");
-  if (cfgView && lobbyView) {
-    cfgView.style.display = show ? "block" : "none";
-    lobbyView.style.display = show ? "none" : "block";
-  }
-  if (show) {
-    const creds = window.CaroMultiplayer.getSavedCredentials();
-    const u = document.getElementById("mp-cfg-url");
-    const k = document.getElementById("mp-cfg-key");
-    if (u) u.value = creds.url;
-    if (k) k.value = creds.key;
-  }
-}
-
 function switchMpTab(tab) {
+  const tLobby = document.getElementById("mp-tab-lobby");
   const tCreate = document.getElementById("mp-tab-create");
   const tJoin = document.getElementById("mp-tab-join");
+  const bLobby = document.getElementById("mp-tab-btn-lobby");
   const bCreate = document.getElementById("mp-tab-btn-create");
   const bJoin = document.getElementById("mp-tab-btn-join");
 
-  if (tab === "create") {
-    if (tCreate) tCreate.style.display = "block";
-    if (tJoin) tJoin.style.display = "none";
-    bCreate?.classList.add("active");
-    bJoin?.classList.remove("active");
-  } else {
-    if (tCreate) tCreate.style.display = "none";
-    if (tJoin) tJoin.style.display = "block";
-    bCreate?.classList.remove("active");
-    bJoin?.classList.add("active");
+  if (tLobby) tLobby.style.display = tab === "lobby" ? "block" : "none";
+  if (tCreate) tCreate.style.display = tab === "create" ? "block" : "none";
+  if (tJoin) tJoin.style.display = tab === "join" ? "block" : "none";
+
+  bLobby?.classList.toggle("active", tab === "lobby");
+  bCreate?.classList.toggle("active", tab === "create");
+  bJoin?.classList.toggle("active", tab === "join");
+
+  if (tab === "lobby") {
+    window.CaroMultiplayer?.refreshActiveRooms();
+    renderActiveRoomsLobby(window.CaroMultiplayer?.getActiveRooms() || []);
   }
 }
 
+function renderActiveRoomsLobby(rooms = []) {
+  const container = document.getElementById("mp-active-rooms-list");
+  if (!container) return;
+
+  if (!Array.isArray(rooms) || rooms.length === 0) {
+    container.innerHTML = `<div class="mp-empty-rooms">No public rooms active right now. Click <strong>+ Host Room</strong> to create one!</div>`;
+    return;
+  }
+
+  container.innerHTML = "";
+  rooms.forEach(r => {
+    const card = document.createElement("div");
+    card.className = "mp-room-card";
+    const isPlaying = r.status === "playing";
+    const statusText = isPlaying ? `⚔️ Battle #${r.battleNumber || 1}` : `🟢 Waiting`;
+    const isMyCurrentRoom = window.CaroMultiplayer?.roomId === r.roomId;
+
+    card.innerHTML = `
+      <div>
+        <div class="mp-room-card-title">
+          <span>${escapeHtml(r.roomName || r.roomId)}</span>
+          <span class="mp-slot-badge ${isPlaying ? "" : "ready"}">${escapeHtml(statusText)}</span>
+        </div>
+        <div class="mp-room-card-meta">
+          <span>👑 Host: <strong>${escapeHtml(r.hostName || "Host")}</strong></span>
+          <span>· 👥 ${Number(r.playerCount) || 1}/${Number(r.maxPlayers) || 2} Players</span>
+          <span>· 👁️ ${Number(r.spectatorCount) || 0} Spectators</span>
+          <span>· 🔗 <code>?room=${escapeHtml(r.roomId)}</code></span>
+        </div>
+      </div>
+      <div>
+        <button class="btn ${isMyCurrentRoom ? "btn-secondary" : "btn-primary"} btn-xs btn-enter-active-room" data-room="${escapeHtml(r.roomId)}">
+          ${isMyCurrentRoom ? "In Room" : "👁️ Enter"}
+        </button>
+      </div>
+    `;
+    container.appendChild(card);
+  });
+
+  container.querySelectorAll(".btn-enter-active-room").forEach(btn => {
+    btn.addEventListener("click", async (e) => {
+      const targetRoomId = e.currentTarget.dataset.room;
+      if (!targetRoomId) return;
+      if (window.CaroMultiplayer?.roomId === targetRoomId) {
+        switchMpTab("create");
+        return;
+      }
+      const myName = window.CaroAuth?.getCurrentUser()?.display_name || window.CaroMultiplayer?.myName || "Spectator";
+      try {
+        await window.CaroMultiplayer.joinRoom(targetRoomId, myName);
+        showMultiplayerHud(targetRoomId);
+        updateMultiplayerHudBadges();
+        switchMpTab("create");
+      } catch (err) {
+        alert(err.message);
+      }
+    });
+  });
+}
+
 function handleMultiplayerLobbyUpdate(lobbyState) {
+  updateMultiplayerModeBadge();
   renderMultiplayerSlots();
+  renderSpectatorsAndRequests();
+  renderHostApprovalBar();
+  updateMultiplayerHudBadges();
+
   const shareBox = document.getElementById("mp-share-box");
   const shareUrl = document.getElementById("mp-share-url");
-  if (lobbyState.roomId && shareBox && shareUrl) {
-    shareBox.style.display = "block";
-    shareUrl.value = lobbyState.shareUrl;
+  const btnStartMp = document.getElementById("btn-action-start-mp");
+  const btnCreateRoom = document.getElementById("btn-action-create-room");
+  const slugInput = document.getElementById("mp-room-slug-input");
+  const roomNameInput = document.getElementById("mp-room-name-input");
+
+  if (lobbyState.roomId) {
+    if (shareBox) shareBox.style.display = "block";
+    if (shareUrl) shareUrl.value = lobbyState.shareUrl;
+    if (slugInput && !slugInput.value) slugInput.value = lobbyState.roomId;
+    if (roomNameInput && !roomNameInput.value && lobbyState.roomName) roomNameInput.value = lobbyState.roomName;
+    if (btnStartMp) {
+      btnStartMp.style.display = lobbyState.isHost ? "inline-flex" : "none";
+      btnStartMp.textContent = lobbyState.inGame ? "Restart Battle ▶" : "Start Battle ▶";
+    }
+    if (btnCreateRoom) {
+      btnCreateRoom.style.display = lobbyState.isHost ? "inline-flex" : "none";
+      btnCreateRoom.textContent = "New Room";
+    }
+    showMultiplayerHud(lobbyState.roomId);
+  } else {
+    if (shareBox) shareBox.style.display = "none";
+    if (btnStartMp) btnStartMp.style.display = "none";
+    if (btnCreateRoom) {
+      btnCreateRoom.style.display = "inline-flex";
+      btnCreateRoom.textContent = "Create New Room";
+    }
   }
+}
+
+function handleMultiplayerRequestsUpdate() {
+  renderSpectatorsAndRequests();
+  renderHostApprovalBar();
+  updateMultiplayerHudBadges();
+}
+
+function renderSpectatorsAndRequests() {
+  const lobby = window.CaroMultiplayer?.getLobbyState();
+  const sec = document.getElementById("mp-spectators-section");
+  const reqContainer = document.getElementById("mp-requests-container");
+  const reqList = document.getElementById("mp-requests-list");
+  const specLabel = document.getElementById("mp-spectators-label");
+  const btnReqJoin = document.getElementById("btn-mp-request-join");
+  if (!sec || !lobby) return;
+
+  if (!lobby.roomId) {
+    sec.style.display = "none";
+    return;
+  }
+  sec.style.display = "block";
+
+  const specs = lobby.spectators || [];
+  if (specLabel) {
+    const names = specs.map(s => s.name).join(", ");
+    specLabel.textContent = specs.length > 0
+      ? `👁️ Spectators (${specs.length}): ${names}`
+      : `👁️ Spectators (0): None`;
+  }
+
+  // Spectator "Request to Join" button
+  if (btnReqJoin) {
+    if (!lobby.isHost && lobby.myRole === "spectator") {
+      btnReqJoin.style.display = "inline-flex";
+      if (lobby.myPendingRequest) {
+        btnReqJoin.textContent = "⏳ Request Pending...";
+        btnReqJoin.disabled = true;
+      } else {
+        btnReqJoin.textContent = lobby.inGame ? "⚡ Request Takeover" : "✋ Request to Join Match";
+        btnReqJoin.disabled = false;
+      }
+    } else {
+      btnReqJoin.style.display = "none";
+    }
+  }
+
+  // Host Pending Requests queue
+  const reqs = lobby.pendingRequests || [];
+  if (reqContainer && reqList) {
+    if (lobby.isHost && reqs.length > 0) {
+      reqContainer.style.display = "block";
+      reqList.innerHTML = "";
+      reqs.forEach(r => {
+        const row = document.createElement("div");
+        row.className = "mp-request-item";
+        const desc = r.kind === "takeover"
+          ? `⚡ <strong>${escapeHtml(r.fromName)}</strong> wants to take over Slot ${escapeHtml(r.targetSymbol || ("#" + ((r.slotIndex || 1) + 1)))}`
+          : `✋ <strong>${escapeHtml(r.fromName)}</strong> wants to join the match`;
+        row.innerHTML = `
+          <span>${desc}</span>
+          <div style="display:flex;gap:6px;">
+            <button class="btn btn-primary btn-xs btn-approve-req" data-req="${escapeHtml(r.requestId)}">✓ Approve</button>
+            <button class="btn btn-ghost btn-xs btn-reject-req" data-req="${escapeHtml(r.requestId)}">✕ Reject</button>
+          </div>
+        `;
+        reqList.appendChild(row);
+      });
+      reqList.querySelectorAll(".btn-approve-req").forEach(b => {
+        b.addEventListener("click", (e) => {
+          window.CaroMultiplayer.approveRequest(e.currentTarget.dataset.req);
+        });
+      });
+      reqList.querySelectorAll(".btn-reject-req").forEach(b => {
+        b.addEventListener("click", (e) => {
+          window.CaroMultiplayer.rejectRequest(e.currentTarget.dataset.req);
+        });
+      });
+    } else {
+      reqContainer.style.display = "none";
+      reqList.innerHTML = "";
+    }
+  }
+}
+
+function renderHostApprovalBar() {
+  const bar = document.getElementById("mp-host-approval-bar");
+  if (!bar || !window.CaroMultiplayer) return;
+  const lobby = window.CaroMultiplayer.getLobbyState();
+  const reqs = lobby.pendingRequests || [];
+
+  if (!lobby.isHost || reqs.length === 0) {
+    bar.style.display = "none";
+    bar.innerHTML = "";
+    return;
+  }
+
+  const r = reqs[0];
+  const desc = r.kind === "takeover"
+    ? `⚡ <strong>${escapeHtml(r.fromName)}</strong> requests to take over Slot ${escapeHtml(r.targetSymbol || ("#" + ((r.slotIndex || 1) + 1)))}`
+    : `✋ <strong>${escapeHtml(r.fromName)}</strong> requests to join the match`;
+
+  bar.style.display = "flex";
+  bar.innerHTML = `
+    <div>${desc} ${reqs.length > 1 ? `<span class="mp-req-pill">+${reqs.length - 1} more</span>` : ""}</div>
+    <div style="display:flex;gap:8px;">
+      <button class="btn btn-primary btn-xs" id="btn-hud-approve-req">✓ Approve</button>
+      <button class="btn btn-ghost btn-xs" id="btn-hud-reject-req">✕ Reject</button>
+    </div>
+  `;
+  document.getElementById("btn-hud-approve-req")?.addEventListener("click", () => {
+    window.CaroMultiplayer.approveRequest(r.requestId);
+  });
+  document.getElementById("btn-hud-reject-req")?.addEventListener("click", () => {
+    window.CaroMultiplayer.rejectRequest(r.requestId);
+  });
 }
 
 function renderMultiplayerSlots() {
   const list = document.getElementById("mp-slots-list");
-  if (!list) return;
+  if (!list || !window.CaroMultiplayer) return;
 
   const lobby = window.CaroMultiplayer.getLobbyState();
   const slots = lobby.slots || [];
   const isHost = lobby.isHost;
+  const isSpectator = !isHost && lobby.myRole === "spectator";
+  const symbols = ["A", "B", "C", "D"];
+
+  // Toggle +Human / +AI buttons visibility & disabled state
+  const addBar = document.getElementById("mp-slot-add-bar");
+  const btnAddHuman = document.getElementById("btn-mp-add-human");
+  const btnAddAi = document.getElementById("btn-mp-add-ai");
+  if (addBar) {
+    addBar.style.display = (isHost || !lobby.roomId) ? "flex" : "none";
+  }
+  const canAddSlot = slots.length < 4 && !lobby.inGame;
+  if (btnAddHuman) btnAddHuman.disabled = !canAddSlot;
+  if (btnAddAi) btnAddAi.disabled = !canAddSlot;
+
+  const titleEl = document.getElementById("mp-slots-title");
+  if (titleEl) {
+    titleEl.textContent = `Player Roster (${slots.length}/4 Players)`;
+  }
 
   list.innerHTML = "";
   slots.forEach((s, idx) => {
@@ -2341,31 +2645,47 @@ function renderMultiplayerSlots() {
     item.className = "mp-slot-item";
 
     const isSlotHost = idx === 0;
-    const avatar = isSlotHost ? "👑" : (s.type === "human" ? "👤" : (s.type === "ai" ? "🤖" : "⛔"));
-    const safeName = escapeHtml(s.name);
+    const sym = symbols[idx] || "";
+    const avatar = isSlotHost ? "👑" : (s.type === "human" ? "👤" : "🤖");
+    const safeName = escapeHtml(s.name || "Open Human Slot");
 
     let controlsHtml = "";
     if (isSlotHost) {
-      controlsHtml = `<span class="mp-slot-badge ready">Host</span>`;
-    } else if (isHost) {
-      // Host can configure slot 2-4
+      controlsHtml = `<span class="mp-slot-badge ready">Host (${sym})</span>`;
+    } else if (isHost || !lobby.roomId) {
+      const hasSeatedHuman = s.type === "human" && Boolean(s.id);
+      const kickBtn = hasSeatedHuman
+        ? `<button class="btn btn-ghost btn-xs btn-kick-slot" data-slot="${idx}" title="Move player to Spectator">Kick</button>`
+        : "";
+      const removeBtn = (slots.length > 2 && !lobby.inGame)
+        ? `<button class="btn btn-ghost btn-xs btn-remove-slot" data-slot="${idx}" title="Remove slot">✕</button>`
+        : "";
       controlsHtml = `
         <select class="mp-slot-select" data-slot="${idx}">
-          <option value="human" ${s.type === "human" ? "selected" : ""}>👤 Human (Friend)</option>
+          <option value="human" ${s.type === "human" ? "selected" : ""}>👤 ${hasSeatedHuman ? safeName : "Open Human Slot"}</option>
           <option value="von" ${s.type === "ai" && s.model === "von" ? "selected" : ""}>🤖 Von (AI)</option>
           <option value="mojev" ${s.type === "ai" && s.model === "mojev" ? "selected" : ""}>🤖 MoJev (AI)</option>
           <option value="laya" ${s.type === "ai" && s.model === "laya" ? "selected" : ""}>🤖 Laya (AI)</option>
           <option value="jev" ${s.type === "ai" && s.model === "jev" ? "selected" : ""}>🤖 Jev (AI)</option>
-          <option value="closed" ${s.type === "closed" ? "selected" : ""}>⛔ Closed</option>
         </select>
+        ${kickBtn}
+        ${removeBtn}
       `;
     } else {
-      controlsHtml = `<span class="mp-slot-badge ${s.ready ? 'ready' : ''}">${safeName}</span>`;
+      const actionBtn = isSpectator
+        ? (s.type === "human" && !s.id && !lobby.inGame
+          ? `<button class="btn btn-primary btn-xs btn-req-slot" data-slot="${idx}">✋ Request Slot</button>`
+          : `<button class="btn btn-ghost btn-xs btn-takeover-slot" data-slot="${idx}">⚡ Takeover</button>`)
+        : "";
+      controlsHtml = `
+        <span class="mp-slot-badge ${s.ready ? "ready" : ""}">${s.id === lobby.myPlayerId ? "You (" + sym + ")" : safeName}</span>
+        ${actionBtn}
+      `;
     }
 
     item.innerHTML = `
       <div class="mp-slot-left">
-        <span class="mp-slot-num">#${idx + 1}</span>
+        <span class="mp-slot-num">${sym}</span>
         <span class="mp-slot-avatar">${avatar}</span>
         <span class="mp-slot-name">${safeName}</span>
       </div>
@@ -2382,13 +2702,39 @@ function renderMultiplayerSlots() {
       const slotIdx = parseInt(e.target.dataset.slot, 10);
       const val = e.target.value;
       if (val === "human") {
-        window.CaroMultiplayer.updateSlot(slotIdx, { type: "human", name: "Waiting for friend...", id: null, ready: false });
-      } else if (val === "closed") {
-        window.CaroMultiplayer.updateSlot(slotIdx, { type: "closed", name: "Closed", id: null, ready: false });
+        window.CaroMultiplayer.updateSlot(slotIdx, { type: "human", name: "Open Human Slot", id: null, ready: false });
       } else {
         const aiNames = { von: "Von (AI)", mojev: "MoJev (AI)", laya: "Laya (AI)", jev: "Jev (AI)" };
         window.CaroMultiplayer.updateSlot(slotIdx, { type: "ai", model: val, name: aiNames[val] || "AI", id: null, ready: true });
       }
+    });
+  });
+
+  list.querySelectorAll(".btn-remove-slot").forEach(btn => {
+    btn.addEventListener("click", (e) => {
+      const slotIdx = parseInt(e.currentTarget.dataset.slot, 10);
+      window.CaroMultiplayer.removeSlot(slotIdx);
+    });
+  });
+
+  list.querySelectorAll(".btn-kick-slot").forEach(btn => {
+    btn.addEventListener("click", (e) => {
+      const slotIdx = parseInt(e.currentTarget.dataset.slot, 10);
+      window.CaroMultiplayer.kickPlayerToSpectator(slotIdx);
+    });
+  });
+
+  list.querySelectorAll(".btn-req-slot").forEach(btn => {
+    btn.addEventListener("click", (e) => {
+      const slotIdx = parseInt(e.currentTarget.dataset.slot, 10);
+      window.CaroMultiplayer.requestJoinSlot(slotIdx);
+    });
+  });
+
+  list.querySelectorAll(".btn-takeover-slot").forEach(btn => {
+    btn.addEventListener("click", (e) => {
+      const slotIdx = parseInt(e.currentTarget.dataset.slot, 10);
+      window.CaroMultiplayer.requestTakeover(slotIdx);
     });
   });
 }
@@ -2397,38 +2743,28 @@ function resolveMyMultiplayerSymbol(roster) {
   if (!roster || roster.length === 0) return null;
   const isHost = Boolean(window.CaroMultiplayer?.isHost);
   const myId = window.CaroMultiplayer?.myId;
-  const myName = window.CaroMultiplayer?.myName;
+  const myRole = window.CaroMultiplayer?.myRole;
   const assignedSlot = window.CaroMultiplayer?.myAssignedSlot;
 
-  // 1. Match by exact playerId first (preserves symbol across reconnects and host migration)
+  // 1. Match by exact playerId first (preserves symbol across reconnects, approvals, and takeovers)
   if (myId) {
     const slotById = roster.find(r => r.playerId && r.playerId === myId);
     if (slotById) return slotById.symbol;
   }
 
-  // 2. Match by player name
-  if (myName) {
-    const slotByName = roster.find(r => r.type === "human" && r.name && r.name.trim().toLowerCase() === myName.trim().toLowerCase());
-    if (slotByName) return slotByName.symbol;
-  }
-
-  // 3. Original Host is symbol of slot 0 (A)
+  // 2. Host owns slot 0 (A) unless another slot explicitly matched by playerId
   if (isHost) {
     return roster[0]?.symbol || "A";
   }
 
-  // 4. Match by assigned slot index
-  if (typeof assignedSlot === "number" && assignedSlot >= 0 && assignedSlot < roster.length) {
+  // 3. Match by approved assignedSlot only if role is player
+  if (myRole === "player" && typeof assignedSlot === "number" && assignedSlot >= 0 && assignedSlot < roster.length) {
     const slotByIndex = roster[assignedSlot];
     if (slotByIndex && slotByIndex.type === "human") return slotByIndex.symbol;
   }
 
-  // 5. Fallback for guest: find the first human slot that is not host (idx > 0)
-  const guestHuman = roster.find((r, idx) => idx > 0 && r.type === "human");
-  if (guestHuman) return guestHuman.symbol;
-
-  // 6. Default to "B" for guest in 2+ player game
-  return roster[1]?.symbol || "B";
+  // Spectators strictly return null so they cannot place stones until approved!
+  return null;
 }
 
 function setSidebarRosterDisabled(disabled) {
@@ -2450,7 +2786,6 @@ function handleMultiplayerGameStart(data) {
   setSidebarRosterDisabled(true);
   multiplayerRoster = data.roster || [];
   myMultiplayerSymbol = resolveMyMultiplayerSymbol(multiplayerRoster);
-  console.log(`[Caro Arena] Match started. My symbol: ${myMultiplayerSymbol}, My ID: ${window.CaroMultiplayer?.myId}, IsHost: ${window.CaroMultiplayer?.isHost}`);
 
   if (!clientEngine && window.CaroEngine) {
     clientEngine = new window.CaroEngine.ClientGameManager();
@@ -2465,6 +2800,7 @@ function handleMultiplayerGameStart(data) {
 
   closeMultiplayerModal();
   showMultiplayerHud(data.roomId);
+  updateMultiplayerHudBadges();
   userInteractedWithCamera = false;
   autoScaleCamera(true);
   handleStateUpdate(nextState);
@@ -2476,17 +2812,90 @@ function handleMultiplayerGameStart(data) {
   }
 }
 
+function handleMultiplayerSlotTakeover(payload) {
+  if (!payload || !payload.symbol) return;
+  const sym = payload.symbol;
+  const rosterItem = multiplayerRoster.find(r => r.symbol === sym);
+
+  if (payload.isAiReplacement) {
+    const aiModel = payload.aiModel || "von";
+    if (rosterItem) {
+      rosterItem.type = aiModel;
+      rosterItem.name = payload.newPlayerName || "Von (AI)";
+      rosterItem.playerId = null;
+      rosterItem.isAi = true;
+      rosterItem.disconnected = false;
+    }
+    if (clientEngine?.players) {
+      const p = clientEngine.players.find(pl => pl.symbol === sym);
+      if (p) {
+        p.type = aiModel;
+        p.name = payload.newPlayerName || "Von (AI)";
+        p.agent = clientEngine.createAgent(aiModel, sym);
+      }
+    }
+  } else {
+    if (rosterItem) {
+      rosterItem.type = "human";
+      rosterItem.name = payload.newPlayerName || "Player";
+      rosterItem.playerId = payload.newPlayerId;
+      rosterItem.isAi = false;
+      rosterItem.disconnected = false;
+      rosterItem.isLocalHuman = (payload.newPlayerId === window.CaroMultiplayer?.myId);
+    }
+    if (clientEngine?.players) {
+      const p = clientEngine.players.find(pl => pl.symbol === sym);
+      if (p) {
+        p.type = "human";
+        p.name = payload.newPlayerName || "Player";
+        p.agent = null;
+      }
+    }
+  }
+
+  myMultiplayerSymbol = resolveMyMultiplayerSymbol(multiplayerRoster);
+  if (clientEngine) {
+    gameState = clientEngine.getState();
+    rebuildSymbolMap();
+  }
+  updateMultiplayerHudBadges();
+  updateUI();
+  if (window.CaroMultiplayer?.isHost) {
+    scheduleHostAiMoveIfNeeded();
+  }
+}
+
 function handleMultiplayerStateSync(payload) {
   if (!payload || !Array.isArray(payload.roster) || payload.roster.length < 2) return;
   const incomingMoves = Array.isArray(payload.moves) ? payload.moves : [];
   const incomingBattleNum = payload.battleNumber || 1;
 
+  isMultiplayerActive = true;
+  setSidebarRosterDisabled(true);
+  multiplayerRoster = payload.roster.map(r => Object.assign({}, r, {
+    isLocalHuman: r.type === "human" && r.playerId === window.CaroMultiplayer?.myId
+  }));
+  myMultiplayerSymbol = resolveMyMultiplayerSymbol(multiplayerRoster);
+
   if (
-    isMultiplayerActive &&
     clientEngine &&
     clientEngine.battleNumber === incomingBattleNum &&
-    (clientEngine.board?.moves?.length || 0) >= incomingMoves.length
+    (clientEngine.board?.moves?.length || 0) >= incomingMoves.length &&
+    clientEngine.players?.length === multiplayerRoster.length
   ) {
+    // Update player names/types in place (e.g. after a takeover) without re-running moves
+    for (const r of multiplayerRoster) {
+      const p = clientEngine.players.find(pl => pl.symbol === r.symbol);
+      if (p) {
+        p.type = r.type;
+        p.name = r.name;
+        p.agent = r.type === "human" ? null : (p.agent || clientEngine.createAgent(r.type, r.symbol));
+      }
+    }
+    gameState = clientEngine.getState();
+    rebuildSymbolMap();
+    updateMultiplayerHudBadges();
+    updateUI();
     return;
   }
 
@@ -2497,13 +2906,6 @@ function handleMultiplayerStateSync(payload) {
       body: JSON.stringify({ enabled: false, delay_sec: 0.01, non_stop: false })
     }).catch(() => {});
   }
-
-  isMultiplayerActive = true;
-  setSidebarRosterDisabled(true);
-  multiplayerRoster = payload.roster.map(r => Object.assign({}, r, {
-    isLocalHuman: r.type === "human" && r.playerId === window.CaroMultiplayer?.myId
-  }));
-  myMultiplayerSymbol = resolveMyMultiplayerSymbol(multiplayerRoster);
 
   if (!clientEngine && window.CaroEngine) {
     clientEngine = new window.CaroEngine.ClientGameManager();
@@ -2523,6 +2925,7 @@ function handleMultiplayerStateSync(payload) {
 
   closeMultiplayerModal();
   showMultiplayerHud(payload.roomId || window.CaroMultiplayer?.roomId || "");
+  updateMultiplayerHudBadges();
   userInteractedWithCamera = false;
   autoScaleCamera(true);
   handleStateUpdate(clientEngine.getState());
@@ -2555,6 +2958,7 @@ function handleMultiplayerHostMigrated(info) {
     }
   }
   myMultiplayerSymbol = resolveMyMultiplayerSymbol(multiplayerRoster);
+  updateMultiplayerHudBadges();
   updateUI();
   if (window.CaroMultiplayer?.isHost) {
     scheduleHostAiMoveIfNeeded();
@@ -2566,11 +2970,24 @@ function handleMultiplayerRemoteMove(data) {
   if (data.senderId === window.CaroMultiplayer.myId) return;
   if (data.symbol && clientEngine.board?.currentPlayer && data.symbol !== clientEngine.board.currentPlayer) return;
 
+  // Verify sender owns the slot or is the room host (for AI / shot-clock moves)
+  const slotEntry = multiplayerRoster.find(r => r.symbol === data.symbol);
+  const hostId = window.CaroMultiplayer?.hostId;
+  if (
+    slotEntry &&
+    slotEntry.playerId &&
+    data.senderId &&
+    data.senderId !== slotEntry.playerId &&
+    data.senderId !== hostId
+  ) {
+    return;
+  }
+
   const moves = clientEngine.board?.moves || [];
   const occupied = moves.some(m => m.row === data.row && m.col === data.col);
   if (occupied) return;
 
-  const meta = { row: data.row, col: data.col, latency_ms: 0, reasoning: `Remote move (${data.symbol || 'remote'})` };
+  const meta = { row: data.row, col: data.col, latency_ms: 0, reasoning: `Remote move (${data.symbol || "remote"})` };
   const ok = clientEngine.playMove(data.row, data.col, meta);
   if (ok) {
     const nextState = clientEngine.getState();
@@ -2601,6 +3018,8 @@ function handleMultiplayerRoomLeave() {
 
   const hud = document.getElementById("multiplayer-hud");
   if (hud) hud.style.display = "none";
+  const approvalBar = document.getElementById("mp-host-approval-bar");
+  if (approvalBar) approvalBar.style.display = "none";
 
   if (useBackend()) {
     fetchState();
@@ -2617,11 +3036,60 @@ function handleMultiplayerRoomLeave() {
 
 function showMultiplayerHud(roomId) {
   const hud = document.getElementById("multiplayer-hud");
-  if (hud) {
+  if (hud && roomId) {
     hud.style.display = "flex";
     const rm = document.getElementById("mp-hud-room");
+    const rmName = document.getElementById("mp-hud-room-name");
     if (rm) rm.textContent = roomId;
-    updateMultiplayerHudStatus("Battle underway!");
+    if (rmName) rmName.textContent = window.CaroMultiplayer?.roomName || "Room:";
+    updateMultiplayerHudBadges();
+  }
+}
+
+function updateMultiplayerHudBadges() {
+  if (!window.CaroMultiplayer) return;
+  const lobby = window.CaroMultiplayer.getLobbyState();
+  const roleBadge = document.getElementById("mp-hud-role");
+  const specBadge = document.getElementById("mp-hud-spectators");
+  const reqJoinBtn = document.getElementById("btn-mp-hud-request-join");
+  const reqCountBadge = document.getElementById("mp-hud-req-badge");
+  const rmName = document.getElementById("mp-hud-room-name");
+
+  if (rmName && lobby.roomName) {
+    rmName.textContent = `${lobby.roomName}:`;
+  }
+  if (roleBadge) {
+    if (lobby.isHost) {
+      roleBadge.textContent = `👑 Host (${myMultiplayerSymbol || "A"})`;
+    } else if (myMultiplayerSymbol) {
+      roleBadge.textContent = `⚔️ Player ${myMultiplayerSymbol}`;
+    } else {
+      roleBadge.textContent = "👁️ Spectating";
+    }
+  }
+  if (specBadge) {
+    const count = (lobby.spectators || []).length;
+    specBadge.textContent = `👁️ ${count}`;
+  }
+  if (reqJoinBtn) {
+    if (!lobby.isHost && !myMultiplayerSymbol) {
+      reqJoinBtn.style.display = "inline-flex";
+      reqJoinBtn.textContent = lobby.myPendingRequest
+        ? "⏳ Requested"
+        : (lobby.inGame ? "⚡ Request Takeover" : "✋ Request to Join");
+      reqJoinBtn.disabled = Boolean(lobby.myPendingRequest);
+    } else {
+      reqJoinBtn.style.display = "none";
+    }
+  }
+  if (reqCountBadge) {
+    const pendingCount = (lobby.pendingRequests || []).length;
+    if (lobby.isHost && pendingCount > 0) {
+      reqCountBadge.style.display = "inline-block";
+      reqCountBadge.textContent = String(pendingCount);
+    } else {
+      reqCountBadge.style.display = "none";
+    }
   }
 }
 
@@ -2774,22 +3242,174 @@ function startNextMultiplayerBattle() {
 }
 
 function checkUrlForRoomInvite() {
-  // Auto-reconnect if this tab was already in an active room before a page refresh
+  const params = new URLSearchParams(window.location.search);
+  const roomFromUrl = params.get("room");
+
   try {
     const savedRoom = sessionStorage.getItem("caro_active_room");
-    const savedName = sessionStorage.getItem("caro_player_name");
-    if (savedRoom && window.CaroMultiplayer) {
+    const savedName = window.CaroAuth?.getCurrentUser()?.display_name || sessionStorage.getItem("caro_player_name");
+    if (savedRoom && (!roomFromUrl || roomFromUrl.toLowerCase() === savedRoom.toLowerCase()) && window.CaroMultiplayer) {
       window.CaroMultiplayer.joinRoom(savedRoom, savedName || undefined).catch(() => {});
       return;
     }
   } catch {}
 
-  const params = new URLSearchParams(window.location.search);
-  const room = params.get("room");
-  if (room) {
+  if (roomFromUrl) {
     openMultiplayerModal("join");
     const codeInput = document.getElementById("mp-join-code-input");
-    if (codeInput) codeInput.value = room.toUpperCase();
+    if (codeInput) codeInput.value = roomFromUrl;
   }
 }
+
+// ─────────────────────────────────────────
+// Simple Account & Cranes Auth Modal UI
+// ─────────────────────────────────────────
+function setupAuthUI() {
+  if (!window.CaroAuth) return;
+
+  const btnOpenAuth = document.getElementById("btn-auth-profile");
+  const modalAuth = document.getElementById("modal-auth");
+  const btnCloseAuth = document.getElementById("btn-close-auth-modal");
+  const tabBtnLogin = document.getElementById("auth-tab-btn-login");
+  const tabBtnRegister = document.getElementById("auth-tab-btn-register");
+  const btnSubmitLogin = document.getElementById("btn-auth-submit-login");
+  const btnSubmitRegister = document.getElementById("btn-auth-submit-register");
+  const btnSaveProfile = document.getElementById("btn-auth-save-profile");
+  const btnLogout = document.getElementById("btn-auth-logout");
+
+  const updateAuthHeaderBtn = (user) => {
+    if (!btnOpenAuth) return;
+    if (user && user.display_name) {
+      const cranes = user.cranes ?? 100;
+      btnOpenAuth.textContent = `🦢 ${cranes} · 👤 ${user.display_name}`;
+    } else {
+      btnOpenAuth.textContent = "👤 Sign In";
+    }
+  };
+
+  const switchAuthTab = (mode) => {
+    const tLogin = document.getElementById("auth-tab-login");
+    const tReg = document.getElementById("auth-tab-register");
+    const statusMsg = document.getElementById("auth-status-msg");
+    if (statusMsg) statusMsg.style.display = "none";
+    if (tLogin) tLogin.style.display = mode === "login" ? "block" : "none";
+    if (tReg) tReg.style.display = mode === "register" ? "block" : "none";
+    tabBtnLogin?.classList.toggle("active", mode === "login");
+    tabBtnRegister?.classList.toggle("active", mode === "register");
+  };
+
+  const renderAuthModalView = () => {
+    const user = window.CaroAuth.getCurrentUser();
+    const guestView = document.getElementById("auth-view-guest");
+    const profileView = document.getElementById("auth-view-profile");
+    const statusMsg = document.getElementById("auth-status-msg");
+    const profMsg = document.getElementById("auth-profile-msg");
+    if (statusMsg) statusMsg.style.display = "none";
+    if (profMsg) profMsg.style.display = "none";
+
+    if (user) {
+      if (guestView) guestView.style.display = "none";
+      if (profileView) profileView.style.display = "block";
+      const cranesEl = document.getElementById("auth-cranes-count");
+      const nameEl = document.getElementById("auth-profile-name");
+      const emailEl = document.getElementById("auth-profile-email");
+      const currPinEl = document.getElementById("auth-profile-current-pin");
+      const newPinEl = document.getElementById("auth-profile-new-pin");
+      if (cranesEl) cranesEl.textContent = String(user.cranes ?? 100);
+      if (nameEl) nameEl.value = user.display_name || "";
+      if (emailEl) emailEl.value = user.email || "";
+      if (currPinEl) currPinEl.value = "";
+      if (newPinEl) newPinEl.value = "";
+    } else {
+      if (guestView) guestView.style.display = "block";
+      if (profileView) profileView.style.display = "none";
+      switchAuthTab("login");
+    }
+  };
+
+  const showAuthMsg = (elId, text, isError = true) => {
+    const el = document.getElementById(elId);
+    if (!el) return;
+    el.style.display = "block";
+    el.className = `auth-status-msg ${isError ? "error" : "success"}`;
+    el.textContent = text;
+  };
+
+  window.CaroAuth.onAuthChange((user) => {
+    updateAuthHeaderBtn(user);
+    renderAuthModalView();
+  });
+
+  updateAuthHeaderBtn(window.CaroAuth.getCurrentUser());
+
+  btnOpenAuth?.addEventListener("click", () => {
+    renderAuthModalView();
+    if (modalAuth) modalAuth.style.display = "flex";
+  });
+
+  btnCloseAuth?.addEventListener("click", () => {
+    if (modalAuth) modalAuth.style.display = "none";
+  });
+
+  modalAuth?.addEventListener("click", (e) => {
+    if (e.target.id === "modal-auth") modalAuth.style.display = "none";
+  });
+
+  tabBtnLogin?.addEventListener("click", () => switchAuthTab("login"));
+  tabBtnRegister?.addEventListener("click", () => switchAuthTab("register"));
+
+  btnSubmitLogin?.addEventListener("click", async () => {
+    const email = document.getElementById("auth-login-email")?.value || "";
+    const pin = document.getElementById("auth-login-pin")?.value || "";
+    try {
+      btnSubmitLogin.disabled = true;
+      await window.CaroAuth.login({ email, pin });
+      showAuthMsg("auth-profile-msg", "Signed in!", false);
+    } catch (err) {
+      showAuthMsg("auth-status-msg", err.message, true);
+    } finally {
+      btnSubmitLogin.disabled = false;
+    }
+  });
+
+  btnSubmitRegister?.addEventListener("click", async () => {
+    const displayName = document.getElementById("auth-reg-name")?.value || "";
+    const email = document.getElementById("auth-reg-email")?.value || "";
+    const pin = document.getElementById("auth-reg-pin")?.value || "";
+    try {
+      btnSubmitRegister.disabled = true;
+      await window.CaroAuth.register({ displayName, email, pin });
+      showAuthMsg("auth-profile-msg", "Account created with 100 🦢 Cranes!", false);
+    } catch (err) {
+      showAuthMsg("auth-status-msg", err.message, true);
+    } finally {
+      btnSubmitRegister.disabled = false;
+    }
+  });
+
+  btnSaveProfile?.addEventListener("click", async () => {
+    const displayName = document.getElementById("auth-profile-name")?.value || "";
+    const email = document.getElementById("auth-profile-email")?.value || "";
+    const currentPin = document.getElementById("auth-profile-current-pin")?.value || "";
+    const newPin = document.getElementById("auth-profile-new-pin")?.value || "";
+    try {
+      btnSaveProfile.disabled = true;
+      await window.CaroAuth.updateProfile({ displayName, email, currentPin, newPin });
+      showAuthMsg("auth-profile-msg", "✓ Profile updated!", false);
+      const currPinEl = document.getElementById("auth-profile-current-pin");
+      const newPinEl = document.getElementById("auth-profile-new-pin");
+      if (currPinEl) currPinEl.value = "";
+      if (newPinEl) newPinEl.value = "";
+    } catch (err) {
+      showAuthMsg("auth-profile-msg", err.message, true);
+    } finally {
+      btnSaveProfile.disabled = false;
+    }
+  });
+
+  btnLogout?.addEventListener("click", () => {
+    window.CaroAuth.logout();
+  });
+}
+
 

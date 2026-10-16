@@ -1087,11 +1087,219 @@ html, body {
 }
 
 /* ==========================================================================
+   Active Rooms Lobby, Spectator Requests & Account/Cranes Auth Styles
+   ========================================================================== */
+.mp-lobby-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 10px;
+}
+.mp-active-rooms-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-height: 280px;
+  overflow-y: auto;
+  margin-bottom: 12px;
+}
+.mp-empty-rooms {
+  text-align: center;
+  padding: 28px 16px;
+  background: var(--bg-raised);
+  border: 1px dashed var(--border);
+  border-radius: 10px;
+  color: var(--text-secondary);
+  font-size: 0.85rem;
+}
+.mp-room-card {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px 14px;
+  background: var(--bg-raised);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  transition: border-color 0.15s ease;
+}
+.mp-room-card:hover {
+  border-color: var(--primary);
+}
+.mp-room-card-title {
+  font-size: 0.92rem;
+  font-weight: 800;
+  color: var(--text-primary);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.mp-room-card-meta {
+  font-size: 0.76rem;
+  color: var(--text-secondary);
+  margin-top: 3px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.mp-grid-fields {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+  margin-bottom: 12px;
+}
+.mp-grid-fields .mp-field-row {
+  margin-bottom: 0;
+}
+.mp-grid-fields .mp-checkbox-row {
+  grid-column: 1 / -1;
+  margin-top: 2px;
+}
+.mp-public-label {
+  display: inline-flex !important;
+  align-items: center;
+  gap: 8px;
+  font-size: 0.8rem !important;
+  text-transform: none !important;
+  cursor: pointer;
+  color: var(--text-primary) !important;
+}
+.mp-public-label input[type="checkbox"] {
+  width: 15px !important;
+  height: 15px !important;
+  margin: 0;
+  accent-color: var(--primary);
+}
+.mp-slots-header-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 8px;
+}
+.mp-slot-add-bar {
+  display: flex;
+  gap: 6px;
+}
+.mp-slot-right {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.mp-spectators-section {
+  background: #f8fafc;
+  border: 1px solid #e2e8f0;
+  border-radius: 10px;
+  padding: 10px 12px;
+  margin-bottom: 14px;
+}
+.mp-spectators-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 0.8rem;
+  color: #475569;
+  font-weight: 600;
+}
+.mp-requests-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-bottom: 10px;
+}
+.mp-request-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 8px 10px;
+  background: #fffbeb;
+  border: 1px solid #fde68a;
+  border-radius: 8px;
+  font-size: 0.8rem;
+  font-weight: 600;
+  color: #92400e;
+}
+.mp-req-pill {
+  display: inline-block;
+  background: #ef4444;
+  color: #fff;
+  font-size: 0.68rem;
+  font-weight: 800;
+  padding: 1px 6px;
+  border-radius: 999px;
+  margin-left: 3px;
+}
+.mp-role-pill {
+  font-size: 0.74rem;
+  font-weight: 700;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: rgba(15, 23, 42, 0.08);
+}
+.mp-host-approval-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 7px 16px;
+  background: #fffbeb;
+  border-bottom: 1.5px solid #fcd34d;
+  color: #92400e;
+  font-size: 0.8rem;
+  font-weight: 700;
+}
+.auth-cranes-banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 14px 16px;
+  background: linear-gradient(135deg, #eff6ff 0%, #dbeafe 100%);
+  border: 1px solid #bfdbfe;
+  border-radius: 12px;
+  margin-bottom: 16px;
+}
+.auth-cranes-title {
+  font-size: 0.88rem;
+  font-weight: 800;
+  color: #1e40af;
+}
+.auth-cranes-sub {
+  font-size: 0.74rem;
+  color: #3b82f6;
+}
+.auth-cranes-amount {
+  font-size: 1.5rem;
+  font-weight: 900;
+  color: #1d4ed8;
+  font-family: monospace;
+}
+.auth-status-msg {
+  padding: 8px 12px;
+  border-radius: 8px;
+  font-size: 0.8rem;
+  font-weight: 600;
+  margin-bottom: 12px;
+}
+.auth-status-msg.error {
+  background: #fef2f2;
+  border: 1px solid #fecaca;
+  color: #b91c1c;
+}
+.auth-status-msg.success {
+  background: #ecfdf5;
+  border: 1px solid #a7f3d0;
+  color: #047857;
+}
+
+/* ==========================================================================
    Responsive
    ========================================================================== */
 @media (max-width: 840px) {
   .arena-layout { grid-template-columns: 1fr; }
   .sidebar { border-left: none; border-top: 1px solid var(--border); max-height: 50vh; }
   .model-status-row { display: none; }
+  .mp-grid-fields { grid-template-columns: 1fr; }
 }
+
 

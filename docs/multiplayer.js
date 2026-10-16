@@ -1,31 +1,56 @@
 /**
- * Caro Arena — Supabase Realtime Multiplayer Engine
- * Up to 4 Players (Human vs Human with Optional AI Bots)
- * Real-time WebSocket synchronization using Supabase Broadcast & Presence
+ * Caro Arena — Supabase Realtime Multiplayer, Lobby, Spectator & Simple PIN Auth Engine
+ * - Locked to hosted Supabase project (`window.CARO_SUPABASE_URL` / `window.CARO_SUPABASE_KEY`)
+ * - Global Active Rooms Lobby (`caro_arena_lobby`) with automatic empty-room cleanup
+ * - Custom Room Name, Custom URL Slug (`?room=slug`), Public/Private visibility, Dynamic 2–4 Player Slots
+ * - Spectator-first entry, Host-approved "Request to Join" & Mid-battle "Request Takeover"
+ * - Simple Account Auth (`window.CaroAuth`) with Display Name, Email, 6-Digit PIN, and 🦢 Cranes balance
  */
 
 (function () {
   let supabaseClient = null;
   let currentChannel = null;
+  let lobbyChannel = null;
+
   let currentRoomId = null;
+  let currentRoomName = "";
+  let isRoomPublic = true;
   let myPlayerId = null;
   let myPlayerName = "Player";
   let isRoomHost = false;
   let hostPlayerId = null;
-  let myAssignedSlot = 0; // 0-indexed
+  let myAssignedSlot = -1; // -1 = spectator, 0..3 = player slot
+  let myRole = "spectator"; // "host" | "player" | "spectator"
   let turnTimeoutSec = 30;
+  let currentBattleNumber = 1;
 
-  // Room state synchronized among peers
+  const AI_MODELS = ["von", "mojev", "laya", "jev"];
+  const AI_NAMES = {
+    von: "Von (AI)",
+    mojev: "MoJev (AI)",
+    laya: "Laya (AI)",
+    jev: "Jev (AI)"
+  };
+
+  // Dynamic room slots (2 to 4 players)
   let roomSlots = [
     { type: "human", name: "Host", id: null, ready: true },
-    { type: "human", name: "Waiting...", id: null, ready: false },
-    { type: "closed", name: "Closed", id: null, ready: false },
-    { type: "closed", name: "Closed", id: null, ready: false },
+    { type: "human", name: "Open Human Slot", id: null, ready: false },
+    { type: "ai", model: "von", name: "Von (AI)", id: null, ready: true }
   ];
+  let spectators = []; // [{ id, name, joinedAt }]
+  let pendingRequests = []; // [{ requestId, kind: 'join'|'takeover', fromId, fromName, slotIndex, targetSymbol, createdAt }]
+  let myPendingRequest = null;
+  let lastRejectedAt = 0;
   let inGame = false;
+
+  // Active rooms discovered on `caro_arena_lobby`
+  const activeRoomsMap = new Map();
+  const knownPeers = new Map();
 
   // Callbacks
   let onLobbyChangeCallback = null;
+  let onActiveRoomsChangeCallback = null;
   let onGameStartCallback = null;
   let onRemoteMoveCallback = null;
   let onRemoteNextBattleCallback = null;
@@ -33,13 +58,18 @@
   let onStatusMessageCallback = null;
   let onStateSyncCallback = null;
   let onHostMigratedCallback = null;
+  let onRequestsChangeCallback = null;
+  let onSlotTakeoverCallback = null;
   let getHostStateCallback = null;
 
+  // ───────────────────────────────────────────────────────────────────────────
+  // Hosted Supabase Client Initialization (No Manual Setup UI Required)
+  // ───────────────────────────────────────────────────────────────────────────
   function getSavedCredentials() {
     try {
-      const url = localStorage.getItem("caro_supabase_url") || window.CARO_SUPABASE_URL || "";
-      const key = localStorage.getItem("caro_supabase_key") || window.CARO_SUPABASE_KEY || "";
-      return { url: url.trim(), key: key.trim() };
+      const url = window.CARO_SUPABASE_URL || localStorage.getItem("caro_supabase_url") || "";
+      const key = window.CARO_SUPABASE_KEY || localStorage.getItem("caro_supabase_key") || "";
+      return { url: String(url).trim(), key: String(key).trim() };
     } catch {
       return { url: "", key: "" };
     }
@@ -50,23 +80,11 @@
     return Boolean(creds.url && creds.key);
   }
 
-  function saveCredentials(url, key) {
-    try {
-      localStorage.setItem("caro_supabase_url", (url || "").trim());
-      localStorage.setItem("caro_supabase_key", (key || "").trim());
-      supabaseClient = null; // Re-init on next use
-      return true;
-    } catch {
-      return false;
-    }
-  }
-
   function getClient() {
     if (supabaseClient) return supabaseClient;
     const creds = getSavedCredentials();
     if (!creds.url || !creds.key) return null;
     if (typeof window.supabase === "undefined" || !window.supabase.createClient) {
-      console.warn("Supabase JS SDK not loaded yet.");
       return null;
     }
     supabaseClient = window.supabase.createClient(creds.url, creds.key, {
@@ -88,18 +106,53 @@
     return code;
   }
 
+  function sanitizeRoomSlug(raw) {
+    if (!raw) return "";
+    return String(raw)
+      .trim()
+      .toLowerCase()
+      .replace(/[\s_]+/g, "-")
+      .replace(/[^a-z0-9-]/g, "")
+      .replace(/-+/g, "-")
+      .replace(/^-|-$/g, "")
+      .substring(0, 24);
+  }
+
+  function normalizeRoomIdentifier(raw) {
+    const trimmed = String(raw || "").trim();
+    if (!trimmed) return "";
+    // If it contains hyphens or lowercase slug format > 6 chars, preserve lowercase slug; otherwise uppercase code
+    if (trimmed.includes("-") || trimmed.length > 6) {
+      return sanitizeRoomSlug(trimmed);
+    }
+    return trimmed.replace(/[^a-zA-Z0-9-]/g, "").toUpperCase().substring(0, 24);
+  }
+
   function generatePlayerId() {
     return "p_" + Math.random().toString(36).substring(2, 9);
   }
 
+  function updateBrowserUrlRoom(roomId) {
+    try {
+      if (typeof window === "undefined" || !window.history || !window.history.replaceState) return;
+      const url = new URL(window.location.href);
+      if (roomId) {
+        url.searchParams.set("room", roomId);
+      } else {
+        url.searchParams.delete("room");
+      }
+      window.history.replaceState(null, "", url.pathname + url.search + url.hash);
+    } catch {}
+  }
+
   /**
    * Fallback Realtime Adapter using BroadcastChannel API
-   * Enables immediate local multi-tab / side-by-side room testing without Supabase keys
+   * Enables immediate multi-tab synchronization even when offline
    */
   class LocalBroadcastChannelAdapter {
-    constructor(channelName, myPlayerId) {
+    constructor(channelName, myId) {
       this.name = channelName;
-      this.myPlayerId = myPlayerId;
+      this.myPlayerId = myId;
       this.bc = new BroadcastChannel(`caro_bc_${channelName}`);
       this.presenceMap = new Map();
       this.listeners = {
@@ -122,46 +175,45 @@
           if (isNew && this.listeners.presence["join"]) {
             this.listeners.presence["join"]({ key, newPresences: [presence] });
           }
-          if (data.replyRequested && this.myPresence) {
-            this.bc.postMessage({
-              type: "bc_track",
-              key: this.myPlayerId,
-              presence: this.myPresence,
-              replyRequested: false
-            });
-          }
         } else if (data.type === "bc_untrack") {
           const { key } = data;
-          const old = this.presenceMap.get(key);
+          const left = this.presenceMap.get(key) || [];
           this.presenceMap.delete(key);
-          if (this.listeners.presence["leave"] && old) {
-            this.listeners.presence["leave"]({ key, leftPresences: old });
+          if (this.listeners.presence["leave"]) {
+            this.listeners.presence["leave"]({ key, leftPresences: left });
           }
           if (this.listeners.presence["sync"]) {
             this.listeners.presence["sync"]();
           }
+        } else if (data.type === "bc_request_presence") {
+          if (this.myPresence) {
+            this.bc.postMessage({
+              type: "bc_track",
+              key: this.myPlayerId,
+              presence: this.myPresence
+            });
+          }
         } else if (data.type === "bc_broadcast") {
           const cb = this.listeners.broadcast[data.event];
-          if (cb) {
-            cb({ payload: data.payload });
-          }
+          if (cb) cb({ payload: data.payload });
         }
       };
     }
 
-    on(category, filter, callback) {
-      if (category === "presence") {
+    on(type, filter, callback) {
+      if (type === "presence") {
         this.listeners.presence[filter.event] = callback;
-      } else if (category === "broadcast") {
+      } else if (type === "broadcast") {
         this.listeners.broadcast[filter.event] = callback;
       }
       return this;
     }
 
     async subscribe(callback) {
-      setTimeout(() => {
-        if (callback) callback("SUBSCRIBED");
-      }, 10);
+      this.bc.postMessage({ type: "bc_request_presence" });
+      if (callback) {
+        setTimeout(() => callback("SUBSCRIBED"), 5);
+      }
       return this;
     }
 
@@ -171,12 +223,20 @@
       this.bc.postMessage({
         type: "bc_track",
         key: this.myPlayerId,
-        presence: presenceObj,
-        replyRequested: true
+        presence: presenceObj
       });
       if (this.listeners.presence["sync"]) {
         this.listeners.presence["sync"]();
       }
+    }
+
+    async untrack() {
+      this.myPresence = null;
+      this.presenceMap.delete(this.myPlayerId);
+      this.bc.postMessage({
+        type: "bc_untrack",
+        key: this.myPlayerId
+      });
     }
 
     presenceState() {
@@ -198,70 +258,471 @@
     }
 
     unsubscribe() {
-      this.bc.postMessage({
-        type: "bc_untrack",
-        key: this.myPlayerId
-      });
-      this.bc.close();
+      try {
+        this.bc.postMessage({
+          type: "bc_untrack",
+          key: this.myPlayerId
+        });
+        this.bc.close();
+      } catch {}
       this.presenceMap.clear();
     }
   }
 
-  function init() {
-    myPlayerId = sessionStorage.getItem("caro_player_id");
-    if (!myPlayerId) {
-      myPlayerId = generatePlayerId();
-      try { sessionStorage.setItem("caro_player_id", myPlayerId); } catch {}
-    }
-    myPlayerName = sessionStorage.getItem("caro_player_name") || localStorage.getItem("caro_player_name") || "Player " + myPlayerId.substring(2, 6).toUpperCase();
+  // ───────────────────────────────────────────────────────────────────────────
+  // Global Active Rooms Lobby (`caro_arena_lobby`)
+  // ───────────────────────────────────────────────────────────────────────────
+  function buildMyRoomSummary() {
+    if (!isRoomHost || !currentRoomId) return null;
+    const activeSlots = roomSlots.filter(s => s.type === "human" || s.type === "ai");
+    const openHuman = activeSlots.filter(s => s.type === "human" && !s.id).length;
+    const filledCount = activeSlots.filter(s => s.type === "ai" || (s.type === "human" && Boolean(s.id))).length;
+    return {
+      roomId: currentRoomId,
+      roomName: currentRoomName || `${myPlayerName}'s Room`,
+      hostId: myPlayerId,
+      hostName: myPlayerName,
+      isPublic: Boolean(isRoomPublic),
+      status: inGame ? "playing" : "waiting",
+      battleNumber: currentBattleNumber || 1,
+      playerCount: filledCount,
+      maxPlayers: activeSlots.length,
+      openHumanSlots: openHuman,
+      spectatorCount: spectators.length,
+      updatedAt: Date.now()
+    };
   }
 
-  async function createRoom(hostName, initialSlots = null) {
+  function syncActiveRoomsFromLobbyPresence() {
+    if (!lobbyChannel || typeof lobbyChannel.presenceState !== "function") return;
+    const state = lobbyChannel.presenceState();
+    const seenRoomIds = new Set();
+
+    for (const key in state) {
+      const list = state[key];
+      if (!Array.isArray(list)) continue;
+      for (const item of list) {
+        if (item && item.room && item.room.roomId) {
+          const r = item.room;
+          seenRoomIds.add(r.roomId);
+          if (r.isPublic !== false) {
+            activeRoomsMap.set(r.roomId, Object.assign({}, r, { updatedAt: Date.now() }));
+          } else {
+            activeRoomsMap.delete(r.roomId);
+          }
+        }
+      }
+    }
+
+    // Remove any rooms whose host presence disappeared
+    for (const [rid, info] of activeRoomsMap.entries()) {
+      if (!seenRoomIds.has(rid) && Date.now() - (info.updatedAt || 0) > 15000) {
+        activeRoomsMap.delete(rid);
+      }
+    }
+
+    if (onActiveRoomsChangeCallback) {
+      onActiveRoomsChangeCallback(getActiveRooms());
+    }
+  }
+
+  let lobbySubscribedPromise = null;
+  let isLobbySubscribing = false;
+
+  async function ensureGlobalLobbySubscribed() {
+    const client = getClient();
+    if (lobbyChannel && lobbySubscribedPromise) {
+      if (isLobbySubscribing) {
+        return await lobbySubscribedPromise;
+      }
+      if (!client || !lobbyChannel.state || lobbyChannel.state === "joined" || lobbyChannel.state === "joining") {
+        return lobbyChannel;
+      }
+      // Channel became closed/errored after initial subscription — clean up and recreate
+      try {
+        if (client && typeof client.removeChannel === "function") {
+          await client.removeChannel(lobbyChannel);
+        } else {
+          lobbyChannel.unsubscribe();
+        }
+      } catch {}
+      lobbyChannel = null;
+      lobbySubscribedPromise = null;
+    }
+    const channelName = "caro_arena_lobby";
+
+    if (client) {
+      lobbyChannel = client.channel(channelName, {
+        config: {
+          broadcast: { self: false },
+          presence: { key: myPlayerId }
+        }
+      });
+    } else {
+      lobbyChannel = new LocalBroadcastChannelAdapter(channelName, myPlayerId);
+    }
+
+    lobbyChannel.on("presence", { event: "sync" }, () => {
+      syncActiveRoomsFromLobbyPresence();
+    });
+
+    lobbyChannel.on("presence", { event: "join" }, () => {
+      syncActiveRoomsFromLobbyPresence();
+    });
+
+    lobbyChannel.on("presence", { event: "leave" }, ({ key, leftPresences }) => {
+      if (Array.isArray(leftPresences)) {
+        for (const p of leftPresences) {
+          if (p?.room?.roomId) {
+            activeRoomsMap.delete(p.room.roomId);
+          }
+        }
+      }
+      for (const [rid, info] of activeRoomsMap.entries()) {
+        if (info.hostId === key) {
+          activeRoomsMap.delete(rid);
+        }
+      }
+      syncActiveRoomsFromLobbyPresence();
+    });
+
+    lobbyChannel.on("broadcast", { event: "lobby_room_announce" }, ({ payload }) => {
+      if (!payload || !payload.roomId) return;
+      if (payload.isPublic === false) {
+        activeRoomsMap.delete(payload.roomId);
+      } else {
+        activeRoomsMap.set(payload.roomId, Object.assign({}, payload, { updatedAt: Date.now() }));
+      }
+      if (onActiveRoomsChangeCallback) {
+        onActiveRoomsChangeCallback(getActiveRooms());
+      }
+    });
+
+    lobbyChannel.on("broadcast", { event: "lobby_room_closed" }, ({ payload }) => {
+      if (payload?.roomId) {
+        activeRoomsMap.delete(payload.roomId);
+        if (onActiveRoomsChangeCallback) {
+          onActiveRoomsChangeCallback(getActiveRooms());
+        }
+      }
+    });
+
+    lobbyChannel.on("broadcast", { event: "request_active_rooms" }, () => {
+      if (isRoomHost && currentRoomId && lobbyChannel) {
+        const latest = buildMyRoomSummary();
+        if (latest) {
+          try {
+            lobbyChannel.send({
+              type: "broadcast",
+              event: "lobby_room_announce",
+              payload: latest
+            });
+          } catch {}
+        }
+      }
+    });
+
+    isLobbySubscribing = true;
+    lobbySubscribedPromise = new Promise((resolve) => {
+      let settled = false;
+      const finish = () => {
+        if (!settled) {
+          settled = true;
+          isLobbySubscribing = false;
+          resolve(lobbyChannel);
+        }
+      };
+      const timer = setTimeout(finish, 4000);
+      lobbyChannel.subscribe((status) => {
+        if (status === "SUBSCRIBED") {
+          clearTimeout(timer);
+          finish();
+          publishRoomToGlobalLobby();
+          try {
+            lobbyChannel.send({
+              type: "broadcast",
+              event: "request_active_rooms",
+              payload: { from: myPlayerId }
+            });
+          } catch {}
+        } else if (status === "CLOSED" || status === "CHANNEL_ERROR" || status === "TIMED_OUT") {
+          clearTimeout(timer);
+          lobbyChannel = null;
+          lobbySubscribedPromise = null;
+          isLobbySubscribing = false;
+          finish();
+          if (isRoomHost && currentRoomId) {
+            setTimeout(() => {
+              publishRoomToGlobalLobby().catch(() => {});
+            }, 300);
+          }
+        }
+      });
+    });
+
+    await lobbySubscribedPromise;
+    return lobbyChannel;
+  }
+
+  let lobbyTrackTimer = null;
+  let lobbyAnnounceTimer = null;
+  let isLobbyTrackInFlight = false;
+  let pendingLobbyTrack = false;
+
+  async function executeSerializedLobbyTrack() {
+    if (isLobbyTrackInFlight) {
+      pendingLobbyTrack = true;
+      return;
+    }
+    if (!lobbyChannel || typeof lobbyChannel.track !== "function") return;
+    isLobbyTrackInFlight = true;
+    pendingLobbyTrack = false;
+    try {
+      const cur = buildMyRoomSummary();
+      await lobbyChannel.track({
+        id: myPlayerId,
+        name: myPlayerName,
+        room: cur,
+        updatedAt: Date.now()
+      });
+    } catch {}
+    isLobbyTrackInFlight = false;
+    if (pendingLobbyTrack) {
+      pendingLobbyTrack = false;
+      if (lobbyTrackTimer) clearTimeout(lobbyTrackTimer);
+      lobbyTrackTimer = setTimeout(executeSerializedLobbyTrack, 400);
+    }
+  }
+
+  async function publishRoomToGlobalLobby(immediateBroadcast = false) {
+    try {
+      const summary = buildMyRoomSummary();
+      if (summary) {
+        if (summary.isPublic) {
+          activeRoomsMap.set(summary.roomId, summary);
+        } else {
+          activeRoomsMap.delete(summary.roomId);
+        }
+      }
+      if (onActiveRoomsChangeCallback) {
+        onActiveRoomsChangeCallback(getActiveRooms());
+      }
+
+      await ensureGlobalLobbySubscribed();
+      if (!lobbyChannel) return;
+
+      const sendAnnounce = () => {
+        const latest = buildMyRoomSummary();
+        if (latest && lobbyChannel) {
+          try {
+            lobbyChannel.send({
+              type: "broadcast",
+              event: "lobby_room_announce",
+              payload: latest
+            });
+          } catch {}
+        }
+      };
+
+      if (immediateBroadcast) {
+        if (lobbyAnnounceTimer) {
+          clearTimeout(lobbyAnnounceTimer);
+          lobbyAnnounceTimer = null;
+        }
+        sendAnnounce();
+      } else {
+        if (lobbyAnnounceTimer) clearTimeout(lobbyAnnounceTimer);
+        lobbyAnnounceTimer = setTimeout(sendAnnounce, 120);
+      }
+
+      if (lobbyTrackTimer) clearTimeout(lobbyTrackTimer);
+      lobbyTrackTimer = setTimeout(executeSerializedLobbyTrack, 250);
+    } catch {}
+  }
+
+  function unpublishRoomFromGlobalLobby(roomId) {
+    if (!roomId) return;
+    activeRoomsMap.delete(roomId);
+    try {
+      if (lobbyChannel) {
+        lobbyChannel.send({
+          type: "broadcast",
+          event: "lobby_room_closed",
+          payload: { roomId, hostId: myPlayerId }
+        });
+        if (typeof lobbyChannel.track === "function") {
+          lobbyChannel.track({
+            id: myPlayerId,
+            name: myPlayerName,
+            room: null,
+            updatedAt: Date.now()
+          }).catch(() => {});
+        }
+      }
+    } catch {}
+    if (onActiveRoomsChangeCallback) {
+      onActiveRoomsChangeCallback(getActiveRooms());
+    }
+  }
+
+  function refreshActiveRooms() {
+    ensureGlobalLobbySubscribed().then(() => {
+      syncActiveRoomsFromLobbyPresence();
+      if (lobbyChannel) {
+        lobbyChannel.send({
+          type: "broadcast",
+          event: "request_active_rooms",
+          payload: { from: myPlayerId }
+        });
+      }
+    }).catch(() => {});
+    return getActiveRooms();
+  }
+
+  function getActiveRooms() {
+    const now = Date.now();
+    const list = [];
+    for (const [rid, info] of activeRoomsMap.entries()) {
+      if (info.isPublic === false) continue;
+      if (now - (info.updatedAt || 0) > 120000) continue;
+      list.push(info);
+    }
+    return list.sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0));
+  }
+
+  // ───────────────────────────────────────────────────────────────────────────
+  // Room Lifecycle: Create, Join (Spectator-First), Requests, Takeover & Auto-Close
+  // ───────────────────────────────────────────────────────────────────────────
+  function init() {
+    try {
+      myPlayerId = sessionStorage.getItem("caro_player_id");
+      if (!myPlayerId) {
+        myPlayerId = generatePlayerId();
+        sessionStorage.setItem("caro_player_id", myPlayerId);
+      }
+      // Prefer logged-in user's display name if available
+      const authRaw = localStorage.getItem("caro_arena_auth_session");
+      if (authRaw) {
+        const parsed = JSON.parse(authRaw);
+        if (parsed && parsed.display_name) {
+          myPlayerName = parsed.display_name;
+        }
+      }
+      if (!myPlayerName || myPlayerName === "Player") {
+        myPlayerName =
+          sessionStorage.getItem("caro_player_name") ||
+          localStorage.getItem("caro_player_name") ||
+          "Player " + myPlayerId.substring(2, 6).toUpperCase();
+      }
+    } catch {
+      myPlayerId = generatePlayerId();
+      myPlayerName = "Player " + myPlayerId.substring(2, 6).toUpperCase();
+    }
+    setTimeout(() => {
+      ensureGlobalLobbySubscribed().catch(() => {});
+    }, 50);
+  }
+
+  async function createRoom(hostName, optionsOrSlots = null) {
+    const preconfiguredSlots = (!currentRoomId && Array.isArray(roomSlots) && roomSlots.length >= 2)
+      ? roomSlots.map(s => Object.assign({}, s))
+      : null;
     leaveRoom(false);
-    myPlayerName = hostName || myPlayerName;
+    if (hostName && String(hostName).trim()) {
+      myPlayerName = String(hostName).trim();
+    }
     try {
       sessionStorage.setItem("caro_player_name", myPlayerName);
       localStorage.setItem("caro_player_name", myPlayerName);
     } catch {}
 
-    currentRoomId = generateRoomCode();
+    let opts = {};
+    if (Array.isArray(optionsOrSlots)) {
+      opts = { initialSlots: optionsOrSlots };
+    } else if (optionsOrSlots && typeof optionsOrSlots === "object") {
+      opts = optionsOrSlots;
+    }
+
+    let customSlug = opts.roomSlug ? sanitizeRoomSlug(opts.roomSlug) : "";
+    if (opts.roomSlug && customSlug.length < 2) {
+      throw new Error("Custom URL slug must be at least 2 alphanumeric characters.");
+    }
+    if (customSlug) {
+      // Check for active slug collision in lobby
+      const existing = activeRoomsMap.get(customSlug) || activeRoomsMap.get(customSlug.toUpperCase());
+      if (existing && existing.hostId && existing.hostId !== myPlayerId) {
+        throw new Error(`Room URL "${customSlug}" is already active. Please choose another URL slug.`);
+      }
+      currentRoomId = customSlug;
+    } else {
+      currentRoomId = generateRoomCode();
+    }
+
+    currentRoomName = (opts.roomName || "").trim() || `${myPlayerName}'s Arena`;
+    isRoomPublic = opts.isPublic !== undefined ? Boolean(opts.isPublic) : true;
     isRoomHost = true;
     hostPlayerId = myPlayerId;
     myAssignedSlot = 0;
-    knownGuests.clear();
+    myRole = "host";
+    currentBattleNumber = 1;
+    knownPeers.clear();
+    spectators = [];
+    pendingRequests = [];
+    myPendingRequest = null;
 
     try {
       sessionStorage.setItem("caro_active_room", currentRoomId);
     } catch {}
+    updateBrowserUrlRoom(currentRoomId);
 
-    roomSlots = initialSlots || [
-      { type: "human", name: myPlayerName, id: myPlayerId, ready: true },
-      { type: "human", name: "Waiting for player...", id: null, ready: false },
-      { type: "ai", model: "von", name: "Von (AI)", id: null, ready: true },
-      { type: "closed", name: "Closed", id: null, ready: false },
-    ];
-    roomSlots[0] = { type: "human", name: myPlayerName, id: myPlayerId, ready: true };
+    const chosenInitialSlots = Array.isArray(opts.initialSlots) && opts.initialSlots.length >= 2
+      ? opts.initialSlots
+      : preconfiguredSlots;
 
+    if (Array.isArray(chosenInitialSlots) && chosenInitialSlots.length >= 2) {
+      roomSlots = chosenInitialSlots
+        .filter(s => s && s.type !== "closed")
+        .slice(0, 4)
+        .map((s, idx) => idx === 0
+          ? { type: "human", name: myPlayerName, id: myPlayerId, ready: true }
+          : Object.assign({}, s));
+    } else {
+      roomSlots = [
+        { type: "human", name: myPlayerName, id: myPlayerId, ready: true },
+        { type: "human", name: "Open Human Slot", id: null, ready: false },
+        { type: "ai", model: "von", name: "Von (AI)", id: null, ready: true }
+      ];
+    }
+
+    await ensureGlobalLobbySubscribed();
     await subscribeToRoom(currentRoomId);
+    await publishRoomToGlobalLobby();
     return currentRoomId;
   }
 
-  const knownGuests = new Map();
-
-  async function joinRoom(roomId, playerName) {
+  async function joinRoom(roomId, playerName, options = {}) {
     leaveRoom(false);
-    currentRoomId = (roomId || "").trim().toUpperCase();
-    if (!currentRoomId) throw new Error("Invalid room code.");
+    currentRoomId = normalizeRoomIdentifier(roomId);
+    if (!currentRoomId) throw new Error("Please enter a valid room code or URL slug.");
 
-    myPlayerName = playerName || myPlayerName;
+    if (playerName && String(playerName).trim()) {
+      myPlayerName = String(playerName).trim();
+    }
     try {
       sessionStorage.setItem("caro_player_name", myPlayerName);
       localStorage.setItem("caro_player_name", myPlayerName);
       sessionStorage.setItem("caro_active_room", currentRoomId);
     } catch {}
-    isRoomHost = false;
-    myAssignedSlot = 1;
+    updateBrowserUrlRoom(currentRoomId);
 
+    isRoomHost = false;
+    // Everyone joining an existing room starts as a Spectator until approved into a slot
+    myAssignedSlot = -1;
+    myRole = "spectator";
+    pendingRequests = [];
+    myPendingRequest = null;
+
+    await ensureGlobalLobbySubscribed();
     await subscribeToRoom(currentRoomId);
     return currentRoomId;
   }
@@ -275,10 +736,28 @@
       event: "game_state_sync",
       payload: Object.assign({}, hostState, {
         roomId: currentRoomId,
+        roomName: currentRoomName,
         hostId: hostPlayerId || myPlayerId,
+        spectators,
         targetId: targetRequesterId || null
       })
     });
+  }
+
+  function recomputeMyRoleAndSlot() {
+    if (isRoomHost) {
+      myRole = "host";
+      myAssignedSlot = 0;
+      return;
+    }
+    const idx = roomSlots.findIndex(s => s.type === "human" && s.id === myPlayerId);
+    if (idx !== -1) {
+      myAssignedSlot = idx;
+      myRole = "player";
+    } else {
+      myAssignedSlot = -1;
+      myRole = "spectator";
+    }
   }
 
   async function subscribeToRoom(roomId) {
@@ -296,8 +775,9 @@
       currentChannel = new LocalBroadcastChannelAdapter(channelName, myPlayerId);
     }
 
-    // 1. Presence tracking (who is online)
+    // 1. Presence tracking
     currentChannel.on("presence", { event: "sync" }, () => {
+      if (!currentChannel) return;
       const state = currentChannel.presenceState();
       handlePresenceSync(state);
     });
@@ -308,51 +788,55 @@
           if (p.isHost && p.id) {
             hostPlayerId = p.id;
           }
-          if (onStatusMessageCallback && p.name && p.name !== myPlayerName) {
-            onStatusMessageCallback(`${p.name} joined the room.`);
+          if (onStatusMessageCallback && p.name && p.id !== myPlayerId) {
+            onStatusMessageCallback(`👁️ ${p.name} entered the room.`);
           }
         });
       }
-      const state = currentChannel.presenceState();
-      handlePresenceSync(state);
+      if (currentChannel) {
+        handlePresenceSync(currentChannel.presenceState());
+      }
     });
 
     currentChannel.on("presence", { event: "leave" }, ({ key, leftPresences }) => {
       if (onStatusMessageCallback && leftPresences) {
         leftPresences.forEach(p => {
-          if (p.name) onStatusMessageCallback(`${p.name} left the room.`);
+          if (p.name && p.id !== myPlayerId) {
+            onStatusMessageCallback(`${p.name} left the room.`);
+          }
         });
       }
       const wasHost = (key && key === hostPlayerId) || Boolean(leftPresences && leftPresences.some(p => p.isHost));
-      handlePlayerLeft(key);
+      handleParticipantLeft(key);
       if (wasHost) {
         handleHostDisconnected(key);
       }
       if (currentChannel) {
-        const state = currentChannel.presenceState();
-        handlePresenceSync(state);
+        handlePresenceSync(currentChannel.presenceState());
       }
     });
 
     // 2. Broadcast events
-    currentChannel.on("broadcast", { event: "player_join" }, ({ payload }) => {
+    currentChannel.on("broadcast", { event: "peer_enter" }, ({ payload }) => {
       if (!isRoomHost || !payload?.id) return;
       if (payload.id !== myPlayerId) {
-        const prev = knownGuests.get(payload.id);
-        knownGuests.set(payload.id, {
+        knownPeers.set(payload.id, {
           id: payload.id,
-          name: payload.name || prev?.name || "Friend",
-          joinedAt: prev?.joinedAt || Date.now()
+          name: payload.name || "Spectator",
+          joinedAt: Date.now()
         });
-      }
-      let slot = roomSlots.find(s => s.id === payload.id);
-      if (!slot) {
-        slot = roomSlots.find((s, idx) => idx > 0 && s.type === "human" && (!s.id || s.name.startsWith("Waiting")));
-      }
-      if (slot) {
-        slot.id = payload.id;
-        slot.name = payload.name || "Friend";
-        slot.ready = true;
+        // Check if this peer already owns a slot (e.g., tab refresh reconnect)
+        const existingSlot = roomSlots.find(s => s.id === payload.id);
+        if (existingSlot) {
+          existingSlot.name = payload.name || existingSlot.name;
+          existingSlot.ready = true;
+        } else if (!spectators.some(sp => sp.id === payload.id)) {
+          spectators.push({
+            id: payload.id,
+            name: payload.name || "Spectator",
+            joinedAt: Date.now()
+          });
+        }
         broadcastLobbyUpdate();
         if (onLobbyChangeCallback) onLobbyChangeCallback(getLobbyState());
       }
@@ -364,20 +848,18 @@
     currentChannel.on("broadcast", { event: "request_lobby" }, ({ payload }) => {
       if (!isRoomHost) return;
       if (payload?.from && payload.from !== myPlayerId) {
-        const prev = knownGuests.get(payload.from);
-        knownGuests.set(payload.from, {
+        knownPeers.set(payload.from, {
           id: payload.from,
-          name: payload.name || prev?.name || "Friend",
-          joinedAt: prev?.joinedAt || Date.now()
+          name: payload.name || "Spectator",
+          joinedAt: Date.now()
         });
-        let slot = roomSlots.find(s => s.id === payload.from);
-        if (!slot) {
-          slot = roomSlots.find((s, idx) => idx > 0 && s.type === "human" && (!s.id || s.name.startsWith("Waiting")));
-        }
-        if (slot) {
-          slot.id = payload.from;
-          if (payload.name) slot.name = payload.name;
-          slot.ready = true;
+        const existingSlot = roomSlots.find(s => s.id === payload.from);
+        if (!existingSlot && !spectators.some(sp => sp.id === payload.from)) {
+          spectators.push({
+            id: payload.from,
+            name: payload.name || "Spectator",
+            joinedAt: Date.now()
+          });
         }
       }
       broadcastLobbyUpdate();
@@ -386,9 +868,92 @@
       }
     });
 
+    currentChannel.on("broadcast", { event: "join_request" }, ({ payload }) => {
+      if (!isRoomHost || !payload?.fromId || !payload?.requestId) return;
+      // Deduplicate active request from same user
+      pendingRequests = pendingRequests.filter(r => r.fromId !== payload.fromId);
+      const req = {
+        requestId: payload.requestId,
+        kind: payload.kind === "takeover" ? "takeover" : "join",
+        fromId: payload.fromId,
+        fromName: payload.fromName || "Spectator",
+        slotIndex: typeof payload.slotIndex === "number" ? payload.slotIndex : null,
+        targetSymbol: payload.targetSymbol || null,
+        createdAt: Date.now()
+      };
+      pendingRequests.push(req);
+      if (onStatusMessageCallback) {
+        const label = req.kind === "takeover"
+          ? `⚡ ${req.fromName} requested to take over Slot ${req.targetSymbol || (req.slotIndex + 1)}!`
+          : `✋ ${req.fromName} requested to join the match!`;
+        onStatusMessageCallback(label);
+      }
+      if (onRequestsChangeCallback) onRequestsChangeCallback(pendingRequests.slice());
+      if (onLobbyChangeCallback) onLobbyChangeCallback(getLobbyState());
+    });
+
+    currentChannel.on("broadcast", { event: "request_resolved" }, ({ payload }) => {
+      if (!payload || payload.targetId !== myPlayerId) return;
+      myPendingRequest = null;
+      if (payload.approved) {
+        if (typeof payload.slotIndex === "number") {
+          myAssignedSlot = payload.slotIndex;
+          myRole = "player";
+        }
+        if (onStatusMessageCallback) {
+          onStatusMessageCallback(payload.message || "✓ Host approved your request! You are now in the match.");
+        }
+      } else {
+        lastRejectedAt = Date.now();
+        if (onStatusMessageCallback) {
+          onStatusMessageCallback(payload.message || "Host declined your request.");
+        }
+      }
+      if (onLobbyChangeCallback) onLobbyChangeCallback(getLobbyState());
+    });
+
+    currentChannel.on("broadcast", { event: "kicked_to_spectator" }, ({ payload }) => {
+      if (!payload || payload.targetId !== myPlayerId) return;
+      myAssignedSlot = -1;
+      myRole = "spectator";
+      if (onStatusMessageCallback) {
+        onStatusMessageCallback("You were moved to Spectator mode by the Host.");
+      }
+      if (onLobbyChangeCallback) onLobbyChangeCallback(getLobbyState());
+    });
+
+    currentChannel.on("broadcast", { event: "slot_takeover" }, ({ payload }) => {
+      if (!payload || !payload.symbol) return;
+      if (payload.newPlayerId === myPlayerId) {
+        myRole = "player";
+        if (typeof payload.slotIndex === "number") {
+          myAssignedSlot = payload.slotIndex;
+        }
+      } else if (payload.previousPlayerId === myPlayerId) {
+        myRole = "spectator";
+        myAssignedSlot = -1;
+      }
+      if (Array.isArray(payload.slots)) {
+        roomSlots = payload.slots;
+      }
+      if (Array.isArray(payload.spectators)) {
+        spectators = payload.spectators;
+      }
+      if (onSlotTakeoverCallback) {
+        onSlotTakeoverCallback(payload);
+      }
+      if (onLobbyChangeCallback) onLobbyChangeCallback(getLobbyState());
+    });
+
+    currentChannel.on("broadcast", { event: "room_closed" }, ({ payload }) => {
+      if (onStatusMessageCallback) {
+        onStatusMessageCallback(payload?.reason || "Room closed because all players left.");
+      }
+      leaveRoom(true);
+    });
+
     currentChannel.on("broadcast", { event: "request_game_state" }, ({ payload }) => {
       if (!inGame) return;
-      // Host replies immediately; non-host active peers also reply if Host is the one reconnecting
       if (isRoomHost || (payload?.from && payload.from === hostPlayerId)) {
         broadcastGameStateIfActive(payload?.from);
       }
@@ -397,14 +962,17 @@
     currentChannel.on("broadcast", { event: "game_state_sync" }, ({ payload }) => {
       if (!payload || !payload.roster) return;
       if (payload.hostId) hostPlayerId = payload.hostId;
+      if (payload.roomName) currentRoomName = payload.roomName;
+      if (Array.isArray(payload.spectators)) spectators = payload.spectators;
       inGame = true;
+      recomputeMyRoleAndSlot();
       if (onStateSyncCallback) onStateSyncCallback(payload);
     });
 
     currentChannel.on("broadcast", { event: "host_leave" }, ({ payload }) => {
       const leftId = payload?.hostId || hostPlayerId;
       if (leftId) {
-        handlePlayerLeft(leftId);
+        handleParticipantLeft(leftId);
         handleHostDisconnected(leftId);
       }
     });
@@ -413,35 +981,44 @@
       if (!payload?.newHostId) return;
       hostPlayerId = payload.newHostId;
       isRoomHost = (payload.newHostId === myPlayerId);
+      recomputeMyRoleAndSlot();
       if (onHostMigratedCallback) {
         onHostMigratedCallback({
           newHostId: payload.newHostId,
           newHostName: payload.newHostName,
+          leftHostId: payload.leftHostId,
           isMe: isRoomHost
         });
+      }
+      if (isRoomHost) {
+        publishRoomToGlobalLobby();
       }
     });
 
     currentChannel.on("broadcast", { event: "lobby_update" }, ({ payload }) => {
       if (payload?.hostId) hostPlayerId = payload.hostId;
-      if (!isRoomHost && payload?.slots) {
-        roomSlots = payload.slots;
-        // Robust resolution of my assigned slot
-        let myIndex = roomSlots.findIndex(s => s.id === myPlayerId);
-        if (myIndex === -1 && myPlayerName) {
-          myIndex = roomSlots.findIndex(s => s.type === "human" && s.name === myPlayerName);
+      if (payload?.roomName) currentRoomName = payload.roomName;
+      if (payload?.isPublic !== undefined) isRoomPublic = Boolean(payload.isPublic);
+      if (!isRoomHost) {
+        if (Array.isArray(payload?.slots)) {
+          roomSlots = payload.slots;
         }
-        if (myIndex === -1) {
-          myIndex = roomSlots.findIndex((s, idx) => idx > 0 && s.type === "human");
+        if (Array.isArray(payload?.spectators)) {
+          spectators = payload.spectators;
         }
-        if (myIndex !== -1) myAssignedSlot = myIndex;
+        recomputeMyRoleAndSlot();
         if (onLobbyChangeCallback) onLobbyChangeCallback(getLobbyState());
       }
     });
 
     currentChannel.on("broadcast", { event: "game_start" }, ({ payload }) => {
       inGame = true;
+      currentBattleNumber = payload?.battleNumber || 1;
       if (payload?.hostId) hostPlayerId = payload.hostId;
+      if (payload?.roomName) currentRoomName = payload.roomName;
+      if (Array.isArray(payload?.slots)) roomSlots = payload.slots;
+      if (Array.isArray(payload?.spectators)) spectators = payload.spectators;
+      recomputeMyRoleAndSlot();
       if (onGameStartCallback) onGameStartCallback(payload);
     });
 
@@ -450,39 +1027,55 @@
     });
 
     currentChannel.on("broadcast", { event: "game_next" }, ({ payload }) => {
+      currentBattleNumber = payload?.battleNumber || (currentBattleNumber + 1);
       if (onRemoteNextBattleCallback) onRemoteNextBattleCallback(payload);
     });
 
-    await currentChannel.subscribe(async (status) => {
-      if (status === "SUBSCRIBED") {
-        await currentChannel.track({
-          id: myPlayerId,
-          name: myPlayerName,
-          isHost: isRoomHost,
-          joinedAt: Date.now()
-        });
-
-        if (isRoomHost) {
-          broadcastLobbyUpdate();
-        } else {
-          // Send explicit join & state sync handshakes to host
-          currentChannel.send({
-            type: "broadcast",
-            event: "player_join",
-            payload: { id: myPlayerId, name: myPlayerName }
-          });
-          currentChannel.send({
-            type: "broadcast",
-            event: "request_lobby",
-            payload: { from: myPlayerId, name: myPlayerName }
-          });
-          currentChannel.send({
-            type: "broadcast",
-            event: "request_game_state",
-            payload: { from: myPlayerId, name: myPlayerName }
-          });
+    await new Promise((resolve) => {
+      let settled = false;
+      const finish = () => {
+        if (!settled) {
+          settled = true;
+          resolve();
         }
-      }
+      };
+      const timer = setTimeout(finish, 4000);
+      currentChannel.subscribe(async (status) => {
+        if (status === "SUBSCRIBED") {
+          clearTimeout(timer);
+          try {
+            await currentChannel.track({
+              id: myPlayerId,
+              name: myPlayerName,
+              isHost: isRoomHost,
+              role: myRole,
+              joinedAt: Date.now()
+            });
+
+            if (isRoomHost) {
+              broadcastLobbyUpdate();
+              await publishRoomToGlobalLobby();
+            } else {
+              currentChannel.send({
+                type: "broadcast",
+                event: "peer_enter",
+                payload: { id: myPlayerId, name: myPlayerName }
+              });
+              currentChannel.send({
+                type: "broadcast",
+                event: "request_lobby",
+                payload: { from: myPlayerId, name: myPlayerName }
+              });
+              currentChannel.send({
+                type: "broadcast",
+                event: "request_game_state",
+                payload: { from: myPlayerId, name: myPlayerName }
+              });
+            }
+          } catch {}
+          finish();
+        }
+      });
     });
   }
 
@@ -495,10 +1088,422 @@
     });
   }
 
-  function handleHostDisconnected(leftHostId) {
-    if (isRoomHost) return; // Already host
+  // ───────────────────────────────────────────────────────────────────────────
+  // Spectator Requests ("Request to Join" & "Request Takeover") + Host Approval
+  // ───────────────────────────────────────────────────────────────────────────
+  function requestJoinSlot(preferredSlotIndex = null) {
+    if (!currentChannel || isRoomHost) return false;
+    if (myRole === "player") {
+      if (onStatusMessageCallback) onStatusMessageCallback("You are already in a player slot.");
+      return false;
+    }
+    const cooldownRem = 15000 - (Date.now() - lastRejectedAt);
+    if (cooldownRem > 0) {
+      if (onStatusMessageCallback) {
+        onStatusMessageCallback(`Please wait ${Math.ceil(cooldownRem / 1000)}s before sending another request.`);
+      }
+      return false;
+    }
 
-    // Determine candidate human players in order from active game roster or roomSlots
+    const req = {
+      requestId: "req_" + Math.random().toString(36).substring(2, 9),
+      kind: "join",
+      fromId: myPlayerId,
+      fromName: myPlayerName,
+      slotIndex: typeof preferredSlotIndex === "number" ? preferredSlotIndex : null,
+      targetSymbol: null
+    };
+    myPendingRequest = req;
+    currentChannel.send({
+      type: "broadcast",
+      event: "join_request",
+      payload: req
+    });
+    if (onStatusMessageCallback) {
+      onStatusMessageCallback("✋ Join request sent to the Host — waiting for approval...");
+    }
+    if (onLobbyChangeCallback) onLobbyChangeCallback(getLobbyState());
+    return true;
+  }
+
+  function requestTakeover(targetSymbolOrSlot) {
+    if (!currentChannel || isRoomHost) return false;
+    const cooldownRem = 15000 - (Date.now() - lastRejectedAt);
+    if (cooldownRem > 0) {
+      if (onStatusMessageCallback) {
+        onStatusMessageCallback(`Please wait ${Math.ceil(cooldownRem / 1000)}s before sending another request.`);
+      }
+      return false;
+    }
+
+    const symbols = ["A", "B", "C", "D"];
+    let slotIndex = null;
+    let targetSymbol = null;
+    if (typeof targetSymbolOrSlot === "number") {
+      slotIndex = targetSymbolOrSlot;
+      targetSymbol = symbols[slotIndex] || "B";
+    } else if (typeof targetSymbolOrSlot === "string") {
+      targetSymbol = targetSymbolOrSlot.toUpperCase();
+      slotIndex = symbols.indexOf(targetSymbol);
+    }
+
+    const req = {
+      requestId: "req_" + Math.random().toString(36).substring(2, 9),
+      kind: "takeover",
+      fromId: myPlayerId,
+      fromName: myPlayerName,
+      slotIndex,
+      targetSymbol
+    };
+    myPendingRequest = req;
+    currentChannel.send({
+      type: "broadcast",
+      event: "join_request",
+      payload: req
+    });
+    if (onStatusMessageCallback) {
+      onStatusMessageCallback(`⚡ Takeover request for Slot ${targetSymbol || ""} sent to Host...`);
+    }
+    if (onLobbyChangeCallback) onLobbyChangeCallback(getLobbyState());
+    return true;
+  }
+
+  function approveRequest(requestId) {
+    if (!isRoomHost || !currentChannel) return false;
+    const idx = pendingRequests.findIndex(r => r.requestId === requestId);
+    if (idx === -1) return false;
+    const req = pendingRequests.splice(idx, 1)[0];
+
+    const symbols = ["A", "B", "C", "D"];
+
+    if (req.kind === "takeover" || inGame) {
+      // Mid-game or specific slot takeover
+      let targetIdx = typeof req.slotIndex === "number" && req.slotIndex > 0 && req.slotIndex < roomSlots.length
+        ? req.slotIndex
+        : -1;
+      if (targetIdx === -1 && req.targetSymbol) {
+        const sIdx = symbols.indexOf(req.targetSymbol);
+        if (sIdx > 0 && sIdx < roomSlots.length) targetIdx = sIdx;
+      }
+      if (targetIdx === -1) {
+        // Find first open human slot, disconnected slot, or AI slot
+        targetIdx = roomSlots.findIndex((s, i) => i > 0 && s.type === "human" && !s.id);
+        if (targetIdx === -1) {
+          targetIdx = roomSlots.findIndex((s, i) => i > 0 && s.type === "ai");
+        }
+        if (targetIdx === -1 && roomSlots.length > 1) targetIdx = 1;
+      }
+
+      if (targetIdx > 0 && targetIdx < roomSlots.length) {
+        const prevSlot = roomSlots[targetIdx];
+        const prevPlayerId = prevSlot.id || null;
+        if (prevPlayerId && prevPlayerId !== req.fromId) {
+          const prevPeer = knownPeers.get(prevPlayerId);
+          if (prevPeer && !spectators.some(sp => sp.id === prevPlayerId)) {
+            spectators.push({ id: prevPlayerId, name: prevSlot.name || prevPeer.name, joinedAt: Date.now() });
+          }
+        }
+        roomSlots[targetIdx] = {
+          type: "human",
+          name: req.fromName,
+          id: req.fromId,
+          ready: true
+        };
+        spectators = spectators.filter(sp => sp.id !== req.fromId);
+        const sym = symbols[targetIdx] || "B";
+
+        currentChannel.send({
+          type: "broadcast",
+          event: "request_resolved",
+          payload: {
+            requestId: req.requestId,
+            targetId: req.fromId,
+            approved: true,
+            slotIndex: targetIdx,
+            symbol: sym,
+            message: `✓ Host approved! You are now playing as Slot #${targetIdx + 1} (${sym}).`
+          }
+        });
+
+        const takeoverPayload = {
+          roomId: currentRoomId,
+          slotIndex: targetIdx,
+          symbol: sym,
+          newPlayerId: req.fromId,
+          newPlayerName: req.fromName,
+          previousPlayerId: prevPlayerId,
+          slots: roomSlots,
+          spectators
+        };
+        currentChannel.send({
+          type: "broadcast",
+          event: "slot_takeover",
+          payload: takeoverPayload
+        });
+        if (onSlotTakeoverCallback) {
+          onSlotTakeoverCallback(takeoverPayload);
+        }
+        broadcastLobbyUpdate();
+        if (inGame) {
+          broadcastGameStateIfActive();
+        }
+      }
+    } else {
+      // Pre-game lobby join request
+      let targetIdx = (typeof req.slotIndex === "number" && req.slotIndex > 0 && req.slotIndex < roomSlots.length && roomSlots[req.slotIndex].type === "human" && !roomSlots[req.slotIndex].id)
+        ? req.slotIndex
+        : roomSlots.findIndex((s, i) => i > 0 && s.type === "human" && !s.id);
+
+      if (targetIdx === -1 && roomSlots.length < 4) {
+        roomSlots.push({ type: "human", name: req.fromName, id: req.fromId, ready: true });
+        targetIdx = roomSlots.length - 1;
+      } else if (targetIdx === -1) {
+        // Convert an AI slot if available
+        const aiIdx = roomSlots.findIndex((s, i) => i > 0 && s.type === "ai");
+        if (aiIdx !== -1) {
+          targetIdx = aiIdx;
+        }
+      }
+
+      if (targetIdx !== -1) {
+        roomSlots[targetIdx] = {
+          type: "human",
+          name: req.fromName,
+          id: req.fromId,
+          ready: true
+        };
+        spectators = spectators.filter(sp => sp.id !== req.fromId);
+        currentChannel.send({
+          type: "broadcast",
+          event: "request_resolved",
+          payload: {
+            requestId: req.requestId,
+            targetId: req.fromId,
+            approved: true,
+            slotIndex: targetIdx,
+            symbol: symbols[targetIdx] || "B",
+            message: `✓ Host approved! You joined Slot #${targetIdx + 1}.`
+          }
+        });
+        broadcastLobbyUpdate();
+      }
+    }
+
+    if (onRequestsChangeCallback) onRequestsChangeCallback(pendingRequests.slice());
+    if (onLobbyChangeCallback) onLobbyChangeCallback(getLobbyState());
+    return true;
+  }
+
+  function rejectRequest(requestId) {
+    if (!isRoomHost || !currentChannel) return false;
+    const idx = pendingRequests.findIndex(r => r.requestId === requestId);
+    if (idx === -1) return false;
+    const req = pendingRequests.splice(idx, 1)[0];
+
+    currentChannel.send({
+      type: "broadcast",
+      event: "request_resolved",
+      payload: {
+        requestId: req.requestId,
+        targetId: req.fromId,
+        approved: false,
+        message: "Host declined your request."
+      }
+    });
+    if (onRequestsChangeCallback) onRequestsChangeCallback(pendingRequests.slice());
+    if (onLobbyChangeCallback) onLobbyChangeCallback(getLobbyState());
+    return true;
+  }
+
+  // ───────────────────────────────────────────────────────────────────────────
+  // Dynamic Slot & Room Customization (Host)
+  // ───────────────────────────────────────────────────────────────────────────
+  function setRoomMeta({ roomName, isPublic } = {}) {
+    if (!isRoomHost) return;
+    if (roomName !== undefined && String(roomName).trim()) {
+      currentRoomName = String(roomName).trim().substring(0, 32);
+    }
+    if (isPublic !== undefined) {
+      isRoomPublic = Boolean(isPublic);
+    }
+    broadcastLobbyUpdate();
+    if (onLobbyChangeCallback) onLobbyChangeCallback(getLobbyState());
+  }
+
+  function addSlot(type = "human", model = "von") {
+    if ((!isRoomHost && currentRoomId) || roomSlots.length >= 4) return false;
+    if (type === "ai") {
+      const m = AI_MODELS.includes(model) ? model : "von";
+      roomSlots.push({
+        type: "ai",
+        model: m,
+        name: AI_NAMES[m] || "AI",
+        id: null,
+        ready: true
+      });
+    } else {
+      roomSlots.push({
+        type: "human",
+        name: "Open Human Slot",
+        id: null,
+        ready: false
+      });
+    }
+    broadcastLobbyUpdate();
+    if (onLobbyChangeCallback) onLobbyChangeCallback(getLobbyState());
+    return true;
+  }
+
+  function removeSlot(index) {
+    if (!isRoomHost && currentRoomId) return false;
+    if (index <= 0 || index >= roomSlots.length || roomSlots.length <= 2) return false;
+
+    const removed = roomSlots[index];
+    if (removed && removed.type === "human" && removed.id) {
+      if (!spectators.some(sp => sp.id === removed.id)) {
+        spectators.push({ id: removed.id, name: removed.name || "Spectator", joinedAt: Date.now() });
+      }
+      if (currentChannel) {
+        currentChannel.send({
+          type: "broadcast",
+          event: "kicked_to_spectator",
+          payload: { targetId: removed.id }
+        });
+      }
+    }
+
+    if (inGame) {
+      // Mid-game: convert removed human slot to AI bot so board symbols A..D remain intact
+      roomSlots[index] = {
+        type: "ai",
+        model: "von",
+        name: "Von (AI)",
+        id: null,
+        ready: true
+      };
+      const symbols = ["A", "B", "C", "D"];
+      const takeoverPayload = {
+        roomId: currentRoomId,
+        slotIndex: index,
+        symbol: symbols[index] || "B",
+        newPlayerId: null,
+        newPlayerName: "Von (AI)",
+        isAiReplacement: true,
+        aiModel: "von",
+        previousPlayerId: removed?.id || null,
+        slots: roomSlots,
+        spectators
+      };
+      if (currentChannel) {
+        currentChannel.send({
+          type: "broadcast",
+          event: "slot_takeover",
+          payload: takeoverPayload
+        });
+      }
+      if (onSlotTakeoverCallback) onSlotTakeoverCallback(takeoverPayload);
+    } else {
+      roomSlots.splice(index, 1);
+    }
+
+    broadcastLobbyUpdate();
+    if (onLobbyChangeCallback) onLobbyChangeCallback(getLobbyState());
+    return true;
+  }
+
+  function kickPlayerToSpectator(index) {
+    if (!isRoomHost || index <= 0 || index >= roomSlots.length) return false;
+    const slot = roomSlots[index];
+    if (!slot || slot.type !== "human" || !slot.id) return false;
+    const kickedId = slot.id;
+    const kickedName = slot.name || "Spectator";
+
+    if (!spectators.some(sp => sp.id === kickedId)) {
+      spectators.push({ id: kickedId, name: kickedName, joinedAt: Date.now() });
+    }
+    if (currentChannel) {
+      currentChannel.send({
+        type: "broadcast",
+        event: "kicked_to_spectator",
+        payload: { targetId: kickedId }
+      });
+    }
+
+    if (inGame) {
+      roomSlots[index] = {
+        type: "ai",
+        model: "von",
+        name: "Von (AI)",
+        id: null,
+        ready: true
+      };
+      const symbols = ["A", "B", "C", "D"];
+      const takeoverPayload = {
+        roomId: currentRoomId,
+        slotIndex: index,
+        symbol: symbols[index] || "B",
+        newPlayerId: null,
+        newPlayerName: "Von (AI)",
+        isAiReplacement: true,
+        aiModel: "von",
+        previousPlayerId: kickedId,
+        slots: roomSlots,
+        spectators
+      };
+      if (currentChannel) {
+        currentChannel.send({
+          type: "broadcast",
+          event: "slot_takeover",
+          payload: takeoverPayload
+        });
+      }
+      if (onSlotTakeoverCallback) onSlotTakeoverCallback(takeoverPayload);
+    } else {
+      roomSlots[index] = {
+        type: "human",
+        name: "Open Human Slot",
+        id: null,
+        ready: false
+      };
+    }
+
+    broadcastLobbyUpdate();
+    if (onLobbyChangeCallback) onLobbyChangeCallback(getLobbyState());
+    return true;
+  }
+
+  function updateSlot(index, slotConfig) {
+    if (!isRoomHost) return;
+    if (index <= 0 || index >= roomSlots.length) return;
+
+    const prev = roomSlots[index];
+    if (slotConfig.type === "closed") {
+      removeSlot(index);
+      return;
+    }
+    if (prev && prev.type === "human" && prev.id && slotConfig.type !== "human") {
+      if (!spectators.some(sp => sp.id === prev.id)) {
+        spectators.push({ id: prev.id, name: prev.name || "Spectator", joinedAt: Date.now() });
+      }
+      if (currentChannel) {
+        currentChannel.send({
+          type: "broadcast",
+          event: "kicked_to_spectator",
+          payload: { targetId: prev.id }
+        });
+      }
+    }
+    roomSlots[index] = Object.assign({}, roomSlots[index], slotConfig);
+    broadcastLobbyUpdate();
+    if (onLobbyChangeCallback) onLobbyChangeCallback(getLobbyState());
+  }
+
+  // ───────────────────────────────────────────────────────────────────────────
+  // Presence Sync, Host Migration & Empty-Room Auto-Close
+  // ───────────────────────────────────────────────────────────────────────────
+  function handleHostDisconnected(leftHostId) {
+    if (isRoomHost) return;
+
     const hostState = typeof getHostStateCallback === "function" ? getHostStateCallback() : null;
     const activeRoster = hostState?.roster || [];
     let candidateIds = [];
@@ -514,27 +1519,34 @@
         .map(s => s.id);
     }
 
-    // Filter to currently present users if presence state is populated
     if (currentChannel && typeof currentChannel.presenceState === "function") {
       const pState = currentChannel.presenceState();
       const presentKeys = new Set(Object.keys(pState));
       if (presentKeys.size > 0) {
-        const presentCandidates = candidateIds.filter(id => presentKeys.has(id));
-        if (presentCandidates.length > 0) {
-          candidateIds = presentCandidates;
-        }
+        candidateIds = candidateIds.filter(id => presentKeys.has(id));
       }
     }
 
-    const nextHostId = candidateIds[0] || myPlayerId;
+    // If no active human players remain in the room at all, auto-close the room!
+    if (candidateIds.length === 0) {
+      if (onStatusMessageCallback) {
+        onStatusMessageCallback("Room closed because all active players left.");
+      }
+      leaveRoom(true);
+      return;
+    }
+
+    const nextHostId = candidateIds[0];
     if (nextHostId === myPlayerId) {
       isRoomHost = true;
       hostPlayerId = myPlayerId;
+      myRole = "host";
       if (currentChannel && typeof currentChannel.track === "function") {
         currentChannel.track({
           id: myPlayerId,
           name: myPlayerName,
           isHost: true,
+          role: "host",
           joinedAt: Date.now()
         }).catch(() => {});
       }
@@ -545,7 +1557,8 @@
           payload: {
             roomId: currentRoomId,
             newHostId: myPlayerId,
-            newHostName: myPlayerName
+            newHostName: myPlayerName,
+            leftHostId
           }
         });
       }
@@ -560,11 +1573,12 @@
           isMe: true
         });
       }
+      publishRoomToGlobalLobby();
       if (onLobbyChangeCallback) onLobbyChangeCallback(getLobbyState());
     }
   }
 
-  function syncGuestSlotsFromPresence(presenceState) {
+  function handlePresenceSync(presenceState) {
     const presentUsers = [];
     for (const key in presenceState) {
       const presences = presenceState[key];
@@ -579,94 +1593,58 @@
       }
     }
 
-    if (!isRoomHost) return;
+    if (isRoomHost) {
+      roomSlots[0].name = myPlayerName;
+      roomSlots[0].id = myPlayerId;
+      roomSlots[0].ready = true;
 
-    // Slot 0 is strictly Host
-    roomSlots[0].name = myPlayerName;
-    roomSlots[0].id = myPlayerId;
-    roomSlots[0].ready = true;
+      const presentSet = new Set(presentUsers.map(u => u.id));
+      const slottedIds = new Set(roomSlots.filter(s => s.type === "human" && s.id).map(s => s.id));
 
-    for (const u of presentUsers) {
-      if (u && u.id && u.id !== myPlayerId) {
-        const prev = knownGuests.get(u.id);
-        knownGuests.set(u.id, {
-          id: u.id,
-          name: u.name || prev?.name || "Friend",
-          joinedAt: u.joinedAt || prev?.joinedAt || Date.now()
-        });
-      }
-    }
-
-    const guestUsers = Array.from(knownGuests.values())
-      .sort((a, b) => (a.joinedAt || 0) - (b.joinedAt || 0));
-    const guestById = new Map(guestUsers.map(u => [u.id, u]));
-    const assignedIds = new Set([myPlayerId]);
-
-    // 1. Preserve existing slot assignments for guests still present
-    for (let i = 1; i < roomSlots.length; i++) {
-      if (roomSlots[i].type === "human") {
-        const existingId = roomSlots[i].id;
-        if (existingId && guestById.has(existingId) && !assignedIds.has(existingId)) {
-          const user = guestById.get(existingId);
-          roomSlots[i].name = user.name || roomSlots[i].name || "Friend";
-          roomSlots[i].id = user.id;
-          roomSlots[i].ready = true;
-          assignedIds.add(user.id);
-        } else {
-          roomSlots[i].name = "Waiting for player...";
-          roomSlots[i].id = null;
-          roomSlots[i].ready = false;
+      // Keep spectators list synchronized with present non-slotted users
+      for (const u of presentUsers) {
+        if (u && u.id && u.id !== myPlayerId && !slottedIds.has(u.id)) {
+          const existingSp = spectators.find(sp => sp.id === u.id);
+          if (existingSp) {
+            existingSp.name = u.name || existingSp.name;
+          } else {
+            spectators.push({
+              id: u.id,
+              name: u.name || "Spectator",
+              joinedAt: u.joinedAt || Date.now()
+            });
+          }
         }
       }
-    }
-
-    // 2. Assign any newly joined (unassigned) guests to open human slots
-    const unassignedGuests = guestUsers.filter(u => !assignedIds.has(u.id));
-    let nextGuestIdx = 0;
-    for (let i = 1; i < roomSlots.length && nextGuestIdx < unassignedGuests.length; i++) {
-      if (roomSlots[i].type === "human" && !roomSlots[i].id) {
-        const user = unassignedGuests[nextGuestIdx++];
-        roomSlots[i].name = user.name || "Friend";
-        roomSlots[i].id = user.id;
-        roomSlots[i].ready = true;
-        assignedIds.add(user.id);
+      if (presentSet.size > 0) {
+        spectators = spectators.filter(sp => presentSet.has(sp.id) && !slottedIds.has(sp.id));
       }
-    }
-  }
 
-  function handlePresenceSync(presenceState) {
-    if (isRoomHost) {
-      syncGuestSlotsFromPresence(presenceState);
       broadcastLobbyUpdate();
     }
 
+    recomputeMyRoleAndSlot();
     if (onLobbyChangeCallback) onLobbyChangeCallback(getLobbyState());
   }
 
-  function handlePlayerLeft(playerId) {
-    knownGuests.delete(playerId);
+  function handleParticipantLeft(playerId) {
+    if (!playerId) return;
+    knownPeers.delete(playerId);
+    spectators = spectators.filter(sp => sp.id !== playerId);
+    pendingRequests = pendingRequests.filter(r => r.fromId !== playerId);
+
     if (isRoomHost) {
-      const slot = roomSlots.find(s => s.id === playerId);
-      if (slot) {
-        slot.id = null;
-        slot.name = "Waiting for player...";
-        slot.ready = false;
-        broadcastLobbyUpdate();
+      const slotIdx = roomSlots.findIndex((s, i) => i > 0 && s.id === playerId);
+      if (slotIdx !== -1) {
+        if (!inGame) {
+          roomSlots[slotIdx].id = null;
+          roomSlots[slotIdx].name = "Open Human Slot";
+          roomSlots[slotIdx].ready = false;
+        }
       }
+      broadcastLobbyUpdate();
+      if (onRequestsChangeCallback) onRequestsChangeCallback(pendingRequests.slice());
     }
-  }
-
-  function updateSlot(index, slotConfig) {
-    if (!isRoomHost) return;
-    if (index < 0 || index >= roomSlots.length) return;
-    if (index === 0) return; // Slot 0 is always Host
-
-    roomSlots[index] = Object.assign({}, roomSlots[index], slotConfig);
-    if (currentChannel && typeof currentChannel.presenceState === "function") {
-      syncGuestSlotsFromPresence(currentChannel.presenceState());
-    }
-    broadcastLobbyUpdate();
-    if (onLobbyChangeCallback) onLobbyChangeCallback(getLobbyState());
   }
 
   function broadcastLobbyUpdate() {
@@ -676,28 +1654,46 @@
       event: "lobby_update",
       payload: {
         roomId: currentRoomId,
+        roomName: currentRoomName,
+        isPublic: isRoomPublic,
         slots: roomSlots,
+        spectators,
         hostName: myPlayerName,
         hostId: myPlayerId
       }
     });
+    publishRoomToGlobalLobby();
   }
 
   function startGame() {
     if (!isRoomHost || !currentChannel) return;
 
-    // Ensure any open human slot is bound to an unassigned connected guest
-    if (typeof currentChannel.presenceState === "function") {
-      syncGuestSlotsFromPresence(currentChannel.presenceState());
+    // Auto-approve pending join requests into any open human slots before starting
+    for (let i = 1; i < roomSlots.length; i++) {
+      if (roomSlots[i].type === "human" && !roomSlots[i].id) {
+        const pendingJoin = pendingRequests.find(r => r.kind === "join");
+        if (pendingJoin) {
+          approveRequest(pendingJoin.requestId);
+        } else if (spectators.length > 0) {
+          // If host starts game with an open human slot and a spectator waiting, seat the spectator
+          const sp = spectators.shift();
+          roomSlots[i].id = sp.id;
+          roomSlots[i].name = sp.name;
+          roomSlots[i].ready = true;
+        }
+      }
     }
 
-    // Filter active players
     const activeSlots = roomSlots.filter(s => s.type === "human" || s.type === "ai");
     if (activeSlots.length < 2) {
       throw new Error("Need at least 2 players to start a battle.");
     }
 
-    // Assign symbols: A, B, C, D
+    const unreadyHuman = activeSlots.find((s, idx) => idx > 0 && s.type === "human" && !s.id);
+    if (unreadyHuman) {
+      throw new Error("An open Human Slot is still empty. Approve a spectator, switch it to AI, or remove the slot.");
+    }
+
     const symbols = ["A", "B", "C", "D"];
     const roster = activeSlots.map((s, idx) => ({
       slotIndex: idx,
@@ -711,20 +1707,28 @@
     }));
 
     inGame = true;
+    currentBattleNumber = 1;
     hostPlayerId = myPlayerId;
+
+    const startPayload = {
+      roomId: currentRoomId,
+      roomName: currentRoomName,
+      hostId: myPlayerId,
+      roster,
+      slots: roomSlots,
+      spectators,
+      battleNumber: 1
+    };
+
     currentChannel.send({
       type: "broadcast",
       event: "game_start",
-      payload: {
-        roomId: currentRoomId,
-        hostId: myPlayerId,
-        roster,
-        battleNumber: 1
-      }
+      payload: startPayload
     });
+    publishRoomToGlobalLobby();
 
     if (onGameStartCallback) {
-      onGameStartCallback({ roomId: currentRoomId, hostId: myPlayerId, roster, battleNumber: 1 });
+      onGameStartCallback(startPayload);
     }
   }
 
@@ -746,6 +1750,7 @@
 
   function sendNextBattle(battleNum) {
     if (!currentChannel || !isRoomHost) return;
+    currentBattleNumber = battleNum;
     currentChannel.send({
       type: "broadcast",
       event: "game_next",
@@ -753,29 +1758,54 @@
         battleNumber: battleNum
       }
     });
+    publishRoomToGlobalLobby();
   }
 
   function leaveRoom(userInitiated = true) {
+    const leavingRoomId = currentRoomId;
+    const wasHost = isRoomHost;
+
     if (currentChannel) {
       try {
-        if (isRoomHost && currentRoomId) {
-          currentChannel.send({
-            type: "broadcast",
-            event: "host_leave",
-            payload: { hostId: myPlayerId, roomId: currentRoomId }
-          });
+        if (wasHost && leavingRoomId) {
+          // Check if any other human players are seated in slots
+          const otherSeatedHumans = roomSlots.filter((s, idx) => idx > 0 && s.type === "human" && s.id && s.id !== myPlayerId);
+          if (otherSeatedHumans.length === 0) {
+            currentChannel.send({
+              type: "broadcast",
+              event: "room_closed",
+              payload: { roomId: leavingRoomId, reason: "Host left and closed the room." }
+            });
+            unpublishRoomFromGlobalLobby(leavingRoomId);
+          } else {
+            currentChannel.send({
+              type: "broadcast",
+              event: "host_leave",
+              payload: { hostId: myPlayerId, roomId: leavingRoomId }
+            });
+            unpublishRoomFromGlobalLobby(leavingRoomId);
+          }
         }
         currentChannel.unsubscribe();
       } catch {}
       currentChannel = null;
     }
-    knownGuests.clear();
+
+    knownPeers.clear();
+    spectators = [];
+    pendingRequests = [];
+    myPendingRequest = null;
     currentRoomId = null;
+    currentRoomName = "";
     isRoomHost = false;
     hostPlayerId = null;
+    myAssignedSlot = -1;
+    myRole = "spectator";
     inGame = false;
+
     if (userInitiated) {
       try { sessionStorage.removeItem("caro_active_room"); } catch {}
+      updateBrowserUrlRoom(null);
       if (onRoomLeaveCallback) onRoomLeaveCallback();
     }
   }
@@ -783,21 +1813,27 @@
   function getLobbyState() {
     return {
       roomId: currentRoomId,
+      roomName: currentRoomName || (currentRoomId ? `Room ${currentRoomId}` : ""),
+      isPublic: isRoomPublic,
       isHost: isRoomHost,
       hostId: hostPlayerId,
       isOnline: Boolean(getClient()),
       myPlayerId,
       myPlayerName,
       myAssignedSlot,
+      myRole,
       slots: roomSlots,
+      spectators,
+      pendingRequests,
+      myPendingRequest,
       inGame,
-      shareUrl: currentRoomId ? `${window.location.origin}${window.location.pathname}?room=${currentRoomId}` : ""
+      shareUrl: currentRoomId ? `${window.location.origin}${window.location.pathname}?room=${encodeURIComponent(currentRoomId)}` : ""
     };
   }
 
-  // Registration of callbacks
   function setCallbacks(callbacks = {}) {
     if (callbacks.onLobbyChange) onLobbyChangeCallback = callbacks.onLobbyChange;
+    if (callbacks.onActiveRoomsChange) onActiveRoomsChangeCallback = callbacks.onActiveRoomsChange;
     if (callbacks.onGameStart) onGameStartCallback = callbacks.onGameStart;
     if (callbacks.onRemoteMove) onRemoteMoveCallback = callbacks.onRemoteMove;
     if (callbacks.onRemoteNextBattle) onRemoteNextBattleCallback = callbacks.onRemoteNextBattle;
@@ -805,21 +1841,62 @@
     if (callbacks.onStatusMessage) onStatusMessageCallback = callbacks.onStatusMessage;
     if (callbacks.onStateSync) onStateSyncCallback = callbacks.onStateSync;
     if (callbacks.onHostMigrated) onHostMigratedCallback = callbacks.onHostMigrated;
+    if (callbacks.onRequestsChange) onRequestsChangeCallback = callbacks.onRequestsChange;
+    if (callbacks.onSlotTakeover) onSlotTakeoverCallback = callbacks.onSlotTakeover;
     if (callbacks.getHostState) getHostStateCallback = callbacks.getHostState;
   }
 
-  // Export to global scope
+  function syncPlayerNameEverywhere(newName) {
+    if (!newName || !String(newName).trim()) return;
+    myPlayerName = String(newName).trim().substring(0, 20);
+    try {
+      sessionStorage.setItem("caro_player_name", myPlayerName);
+      localStorage.setItem("caro_player_name", myPlayerName);
+    } catch {}
+    if (isRoomHost && roomSlots[0]) {
+      roomSlots[0].name = myPlayerName;
+      broadcastLobbyUpdate();
+    } else if (currentChannel) {
+      const idx = roomSlots.findIndex(s => s.id === myPlayerId);
+      if (idx !== -1) roomSlots[idx].name = myPlayerName;
+      currentChannel.track({
+        id: myPlayerId,
+        name: myPlayerName,
+        isHost: isRoomHost,
+        role: myRole,
+        joinedAt: Date.now()
+      }).catch(() => {});
+      currentChannel.send({
+        type: "broadcast",
+        event: "peer_enter",
+        payload: { id: myPlayerId, name: myPlayerName }
+      });
+    }
+    if (onLobbyChangeCallback) onLobbyChangeCallback(getLobbyState());
+  }
+
+  // Export Multiplayer API
   window.CaroMultiplayer = {
     init,
     getClient,
     isConfigured,
     getSavedCredentials,
-    saveCredentials,
     generateRoomCode,
+    sanitizeRoomSlug,
     createRoom,
     joinRoom,
     leaveRoom,
+    setRoomMeta,
+    addSlot,
+    removeSlot,
+    kickPlayerToSpectator,
     updateSlot,
+    requestJoinSlot,
+    requestTakeover,
+    approveRequest,
+    rejectRequest,
+    refreshActiveRooms,
+    getActiveRooms,
     startGame,
     sendMove,
     sendNextBattle,
@@ -830,13 +1907,249 @@
     get hostId() { return hostPlayerId; },
     get isOnline() { return Boolean(getClient()); },
     get roomId() { return currentRoomId; },
+    get roomName() { return currentRoomName; },
+    get isPublic() { return isRoomPublic; },
     get inGame() { return inGame; },
     get myId() { return myPlayerId; },
     get myAssignedSlot() { return myAssignedSlot; },
+    get myRole() { return myRole; },
+    get spectators() { return spectators; },
+    get pendingRequests() { return pendingRequests; },
     get myName() { return myPlayerName; },
-    set myName(v) { myPlayerName = v; try { sessionStorage.setItem("caro_player_name", v); localStorage.setItem("caro_player_name", v); } catch {} },
+    set myName(v) { syncPlayerNameEverywhere(v); },
     get turnTimeoutSec() { return turnTimeoutSec; },
     set turnTimeoutSec(v) { turnTimeoutSec = Math.max(1, Number(v) || 30); }
+  };
+
+  // ───────────────────────────────────────────────────────────────────────────
+  // Simple Account Auth (`window.CaroAuth`) — Display Name, Email, 6-Digit PIN & 🦢 Cranes
+  // ───────────────────────────────────────────────────────────────────────────
+  const AUTH_SESSION_KEY = "caro_arena_auth_session";
+  const AUTH_LOCAL_USERS_KEY = "caro_arena_local_users";
+  let authChangeCallbacks = [];
+
+  async function hashPin(pin) {
+    const cleanPin = String(pin || "").trim();
+    if (!/^\d{6}$/.test(cleanPin)) {
+      throw new Error("PIN must be exactly 6 digits (0-9).");
+    }
+    const raw = `caro_arena_pin_v1:${cleanPin}`;
+    if (typeof window !== "undefined" && window.crypto?.subtle) {
+      const buf = await window.crypto.subtle.digest("SHA-256", new TextEncoder().encode(raw));
+      return Array.from(new Uint8Array(buf))
+        .map(b => b.toString(16).padStart(2, "0"))
+        .join("");
+    }
+    // Deterministic fallback hash if SubtleCrypto unavailable
+    let h = 2166136261;
+    for (let i = 0; i < raw.length; i++) {
+      h ^= raw.charCodeAt(i);
+      h = Math.imul(h, 16777619);
+    }
+    return "fnv_" + (h >>> 0).toString(16);
+  }
+
+  function getLocalUsersMap() {
+    try {
+      const raw = localStorage.getItem(AUTH_LOCAL_USERS_KEY);
+      return raw ? JSON.parse(raw) : {};
+    } catch {
+      return {};
+    }
+  }
+
+  function saveLocalUsersMap(map) {
+    try {
+      localStorage.setItem(AUTH_LOCAL_USERS_KEY, JSON.stringify(map));
+    } catch {}
+  }
+
+  function getCurrentUser() {
+    try {
+      const raw = localStorage.getItem(AUTH_SESSION_KEY);
+      if (!raw) return null;
+      const parsed = JSON.parse(raw);
+      return parsed && parsed.user_id ? parsed : null;
+    } catch {
+      return null;
+    }
+  }
+
+  function setSessionUser(userObj) {
+    try {
+      if (userObj) {
+        localStorage.setItem(AUTH_SESSION_KEY, JSON.stringify(userObj));
+        if (userObj.display_name) {
+          syncPlayerNameEverywhere(userObj.display_name);
+        }
+      } else {
+        localStorage.removeItem(AUTH_SESSION_KEY);
+      }
+    } catch {}
+    for (const cb of authChangeCallbacks) {
+      try { cb(userObj); } catch {}
+    }
+  }
+
+  async function register({ displayName, email, pin }) {
+    const cleanEmail = String(email || "").trim().toLowerCase();
+    const cleanName = String(displayName || "").trim();
+    if (!cleanName) throw new Error("Please enter a display name.");
+    if (!cleanEmail || !cleanEmail.includes("@")) throw new Error("Please enter a valid email address.");
+    const pinHash = await hashPin(pin);
+
+    const client = getClient();
+    if (client) {
+      const { data, error } = await client.rpc("caro_arena_auth_register", {
+        p_email: cleanEmail,
+        p_display_name: cleanName,
+        p_pin_hash: pinHash
+      });
+      if (!error && data) {
+        const users = getLocalUsersMap();
+        users[cleanEmail] = Object.assign({}, data, { pin_hash: pinHash });
+        saveLocalUsersMap(users);
+        setSessionUser(data);
+        return data;
+      }
+      if (error && !String(error.message || "").includes("Could not find the function")) {
+        throw new Error(error.message || "Registration failed.");
+      }
+    }
+
+    // Fallback to local storage account registry
+    const users = getLocalUsersMap();
+    if (users[cleanEmail]) {
+      throw new Error("An account with this email already exists. Please sign in.");
+    }
+    const newUser = {
+      user_id: "u_" + Math.random().toString(36).substring(2, 10),
+      email: cleanEmail,
+      display_name: cleanName,
+      cranes: 100,
+      updated_at: new Date().toISOString()
+    };
+    users[cleanEmail] = Object.assign({}, newUser, { pin_hash: pinHash });
+    saveLocalUsersMap(users);
+    setSessionUser(newUser);
+    return newUser;
+  }
+
+  async function login({ email, pin }) {
+    const cleanEmail = String(email || "").trim().toLowerCase();
+    if (!cleanEmail || !cleanEmail.includes("@")) throw new Error("Please enter a valid email address.");
+    const pinHash = await hashPin(pin);
+
+    const client = getClient();
+    if (client) {
+      const { data, error } = await client.rpc("caro_arena_auth_login", {
+        p_email: cleanEmail,
+        p_pin_hash: pinHash
+      });
+      if (!error && data) {
+        const users = getLocalUsersMap();
+        users[cleanEmail] = Object.assign({}, data, { pin_hash: pinHash });
+        saveLocalUsersMap(users);
+        setSessionUser(data);
+        return data;
+      }
+      if (error && !String(error.message || "").includes("Could not find the function")) {
+        throw new Error(error.message || "Invalid email or 6-digit PIN.");
+      }
+    }
+
+    const users = getLocalUsersMap();
+    const record = users[cleanEmail];
+    if (!record || record.pin_hash !== pinHash) {
+      throw new Error("Invalid email or 6-digit PIN.");
+    }
+    const sessionUser = {
+      user_id: record.user_id,
+      email: record.email,
+      display_name: record.display_name,
+      cranes: record.cranes ?? 100,
+      updated_at: record.updated_at
+    };
+    setSessionUser(sessionUser);
+    return sessionUser;
+  }
+
+  async function updateProfile({ displayName, email, currentPin, newPin }) {
+    const current = getCurrentUser();
+    if (!current) throw new Error("You must be signed in to update your profile.");
+    const cleanEmail = String(email || current.email || "").trim().toLowerCase();
+    const cleanName = String(displayName || current.display_name || "").trim();
+    if (!cleanName) throw new Error("Display name cannot be empty.");
+    if (!cleanEmail || !cleanEmail.includes("@")) throw new Error("Please enter a valid email address.");
+
+    const currentPinHash = await hashPin(currentPin);
+    const newPinHash = (newPin && String(newPin).trim() !== "") ? await hashPin(newPin) : null;
+
+    const client = getClient();
+    if (client) {
+      const { data, error } = await client.rpc("caro_arena_auth_update", {
+        p_user_id: current.user_id,
+        p_current_pin_hash: currentPinHash,
+        p_new_email: cleanEmail,
+        p_new_display_name: cleanName,
+        p_new_pin_hash: newPinHash
+      });
+      if (!error && data) {
+        const users = getLocalUsersMap();
+        if (current.email && current.email !== cleanEmail) {
+          delete users[current.email];
+        }
+        users[cleanEmail] = Object.assign({}, data, { pin_hash: newPinHash || currentPinHash });
+        saveLocalUsersMap(users);
+        setSessionUser(data);
+        return data;
+      }
+      if (error && !String(error.message || "").includes("Could not find the function")) {
+        throw new Error(error.message || "Failed to update profile.");
+      }
+    }
+
+    const users = getLocalUsersMap();
+    const existing = users[current.email] || Object.values(users).find(u => u.user_id === current.user_id);
+    if (!existing || existing.pin_hash !== currentPinHash) {
+      throw new Error("Current 6-digit PIN is incorrect.");
+    }
+    if (cleanEmail !== current.email && users[cleanEmail]) {
+      throw new Error("That email is already used by another account.");
+    }
+    if (current.email && cleanEmail !== current.email) {
+      delete users[current.email];
+    }
+    const updatedUser = {
+      user_id: current.user_id,
+      email: cleanEmail,
+      display_name: cleanName,
+      cranes: existing.cranes ?? current.cranes ?? 100,
+      updated_at: new Date().toISOString()
+    };
+    users[cleanEmail] = Object.assign({}, updatedUser, { pin_hash: newPinHash || currentPinHash });
+    saveLocalUsersMap(users);
+    setSessionUser(updatedUser);
+    return updatedUser;
+  }
+
+  function logout() {
+    setSessionUser(null);
+  }
+
+  function onAuthChange(cb) {
+    if (typeof cb === "function") authChangeCallbacks.push(cb);
+  }
+
+  window.CaroAuth = {
+    getCurrentUser,
+    isLoggedIn: () => Boolean(getCurrentUser()),
+    register,
+    login,
+    updateProfile,
+    logout,
+    onAuthChange,
+    hashPin
   };
 
   init();
