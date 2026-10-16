@@ -1,0 +1,234 @@
+/* ==========================================================================
+   Caro Arena – Battle Royale Design System
+   Light mode, editorial, anti-slop, taste-skill compliant
+   ========================================================================== */
+
+:root {
+  --bg-app: #fafaf9;
+  --bg-surface: #ffffff;
+  --bg-raised: #f5f5f4;
+  --bg-hover: #e7e5e4;
+  --border: #e7e5e4;
+  --border-medium: #d6d3d1;
+
+  --text-primary: #1c1917;
+  --text-secondary: #57534e;
+  --text-tertiary: #78716c;
+  --text-muted: #a8a29e;
+
+  --laya-color: #0891b2;
+  --jev-color: #7c3aed;
+  --von-color: #059669;
+  --mojev-color: #e11d48;
+  --accent-amber: #d97706;
+
+  --font-sans: "Plus Jakarta Sans", system-ui, -apple-system, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, monospace;
+
+  --radius-sm: 6px;
+  --radius-md: 10px;
+  --radius-lg: 14px;
+  --shadow-sm: 0 1px 2px rgba(0,0,0,0.04);
+  --shadow-card: 0 1px 3px rgba(0,0,0,0.06);
+}
+
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+html, body {
+  height: 100vh;
+  max-height: 100vh;
+  overflow: hidden;
+  font-family: var(--font-sans);
+  background: var(--bg-app);
+  color: var(--text-primary);
+  line-height: 1.5;
+  display: flex;
+  flex-direction: column;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* ==========================================================================
+   Header
+   ========================================================================== */
+.app-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 20px;
+  height: 52px;
+  background: var(--bg-surface);
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+
+.header-left, .header-right { display: flex; align-items: center; gap: 12px; }
+
+.brand {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--text-primary);
+}
+.brand svg { flex-shrink: 0; }
+.brand-name {
+  font-weight: 700;
+  font-size: 0.88rem;
+  letter-spacing: -0.02em;
+}
+
+.header-chip {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 10px;
+  background: var(--bg-raised);
+  border-radius: 999px;
+  font-size: 0.72rem;
+  font-weight: 500;
+  color: var(--text-secondary);
+  white-space: nowrap;
+}
+.chip-dot {
+  width: 7px; height: 7px;
+  border-radius: 50%;
+  background: var(--text-muted);
+  flex-shrink: 0;
+}
+
+.header-actions { display: flex; gap: 6px; }
+
+.model-status-row {
+  display: flex;
+  gap: 8px;
+  margin-left: 8px;
+}
+.status-pip {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 0.66rem;
+  font-weight: 500;
+  color: var(--text-tertiary);
+}
+.pip-dot {
+  width: 5px; height: 5px;
+  border-radius: 50%;
+  background: var(--von-color);
+}
+.pip-dot.offline { background: var(--text-muted); }
+
+/* ==========================================================================
+   Buttons
+   ========================================================================== */
+.btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 5px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg-surface);
+  color: var(--text-primary);
+  font: 500 0.74rem/1 var(--font-sans);
+  cursor: pointer;
+  transition: background 0.12s, border-color 0.12s;
+  white-space: nowrap;
+}
+.btn:hover { background: var(--bg-raised); border-color: var(--border-medium); }
+.btn:active { transform: scale(0.98); }
+.btn:disabled { opacity: 0.45; cursor: not-allowed; pointer-events: none; transform: none; }
+
+.btn-primary {
+  background: var(--text-primary);
+  color: var(--bg-surface);
+  border-color: var(--text-primary);
+}
+.btn-primary:hover { background: #292524; }
+.btn-primary.btn-active {
+  background: var(--mojev-color);
+  border-color: var(--mojev-color);
+  color: #fff;
+}
+
+.btn-ghost {
+  background: transparent;
+  border-color: transparent;
+  color: var(--text-secondary);
+}
+.btn-ghost:hover { background: var(--bg-raised); border-color: var(--border); }
+
+.btn-xs {
+  padding: 3px 8px;
+  font-size: 0.68rem;
+  border-radius: 4px;
+}
+.btn-danger { color: var(--mojev-color); border-color: var(--mojev-color); background: transparent; }
+.btn-danger:hover { background: rgba(225,29,72,0.06); }
+
+/* ==========================================================================
+   Gameplay Motion, Focus & Accessibility Polish
+   ========================================================================== */
+#caro-canvas,
+#tactical-sparkline-canvas {
+  display: block;
+}
+
+#caro-canvas:focus-visible {
+  outline: 2px solid var(--accent-amber, #d97706);
+  outline-offset: -2px;
+}
+
+.canvas-wrap {
+  transition: box-shadow 0.2s ease;
+}
+
+.canvas-wrap.human-turn-glow {
+  box-shadow: inset 0 0 0 2px rgba(217, 119, 6, 0.45);
+}
+
+.header-chip.turn-pulse {
+  animation: chipTurnPulse 0.32s cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+@keyframes chipTurnPulse {
+  0% { transform: scale(1); }
+  45% { transform: scale(1.04); }
+  100% { transform: scale(1); }
+}
+
+/* Toast Notifications */
+.arena-toast-container {
+  position: fixed;
+  bottom: 20px;
+  right: 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  z-index: 100000;
+  pointer-events: none;
+}
+
+.arena-toast {
+  pointer-events: auto;
+  background: var(--text-primary);
+  color: var(--bg-surface);
+  padding: 9px 14px;
+  border-radius: var(--radius-sm);
+  font-size: 0.76rem;
+  font-weight: 500;
+  box-shadow: 0 10px 24px -6px rgba(28, 25, 23, 0.3);
+  border-left: 3px solid var(--accent-amber);
+  animation: toastSlideIn 0.2s cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+@keyframes toastSlideIn {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+

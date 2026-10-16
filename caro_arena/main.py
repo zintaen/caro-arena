@@ -45,6 +45,19 @@ def _resolve_static_file(filename: str) -> Path:
     return STATIC_DIR / filename
 
 
+def _resolve_static_dir(dirname: str) -> Path:
+    root_candidate = ROOT_DIR / dirname
+    if root_candidate.is_dir():
+        return root_candidate
+    return STATIC_DIR / dirname
+
+
+if _resolve_static_dir("js").is_dir():
+    app.mount("/js", StaticFiles(directory=_resolve_static_dir("js")), name="js")
+if _resolve_static_dir("css").is_dir():
+    app.mount("/css", StaticFiles(directory=_resolve_static_dir("css")), name="css")
+
+
 manager = GameManager()
 auto_play_task: Optional[asyncio.Task] = None
 active_websockets: List[WebSocket] = []
