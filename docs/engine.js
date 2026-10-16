@@ -227,7 +227,19 @@ class TacticalEvaluator {
     return { count: consecutive, open_ends: openEnds };
   }
 
-  static evaluateMove(board, r, c, player, centroid) {
+  static evaluateMove(board, r, c, player, centroid = null) {
+    if (!Array.isArray(centroid)) {
+      if (board && board.stones && board.stones.size > 0) {
+        let sumR = 0, sumC = 0;
+        for (const key of board.stones.keys()) {
+          const [sr, sc] = key.split(",").map(Number);
+          sumR += sr; sumC += sc;
+        }
+        centroid = [sumR / board.stones.size, sumC / board.stones.size];
+      } else {
+        centroid = [0, 0];
+      }
+    }
     board.stones.set(`${r},${c}`, player);
     const offPatterns = DIRECTIONS.map(([dr, dc]) => this.evaluateLinePattern(board, r, c, dr, dc, player));
     board.stones.delete(`${r},${c}`);
@@ -905,6 +917,13 @@ class ClientGameManager {
   }
 
   newGame(playerTypes, shouldShuffle = true, playerConfigs = null) {
+    if (playerConfigs) {
+      this.isAutoPlaying = false;
+      if (this.autoPlayTimer) {
+        clearTimeout(this.autoPlayTimer);
+        this.autoPlayTimer = null;
+      }
+    }
     if (this.status === "finished" && !playerConfigs) {
       this.battleNumber += 1;
     }
@@ -1047,8 +1066,10 @@ class ClientGameManager {
 
     if (this.onStateChange) this.onStateChange(this.getState());
 
-    // If game continues and next is AI, resume auto-play step
-    if (this.status !== "finished" && !this.isHumanTurn() && this.isAutoPlaying) {
+    // If game continues and next is AI in solo mode, automatically step AI turns
+    const isMp = Boolean(typeof window !== "undefined" && window.CaroMultiplayer?.inGame);
+    if (this.status !== "finished" && !this.isHumanTurn() && (this.isAutoPlaying || !isMp)) {
+      this.isAutoPlaying = true;
       this.scheduleNextStep();
     }
     return this.getState();

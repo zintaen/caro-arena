@@ -25,6 +25,15 @@
   let currentBattleNumber = 1;
   let currentEntryFee = 0;
   let roomJoinedAt = 0;
+  let sessionScores = {}; // { [symbol]: { symbol, name, wins } }
+  let lastScoredBattleNumber = 0;
+  let roomActivityLog = []; // [{ id, ts, timeLabel, text, kind }]
+
+  function normalizeTurnTimeoutSec(v) {
+    if (v === 0 || v === "0" || v === false) return 0;
+    const n = Number(v);
+    return Number.isFinite(n) && n > 0 ? Math.round(n) : 30;
+  }
 
   const AI_MODELS = ["von", "mojev", "laya", "jev"];
   const AI_NAMES = {
@@ -63,7 +72,72 @@
   let onRequestsChangeCallback = null;
   let onSlotTakeoverCallback = null;
   let onEmoteCallback = null;
+  let onActivityLogChangeCallback = null;
   let getHostStateCallback = null;
+
+  function pushActivityLog(text, kind = "info") {
+    const clean = String(text || "").trim();
+    if (!clean) return;
+    const now = new Date();
+    const hh = String(now.getHours()).padStart(2, "0");
+    const mm = String(now.getMinutes()).padStart(2, "0");
+    const ss = String(now.getSeconds()).padStart(2, "0");
+    const entry = {
+      id: "act_" + Date.now() + "_" + Math.random().toString(36).substring(2, 6),
+      ts: Date.now(),
+      timeLabel: `${hh}:${mm}:${ss}`,
+      text: clean,
+      kind
+    };
+    roomActivityLog.unshift(entry);
+    if (roomActivityLog.length > 30) {
+      roomActivityLog.length = 30;
+    }
+    if (onActivityLogChangeCallback) {
+      try { onActivityLogChangeCallback(roomActivityLog.slice()); } catch {}
+    }
+  }
+
+  function recordSessionWin(symbol, playerName, battleNum = null) {
+    const sym = String(symbol || "").trim().toUpperCase();
+    if (!sym) return getSessionScores();
+    const bNum = battleNum || currentBattleNumber || 1;
+    if (lastScoredBattleNumber === bNum) return getSessionScores();
+    lastScoredBattleNumber = bNum;
+    const prev = sessionScores[sym] || { symbol: sym, name: playerName || sym, wins: 0 };
+    sessionScores[sym] = {
+      symbol: sym,
+      name: playerName || prev.name || sym,
+      wins: (prev.wins || 0) + 1
+    };
+    pushActivityLog(`${playerName || sym} (${sym}) won Battle #${bNum}.`, "victory");
+    if (isRoomHost && currentChannel) {
+      try {
+        currentChannel.send({
+          type: "broadcast",
+          event: "session_score_update",
+          payload: {
+            sessionScores,
+            battleNumber: bNum,
+            winnerSymbol: sym,
+            winnerName: playerName || prev.name || sym
+          }
+        });
+      } catch {}
+    }
+    if (onLobbyChangeCallback) {
+      try { onLobbyChangeCallback(getLobbyState()); } catch {}
+    }
+    return getSessionScores();
+  }
+
+  function getSessionScores() {
+    const copy = {};
+    for (const k of Object.keys(sessionScores)) {
+      copy[k] = Object.assign({}, sessionScores[k]);
+    }
+    return copy;
+  }
 
   // ───────────────────────────────────────────────────────────────────────────
   // Hosted Supabase Client Initialization (No Manual Setup UI Required)
@@ -287,6 +361,7 @@
       hostName: myPlayerName,
       isPublic: Boolean(isRoomPublic),
       entryFee: currentEntryFee || 0,
+      turnTimeoutSec,
       status: inGame ? "playing" : "waiting",
       battleNumber: currentBattleNumber || 1,
       playerCount: filledCount,
@@ -665,16 +740,24 @@
     currentRoomName = (opts.roomName || "").trim() || `${myPlayerName}'s Arena`;
     isRoomPublic = opts.isPublic !== undefined ? Boolean(opts.isPublic) : true;
     currentEntryFee = Math.max(0, Number(opts.entryFee) || 0);
+    if (opts.turnTimeoutSec !== undefined) {
+      turnTimeoutSec = normalizeTurnTimeoutSec(opts.turnTimeoutSec);
+    }
     roomJoinedAt = Date.now();
     isRoomHost = true;
     hostPlayerId = myPlayerId;
     myAssignedSlot = 0;
     myRole = "host";
     currentBattleNumber = 1;
+    sessionScores = {};
+    lastScoredBattleNumber = 0;
+    roomActivityLog = [];
     knownPeers.clear();
     spectators = [];
     pendingRequests = [];
     myPendingRequest = null;
+
+    pushActivityLog(`Room "${currentRoomName}" opened (${currentRoomId}).`, "room");
 
     try {
       sessionStorage.setItem("caro_active_room", currentRoomId);
@@ -726,8 +809,13 @@
     // Everyone joining an existing room starts as a Spectator until approved into a slot
     myAssignedSlot = -1;
     myRole = "spectator";
+    sessionScores = {};
+    lastScoredBattleNumber = 0;
+    roomActivityLog = [];
     pendingRequests = [];
     myPendingRequest = null;
+
+    pushActivityLog(`Entered room ${currentRoomId} as spectator.`, "room");
 
     await ensureGlobalLobbySubscribed();
     await subscribeToRoom(currentRoomId);
@@ -745,6 +833,8 @@
         roomId: currentRoomId,
         roomName: currentRoomName,
         entryFee: currentEntryFee || 0,
+        turnTimeoutSec,
+        sessionScores,
         hostId: hostPlayerId || myPlayerId,
         spectators,
         targetId: targetRequesterId || null
@@ -796,8 +886,11 @@
           if (p.isHost && p.id) {
             hostPlayerId = p.id;
           }
-          if (onStatusMessageCallback && p.name && p.id !== myPlayerId) {
-            onStatusMessageCallback(`${p.name} entered the room.`);
+          if (p.name && p.id !== myPlayerId) {
+            pushActivityLog(`${p.name} entered the room.`, "presence");
+            if (onStatusMessageCallback) {
+              onStatusMessageCallback(`${p.name} entered the room.`);
+            }
           }
         });
       }
@@ -807,10 +900,13 @@
     });
 
     currentChannel.on("presence", { event: "leave" }, ({ key, leftPresences }) => {
-      if (onStatusMessageCallback && leftPresences) {
+      if (leftPresences) {
         leftPresences.forEach(p => {
           if (p.name && p.id !== myPlayerId) {
-            onStatusMessageCallback(`${p.name} left the room.`);
+            pushActivityLog(`${p.name} left the room.`, "presence");
+            if (onStatusMessageCallback) {
+              onStatusMessageCallback(`${p.name} left the room.`);
+            }
           }
         });
       }
@@ -890,10 +986,11 @@
         createdAt: Date.now()
       };
       pendingRequests.push(req);
+      const label = req.kind === "takeover"
+        ? `${req.fromName} requested to take over Slot ${req.targetSymbol || (req.slotIndex + 1)}.`
+        : `${req.fromName} requested to join the match.`;
+      pushActivityLog(label, "request");
       if (onStatusMessageCallback) {
-        const label = req.kind === "takeover"
-          ? `${req.fromName} requested to take over Slot ${req.targetSymbol || (req.slotIndex + 1)}.`
-          : `${req.fromName} requested to join the match.`;
         onStatusMessageCallback(label);
       }
       if (onRequestsChangeCallback) onRequestsChangeCallback(pendingRequests.slice());
@@ -908,11 +1005,13 @@
           myAssignedSlot = payload.slotIndex;
           myRole = "player";
         }
+        pushActivityLog(payload.message || "Host approved your request.", "request");
         if (onStatusMessageCallback) {
           onStatusMessageCallback(payload.message || "Host approved your request. You are now in the match.");
         }
       } else {
         lastRejectedAt = Date.now();
+        pushActivityLog(payload.message || "Host declined your request.", "request");
         if (onStatusMessageCallback) {
           onStatusMessageCallback(payload.message || "Host declined your request.");
         }
@@ -924,6 +1023,7 @@
       if (!payload || payload.targetId !== myPlayerId) return;
       myAssignedSlot = -1;
       myRole = "spectator";
+      pushActivityLog("Moved to spectator mode by host.", "request");
       if (onStatusMessageCallback) {
         onStatusMessageCallback("You were moved to Spectator mode by the Host.");
       }
@@ -947,6 +1047,7 @@
       if (Array.isArray(payload.spectators)) {
         spectators = payload.spectators;
       }
+      pushActivityLog(`${payload.newPlayerName || "Player"} took over Slot ${payload.symbol}.`, "takeover");
       if (onSlotTakeoverCallback) {
         onSlotTakeoverCallback(payload);
       }
@@ -972,10 +1073,20 @@
       if (payload.hostId) hostPlayerId = payload.hostId;
       if (payload.roomName) currentRoomName = payload.roomName;
       if (payload.entryFee !== undefined) currentEntryFee = Math.max(0, Number(payload.entryFee) || 0);
+      if (payload.turnTimeoutSec !== undefined) turnTimeoutSec = normalizeTurnTimeoutSec(payload.turnTimeoutSec);
+      if (payload.sessionScores && typeof payload.sessionScores === "object") sessionScores = payload.sessionScores;
       if (Array.isArray(payload.spectators)) spectators = payload.spectators;
       inGame = true;
       recomputeMyRoleAndSlot();
       if (onStateSyncCallback) onStateSyncCallback(payload);
+    });
+
+    currentChannel.on("broadcast", { event: "session_score_update" }, ({ payload }) => {
+      if (payload?.sessionScores && typeof payload.sessionScores === "object") {
+        sessionScores = payload.sessionScores;
+        if (payload.battleNumber) lastScoredBattleNumber = payload.battleNumber;
+        if (onLobbyChangeCallback) onLobbyChangeCallback(getLobbyState());
+      }
     });
 
     currentChannel.on("broadcast", { event: "host_leave" }, ({ payload }) => {
@@ -991,6 +1102,7 @@
       hostPlayerId = payload.newHostId;
       isRoomHost = (payload.newHostId === myPlayerId);
       recomputeMyRoleAndSlot();
+      pushActivityLog(`${payload.newHostName || "Player"} became room host.`, "room");
       if (onHostMigratedCallback) {
         onHostMigratedCallback({
           newHostId: payload.newHostId,
@@ -1009,6 +1121,8 @@
       if (payload?.roomName) currentRoomName = payload.roomName;
       if (payload?.isPublic !== undefined) isRoomPublic = Boolean(payload.isPublic);
       if (payload?.entryFee !== undefined) currentEntryFee = Math.max(0, Number(payload.entryFee) || 0);
+      if (payload?.turnTimeoutSec !== undefined) turnTimeoutSec = normalizeTurnTimeoutSec(payload.turnTimeoutSec);
+      if (payload?.sessionScores && typeof payload.sessionScores === "object") sessionScores = payload.sessionScores;
       if (!isRoomHost) {
         if (Array.isArray(payload?.slots)) {
           roomSlots = payload.slots;
@@ -1027,9 +1141,12 @@
       if (payload?.hostId) hostPlayerId = payload.hostId;
       if (payload?.roomName) currentRoomName = payload.roomName;
       if (payload?.entryFee !== undefined) currentEntryFee = Math.max(0, Number(payload.entryFee) || 0);
+      if (payload?.turnTimeoutSec !== undefined) turnTimeoutSec = normalizeTurnTimeoutSec(payload.turnTimeoutSec);
+      if (payload?.sessionScores && typeof payload.sessionScores === "object") sessionScores = payload.sessionScores;
       if (Array.isArray(payload?.slots)) roomSlots = payload.slots;
       if (Array.isArray(payload?.spectators)) spectators = payload.spectators;
       recomputeMyRoleAndSlot();
+      pushActivityLog(`Battle #${currentBattleNumber} started.`, "battle");
       if (onGameStartCallback) onGameStartCallback(payload);
     });
 
@@ -1038,11 +1155,15 @@
     });
 
     currentChannel.on("broadcast", { event: "game_emote" }, ({ payload }) => {
+      if (payload?.senderName && payload?.emoji) {
+        pushActivityLog(`${payload.senderName} sent ${payload.emoji}`, "emote");
+      }
       if (onEmoteCallback && payload) onEmoteCallback(payload);
     });
 
     currentChannel.on("broadcast", { event: "game_next" }, ({ payload }) => {
       currentBattleNumber = payload?.battleNumber || (currentBattleNumber + 1);
+      pushActivityLog(`Battle #${currentBattleNumber} started.`, "battle");
       if (onRemoteNextBattleCallback) onRemoteNextBattleCallback(payload);
     });
 
@@ -1227,6 +1348,8 @@
         spectators = spectators.filter(sp => sp.id !== req.fromId);
         const sym = symbols[targetIdx] || "B";
 
+        pushActivityLog(`Approved ${req.fromName} for Slot #${targetIdx + 1} (${sym}).`, "request");
+
         currentChannel.send({
           type: "broadcast",
           event: "request_resolved",
@@ -1288,6 +1411,7 @@
           ready: true
         };
         spectators = spectators.filter(sp => sp.id !== req.fromId);
+        pushActivityLog(`Approved ${req.fromName} into Slot #${targetIdx + 1}.`, "request");
         currentChannel.send({
           type: "broadcast",
           event: "request_resolved",
@@ -1315,6 +1439,7 @@
     if (idx === -1) return false;
     const req = pendingRequests.splice(idx, 1)[0];
 
+    pushActivityLog(`Declined request from ${req.fromName}.`, "request");
     currentChannel.send({
       type: "broadcast",
       event: "request_resolved",
@@ -1333,7 +1458,7 @@
   // ───────────────────────────────────────────────────────────────────────────
   // Dynamic Slot & Room Customization (Host)
   // ───────────────────────────────────────────────────────────────────────────
-  function setRoomMeta({ roomName, isPublic, entryFee } = {}) {
+  function setRoomMeta({ roomName, isPublic, entryFee, turnTimeoutSec: nextTimeout } = {}) {
     if (!isRoomHost) return;
     if (roomName !== undefined && String(roomName).trim()) {
       currentRoomName = String(roomName).trim().substring(0, 32);
@@ -1343,6 +1468,9 @@
     }
     if (entryFee !== undefined && !inGame) {
       currentEntryFee = Math.max(0, Number(entryFee) || 0);
+    }
+    if (nextTimeout !== undefined && !inGame) {
+      turnTimeoutSec = normalizeTurnTimeoutSec(nextTimeout);
     }
     broadcastLobbyUpdate();
     if (onLobbyChangeCallback) onLobbyChangeCallback(getLobbyState());
@@ -1559,6 +1687,7 @@
       isRoomHost = true;
       hostPlayerId = myPlayerId;
       myRole = "host";
+      pushActivityLog(`${myPlayerName} became room host.`, "room");
       if (currentChannel && typeof currentChannel.track === "function") {
         currentChannel.track({
           id: myPlayerId,
@@ -1694,6 +1823,8 @@
         roomName: currentRoomName,
         isPublic: isRoomPublic,
         entryFee: currentEntryFee || 0,
+        turnTimeoutSec,
+        sessionScores,
         slots: roomSlots,
         spectators,
         hostName: myPlayerName,
@@ -1747,11 +1878,14 @@
     inGame = true;
     currentBattleNumber = 1;
     hostPlayerId = myPlayerId;
+    pushActivityLog("Battle #1 started.", "battle");
 
     const startPayload = {
       roomId: currentRoomId,
       roomName: currentRoomName,
       entryFee: currentEntryFee || 0,
+      turnTimeoutSec,
+      sessionScores,
       hostId: myPlayerId,
       roster,
       slots: roomSlots,
@@ -1797,6 +1931,7 @@
       slotIndex: myAssignedSlot,
       timestamp: Date.now()
     };
+    pushActivityLog(`${myPlayerName} sent ${cleanEmoji}`, "emote");
     if (currentChannel) {
       currentChannel.send({
         type: "broadcast",
@@ -1812,6 +1947,7 @@
   function sendNextBattle(battleNum) {
     if (!currentChannel || !isRoomHost) return;
     currentBattleNumber = battleNum;
+    pushActivityLog(`Battle #${battleNum} started.`, "battle");
     currentChannel.send({
       type: "broadcast",
       event: "game_next",
@@ -1859,6 +1995,9 @@
     currentRoomId = null;
     currentRoomName = "";
     currentEntryFee = 0;
+    sessionScores = {};
+    lastScoredBattleNumber = 0;
+    roomActivityLog = [];
     isRoomHost = false;
     hostPlayerId = null;
     myAssignedSlot = -1;
@@ -1878,6 +2017,9 @@
       roomName: currentRoomName || (currentRoomId ? `Room ${currentRoomId}` : ""),
       isPublic: isRoomPublic,
       entryFee: currentEntryFee || 0,
+      turnTimeoutSec,
+      sessionScores: getSessionScores(),
+      activityLog: roomActivityLog.slice(),
       isHost: isRoomHost,
       hostId: hostPlayerId,
       isOnline: Boolean(getClient()),
@@ -1907,6 +2049,7 @@
     if (callbacks.onRequestsChange) onRequestsChangeCallback = callbacks.onRequestsChange;
     if (callbacks.onSlotTakeover) onSlotTakeoverCallback = callbacks.onSlotTakeover;
     if (callbacks.onEmote) onEmoteCallback = callbacks.onEmote;
+    if (callbacks.onActivityLogChange) onActivityLogChangeCallback = callbacks.onActivityLogChange;
     if (callbacks.getHostState) getHostStateCallback = callbacks.getHostState;
   }
 
@@ -1969,6 +2112,10 @@
     broadcastGameStateIfActive,
     broadcastAuthoritativeState: broadcastGameStateIfActive,
     getLobbyState,
+    getActivityLog: () => roomActivityLog.slice(),
+    pushActivityLog,
+    recordSessionWin,
+    getSessionScores,
     setCallbacks,
     get isHost() { return isRoomHost; },
     get hostId() { return hostPlayerId; },
@@ -1986,12 +2133,12 @@
     get myName() { return myPlayerName; },
     set myName(v) { syncPlayerNameEverywhere(v); },
     get turnTimeoutSec() { return turnTimeoutSec; },
-    set turnTimeoutSec(v) { turnTimeoutSec = Math.max(1, Number(v) || 30); }
+    set turnTimeoutSec(v) { turnTimeoutSec = normalizeTurnTimeoutSec(v); }
   };
 
   // ───────────────────────────────────────────────────────────────────────────
   // Simple Account Auth (`window.CaroAuth`) — Display Name, Email, 6-Digit PIN,
-  // 5-Attempt Lockout, 🦢 Cranes Economy & Unlockable Board Themes
+  // 5-Attempt Lockout, Cranes Economy, Activity Ledger, Board Themes & Stone Finishes
   // ───────────────────────────────────────────────────────────────────────────
   const AUTH_SESSION_KEY = "caro_arena_auth_session";
   const AUTH_LOCAL_USERS_KEY = "caro_arena_local_users";
@@ -1999,6 +2146,9 @@
   const GUEST_CRANES_KEY = "caro_arena_guest_cranes";
   const BOARD_THEME_KEY = "caro_arena_board_theme";
   const UNLOCKED_THEMES_KEY = "caro_arena_unlocked_themes";
+  const STONE_STYLE_KEY = "caro_arena_stone_style";
+  const UNLOCKED_STONES_KEY = "caro_arena_unlocked_stones";
+  const CRANES_LEDGER_PREFIX = "caro_arena_cranes_ledger";
   const MAX_PIN_ATTEMPTS = 5;
   const LOCKOUT_DURATION_MS = 5 * 60 * 1000; // 5 minutes
 
@@ -2009,7 +2159,86 @@
     cyber: { id: "cyber", name: "Cyber Grid", cost: 100, desc: "Dark grid with cyan lines" }
   };
 
+  const STONE_STYLES_CATALOG = {
+    classic: { id: "classic", name: "Glazed Stone", cost: 0, desc: "Polished dome with specular highlight" },
+    matte: { id: "matte", name: "Matte Ceramic", cost: 40, desc: "Kiln-fired disc with recessed rim" },
+    shell: { id: "shell", name: "Shell & Slate", cost: 60, desc: "Woven grain lines on warm stone" },
+    mono: { id: "mono", name: "High-Contrast Rings", cost: 50, desc: "Crisp tournament rings with center pip" }
+  };
+
   let authChangeCallbacks = [];
+
+  function getCranesLedgerStorageKey() {
+    const current = getCurrentUser();
+    return `${CRANES_LEDGER_PREFIX}_${current?.user_id || "guest"}`;
+  }
+
+  function formatLedgerReason(reason) {
+    const r = String(reason || "match_reward").trim();
+    if (r === "daily_login_bonus") return "Daily check-in bonus";
+    if (r === "match_reward" || r === "battle_victory") return "Battle victory reward";
+    if (r === "wager_entry" || r.startsWith("wager_entry")) return "Room entry wager";
+    if (r === "wager_pot_win" || r.startsWith("wager_pot")) return "Room wager pot won";
+    if (r.startsWith("unlock_theme_")) {
+      const tid = r.replace("unlock_theme_", "");
+      return `Unlocked ${BOARD_THEMES_CATALOG[tid]?.name || tid} board`;
+    }
+    if (r.startsWith("unlock_stone_")) {
+      const sid = r.replace("unlock_stone_", "");
+      return `Unlocked ${STONE_STYLES_CATALOG[sid]?.name || sid} stones`;
+    }
+    return r.replace(/_/g, " ").replace(/^\w/, c => c.toUpperCase());
+  }
+
+  function getCranesLedger() {
+    try {
+      const raw = localStorage.getItem(getCranesLedgerStorageKey());
+      const parsed = raw ? JSON.parse(raw) : [];
+      if (Array.isArray(parsed) && parsed.length > 0) return parsed;
+    } catch {}
+    return [
+      {
+        id: "led_starter",
+        ts: Date.now(),
+        delta: 100,
+        reason: "starter_grant",
+        label: "Starter balance",
+        balanceAfter: getCranesBalance()
+      }
+    ];
+  }
+
+  function recordCranesLedger(delta, reason, balanceAfter) {
+    try {
+      const key = getCranesLedgerStorageKey();
+      const raw = localStorage.getItem(key);
+      let list = [];
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        if (Array.isArray(parsed)) list = parsed;
+      }
+      if (list.length === 0) {
+        list.push({
+          id: "led_starter",
+          ts: Date.now() - 1000,
+          delta: 100,
+          reason: "starter_grant",
+          label: "Starter balance",
+          balanceAfter: Math.max(0, (Number(balanceAfter) || 100) - (Number(delta) || 0))
+        });
+      }
+      list.unshift({
+        id: "led_" + Date.now() + "_" + Math.random().toString(36).substring(2, 6),
+        ts: Date.now(),
+        delta: Number(delta) || 0,
+        reason: String(reason || "match_reward"),
+        label: formatLedgerReason(reason),
+        balanceAfter: Number(balanceAfter) || 0
+      });
+      if (list.length > 25) list.length = 25;
+      localStorage.setItem(key, JSON.stringify(list));
+    } catch {}
+  }
 
   async function hashPin(pin) {
     const cleanPin = String(pin || "").trim();
@@ -2335,6 +2564,7 @@
         users[current.email].updated_at = updatedUser.updated_at;
         saveLocalUsersMap(users);
       }
+      recordCranesLedger(numDelta, reason, nextCranes);
       setSessionUser(updatedUser);
 
       // Sync to Supabase RPC if deployed
@@ -2365,6 +2595,7 @@
     try {
       localStorage.setItem(GUEST_CRANES_KEY, String(nextGuest));
     } catch {}
+    recordCranesLedger(numDelta, reason, nextGuest);
     for (const cb of authChangeCallbacks) {
       try { cb(null); } catch {}
     }
@@ -2464,6 +2695,66 @@
     return { unlocked: true, themeId, cranes: newBalance };
   }
 
+  function getUnlockedStoneStyles() {
+    try {
+      const current = getCurrentUser();
+      const key = `${UNLOCKED_STONES_KEY}_${current?.user_id || "guest"}`;
+      const raw = localStorage.getItem(key);
+      const parsed = raw ? JSON.parse(raw) : ["classic"];
+      if (!Array.isArray(parsed)) return ["classic"];
+      if (!parsed.includes("classic")) parsed.unshift("classic");
+      return parsed;
+    } catch {
+      return ["classic"];
+    }
+  }
+
+  function isStoneStyleUnlocked(styleId) {
+    if (!styleId || styleId === "classic") return true;
+    return getUnlockedStoneStyles().includes(styleId);
+  }
+
+  function getSelectedStoneStyle() {
+    try {
+      const saved = localStorage.getItem(STONE_STYLE_KEY) || "classic";
+      return STONE_STYLES_CATALOG[saved] && isStoneStyleUnlocked(saved) ? saved : "classic";
+    } catch {
+      return "classic";
+    }
+  }
+
+  function setSelectedStoneStyle(styleId) {
+    if (!STONE_STYLES_CATALOG[styleId]) return "classic";
+    if (!isStoneStyleUnlocked(styleId)) return getSelectedStoneStyle();
+    try {
+      localStorage.setItem(STONE_STYLE_KEY, styleId);
+    } catch {}
+    return styleId;
+  }
+
+  async function unlockStoneStyle(styleId) {
+    const entry = STONE_STYLES_CATALOG[styleId];
+    if (!entry) throw new Error("Unknown stone finish.");
+    if (isStoneStyleUnlocked(styleId)) {
+      setSelectedStoneStyle(styleId);
+      return { unlocked: true, styleId, cranes: getCranesBalance() };
+    }
+    const balance = getCranesBalance();
+    if (balance < entry.cost) {
+      throw new Error(`Need ${entry.cost} Cranes to unlock ${entry.name} (you have ${balance}).`);
+    }
+    const newBalance = await adjustCranes(-entry.cost, `unlock_stone_${styleId}`);
+    try {
+      const current = getCurrentUser();
+      const key = `${UNLOCKED_STONES_KEY}_${current?.user_id || "guest"}`;
+      const unlocked = getUnlockedStoneStyles();
+      if (!unlocked.includes(styleId)) unlocked.push(styleId);
+      localStorage.setItem(key, JSON.stringify(unlocked));
+    } catch {}
+    setSelectedStoneStyle(styleId);
+    return { unlocked: true, styleId, cranes: newBalance };
+  }
+
   function logout() {
     setSessionUser(null);
   }
@@ -2485,6 +2776,7 @@
     clearLockoutForEmail,
     getCranesBalance,
     adjustCranes,
+    getCranesLedger,
     canClaimDailyBonus,
     claimDailyBonus,
     BOARD_THEMES_CATALOG,
@@ -2492,8 +2784,15 @@
     isThemeUnlocked,
     getSelectedTheme,
     setSelectedTheme,
-    unlockTheme
+    unlockTheme,
+    STONE_STYLES_CATALOG,
+    getUnlockedStoneStyles,
+    isStoneStyleUnlocked,
+    getSelectedStoneStyle,
+    setSelectedStoneStyle,
+    unlockStoneStyle
   };
 
   init();
 })();
+

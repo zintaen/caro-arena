@@ -159,11 +159,15 @@ let cachedBattlesCount = 0;
 let lastRenderedMoveCount = 0, lastRenderedGameId = null;
 let isReplayMode = false, replayMoves = [], replayIndex = 0, replayPlayers = [], replayPlacements = [];
 let showMoveNumbers = true, showCoords = false;
+let showTrail = true, showMinimap = true;
+let showReplayHints = false;
 let showHeatmap = true, showLasers = true;
 let isTwoTapConfirm = false;
 let pendingConfirmCoord = null;
 let isOnLobbyStartScreen = true;
 let currentMatchWagerPot = 0;
+let _sessionWinRecordedForGameId = null;
+let cachedRecentBattles = [];
 let socket = null, wsReconnectTimer = null;
 let activeHistoryTab = "moves";
 let lastWasHumanTurn = false;
@@ -508,6 +512,14 @@ function handleStateUpdate(data) {
       const m = data.board.moves[i];
       if (m) triggerStonePlacementFx(m.row, m.col, m.player);
     }
+    const latestM = data.board.moves[newMoveCount - 1];
+    if (latestM && userInteractedWithCamera && !isDragging && canvas) {
+      const pt = boardToScreen(latestM.row, latestM.col);
+      const margin = 36;
+      if (pt.x < margin || pt.x > canvas.width - margin || pt.y < margin || pt.y > canvas.height - margin) {
+        panCameraToCoord(latestM.row, latestM.col);
+      }
+    }
   }
 
   // Trigger winning line radial spark burst for newly achieved 5-in-a-row placements
@@ -573,25 +585,32 @@ function handleStateUpdate(data) {
     try { window.CaroAudio?.playChampionshipFanfare?.(); } catch {}
     if (confettiEngine && !prefersReducedMotion()) confettiEngine.launch(3000);
 
+    const placements = data.board?.placements || [];
+    const firstPlace = placements.find(pl => pl.rank === 1) || placements[0];
+    const winSym = firstPlace?.player || firstPlace?.symbol;
+
+    if (isMultiplayerActive && winSym && window.CaroMultiplayer?.isHost && _sessionWinRecordedForGameId !== data.game_id) {
+      _sessionWinRecordedForGameId = data.game_id;
+      const winMeta = getPlayerMeta(winSym);
+      const bn = data.series?.battle_number || data.battle_number || 1;
+      window.CaroMultiplayer.recordSessionWin?.(winSym, winMeta.name, bn);
+      updateMultiplayerHudBadges();
+    }
+
     // Award Cranes for 1st-place victory when local human wins
-    if (!wasInitialFetch && window.CaroAuth?.adjustCranes) {
-      const placements = data.board?.placements || [];
-      const firstPlace = placements.find(pl => pl.rank === 1) || placements[0];
-      const winSym = firstPlace?.player || firstPlace?.symbol;
-      if (winSym) {
-        if (isMultiplayerActive && myMultiplayerSymbol && winSym === myMultiplayerSymbol) {
-          const potBonus = Number(currentMatchWagerPot) || 0;
-          const totalReward = 25 + potBonus;
-          window.CaroAuth.adjustCranes(totalReward, "multiplayer_win_1st").then(() => {
-            showArenaToast(`1st place — +${totalReward} Cranes awarded${potBonus > 0 ? ` (includes ${potBonus} pot)` : ""}`);
-            if (typeof renderLobbyHomeWalletAndThemes === "function") renderLobbyHomeWalletAndThemes();
-          }).catch(() => {});
-        } else if (!isMultiplayerActive && symbolMap[winSym]?.type === "human") {
-          window.CaroAuth.adjustCranes(10, "solo_practice_win_1st").then(() => {
-            showArenaToast("1st place — +10 Cranes awarded");
-            if (typeof renderLobbyHomeWalletAndThemes === "function") renderLobbyHomeWalletAndThemes();
-          }).catch(() => {});
-        }
+    if (!wasInitialFetch && window.CaroAuth?.adjustCranes && winSym) {
+      if (isMultiplayerActive && myMultiplayerSymbol && winSym === myMultiplayerSymbol) {
+        const potBonus = Number(currentMatchWagerPot) || 0;
+        const totalReward = 25 + potBonus;
+        window.CaroAuth.adjustCranes(totalReward, "multiplayer_win_1st").then(() => {
+          showArenaToast(`1st place — +${totalReward} Cranes awarded${potBonus > 0 ? ` (includes ${potBonus} pot)` : ""}`);
+          if (typeof renderLobbyHomeWalletAndThemes === "function") renderLobbyHomeWalletAndThemes();
+        }).catch(() => {});
+      } else if (!isMultiplayerActive && symbolMap[winSym]?.type === "human") {
+        window.CaroAuth.adjustCranes(10, "solo_practice_win_1st").then(() => {
+          showArenaToast("1st place — +10 Cranes awarded");
+          if (typeof renderLobbyHomeWalletAndThemes === "function") renderLobbyHomeWalletAndThemes();
+        }).catch(() => {});
       }
     }
   }
@@ -694,12 +713,49 @@ function setupEventListeners() {
 
   // Viewport & Board Toggles
   document.getElementById("toggle-numbers")?.addEventListener("change", e => { showMoveNumbers = e.target.checked; renderBoard(); });
+  document.getElementById("toggle-trail")?.addEventListener("change", e => { showTrail = e.target.checked; renderBoard(); });
   document.getElementById("toggle-coords")?.addEventListener("change", e => { showCoords = e.target.checked; renderBoard(); });
+  document.getElementById("toggle-minimap")?.addEventListener("change", e => { showMinimap = e.target.checked; renderBoard(); });
   document.getElementById("toggle-heatmap")?.addEventListener("change", e => {
     showHeatmap = e.target.checked;
     renderBoard();
     if (showHeatmap || showLasers) startFxAnimation();
   });
+
+  // Off-screen latest move pill click -> pan camera to latest move
+  document.getElementById("offscreen-move-pill")?.addEventListener("click", (e) => {
+    const r = Number(e.currentTarget.dataset.row);
+    const c = Number(e.currentTarget.dataset.col);
+    if (Number.isFinite(r) && Number.isFinite(c)) {
+      panCameraToCoord(r, c);
+    }
+  });
+
+  // Minimap click / drag to pan camera
+  const minimapEl = document.getElementById("board-minimap");
+  if (minimapEl) {
+    let isMinimapDragging = false;
+    const panFromMinimapEvent = (evt) => {
+      if (!_lastMinimapBounds) return;
+      const rect = minimapEl.getBoundingClientRect();
+      const nx = Math.max(0, Math.min(1, (evt.clientX - rect.left) / Math.max(1, rect.width)));
+      const ny = Math.max(0, Math.min(1, (evt.clientY - rect.top) / Math.max(1, rect.height)));
+      const targetC = Math.round(_lastMinimapBounds.minC + nx * _lastMinimapBounds.spanC);
+      const targetR = Math.round(_lastMinimapBounds.minR + ny * _lastMinimapBounds.spanR);
+      panCameraToCoord(targetR, targetC);
+    };
+    minimapEl.addEventListener("mousedown", (e) => {
+      e.stopPropagation();
+      isMinimapDragging = true;
+      panFromMinimapEvent(e);
+    });
+    window.addEventListener("mousemove", (e) => {
+      if (isMinimapDragging) panFromMinimapEvent(e);
+    });
+    window.addEventListener("mouseup", () => {
+      isMinimapDragging = false;
+    });
+  }
 
   // Precision 2-Tap Move Confirmation toggle
   const twoTapToggle = document.getElementById("toggle-twotap");
@@ -735,6 +791,31 @@ function setupEventListeners() {
         } catch (err) {
           showArenaToast(err.message);
           themeSelect.value = window.CaroAuth.getSelectedTheme();
+        }
+      }
+    });
+  }
+
+  // Stone Cosmetic Finish selector in board footer
+  const stoneSelect = document.getElementById("select-stone-style");
+  if (stoneSelect && window.CaroAuth) {
+    stoneSelect.value = window.CaroAuth.getSelectedStoneStyle();
+    stoneSelect.addEventListener("change", async (e) => {
+      const targetStyle = e.target.value;
+      if (window.CaroAuth.isStoneStyleUnlocked(targetStyle)) {
+        window.CaroAuth.setSelectedStoneStyle(targetStyle);
+        if (typeof renderLobbyHomeWalletAndThemes === "function") renderLobbyHomeWalletAndThemes();
+        renderBoard();
+      } else {
+        try {
+          await window.CaroAuth.unlockStoneStyle(targetStyle);
+          const meta = window.CaroAuth.STONE_STYLES_CATALOG?.[targetStyle];
+          showArenaToast(`Unlocked and equipped ${meta?.name || targetStyle}`);
+          if (typeof renderLobbyHomeWalletAndThemes === "function") renderLobbyHomeWalletAndThemes();
+          renderBoard();
+        } catch (err) {
+          showArenaToast(err.message);
+          stoneSelect.value = window.CaroAuth.getSelectedStoneStyle();
         }
       }
     });
@@ -1558,7 +1639,50 @@ function switchHistoryTab(tab) {
   if (tab === "battles") fetchBattleHistory();
 }
 
+function renderLobbyHomeRecentBattles(battles) {
+  const container = document.getElementById("lobby-home-recent-battles");
+  const countBadge = document.getElementById("lobby-home-recent-count");
+  const list = Array.isArray(battles) ? battles.slice(0, 3) : [];
+  if (countBadge) {
+    countBadge.textContent = `${list.length} recent`;
+  }
+  if (!container) return;
+  if (list.length === 0) {
+    container.innerHTML = `<div class="mp-empty-rooms">No completed battles yet.</div>`;
+    return;
+  }
+  container.innerHTML = "";
+  list.forEach(b => {
+    const p = b.placements || [];
+    const winner = p.find(x => x.rank === 1) || p[0];
+    const winnerMeta = winner ? (PLAYER_COLORS[winner.type] || { fill: "#94a3b8", name: winner.name || winner.type || "Winner" }) : null;
+    const winnerName = winner?.name || winnerMeta?.name || "Draw";
+    const winnerDot = winnerMeta
+      ? `<span class="model-dot" style="background:${escapeHtml(winnerMeta.fill)}"></span>`
+      : "";
+    const safeBattleId = escapeHtml(b.battle_id);
+    const totalMoves = Number(b.total_moves ?? (b.moves_data ? b.moves_data.length : 0)) || 0;
+
+    const item = document.createElement("div");
+    item.className = "lobby-recent-battle-item";
+    item.innerHTML = `
+      <div class="lobby-recent-battle-meta">
+        <span class="mono" style="font-weight:700;color:var(--text-primary);">#${safeBattleId}</span>
+        <span>${winnerDot}<strong>${escapeHtml(winnerName)}</strong></span>
+        <span class="mono muted">· ${totalMoves} moves</span>
+      </div>
+      <button type="button" class="btn btn-secondary btn-xs btn-lobby-recent-replay" data-battle-id="${safeBattleId}">Replay</button>
+    `;
+    item.querySelector(".btn-lobby-recent-replay")?.addEventListener("click", () => {
+      startReplay(b.battle_id);
+    });
+    container.appendChild(item);
+  });
+}
+
 function renderBattleHistory(battles) {
+  cachedRecentBattles = Array.isArray(battles) ? battles : [];
+  renderLobbyHomeRecentBattles(cachedRecentBattles);
   const tbody = document.getElementById("battles-table-body");
   if (!tbody) return;
   if (!battles || battles.length === 0) {
@@ -1636,7 +1760,7 @@ function panCameraToCoord(r, c) {
   const targetZoom = Math.max(camera.zoom, 0.9);
   const targetX = canvas.width / 2 - c * camera.baseCellSize * targetZoom;
   const targetY = canvas.height / 2 - r * camera.baseCellSize * targetZoom;
-  if (prefersReducedMotion()) {
+  if (prefersReducedMotion() || window._testInstantPan) {
     camera.x = targetX;
     camera.y = targetY;
     camera.zoom = targetZoom;
@@ -2277,10 +2401,22 @@ function renderBoard() {
     drawThreatHeatmap(cs);
   }
 
-  // Draw stones (with spring scale-pop for newly placed stones)
+  // Draw stones (with spring scale-pop for newly placed stones) & Recent Trail
   const moves = isReplayMode ? replayMoves.slice(0, replayIndex) : gameState?.board?.moves || [];
   const lastMove = moves.length > 0 ? moves[moves.length - 1] : null;
-  moves.forEach(m => drawStone(m.row, m.col, m.player, cs, m.move_number, nowPerf));
+  const activePlayersList = isReplayMode ? replayPlayers : (gameState?.players || []);
+  const trailSpan = Math.max(2, activePlayersList.length || 2);
+  const recentTrailMoves = moves.slice(Math.max(0, moves.length - trailSpan));
+  const recentTrailSet = new Set(recentTrailMoves.map(m => `${m.row},${m.col}`));
+
+  if (showTrail && recentTrailMoves.length >= 2) {
+    drawRecentMoveTrail(recentTrailMoves, cs, themeId);
+  }
+
+  moves.forEach(m => {
+    const isRecent = recentTrailSet.has(`${m.row},${m.col}`);
+    drawStone(m.row, m.col, m.player, cs, m.move_number, nowPerf, isRecent);
+  });
 
   // Expanding stone placement shockwave ripples
   drawBoardRipples(cs, nowPerf);
@@ -2288,6 +2424,14 @@ function renderBoard() {
   // Live Threat Lasers (renders dynamic active threat beams over stones)
   if (showLasers && !isReplayMode && gameState?.board) {
     drawActiveThreatLasers(cs);
+  }
+
+  // Replay Mode Candidate & Missed-Defense Overlay
+  if (isReplayMode) {
+    drawReplayCandidateHints(cs);
+  } else {
+    const analysisPill = document.getElementById("replay-analysis-pill");
+    if (analysisPill) analysisPill.style.display = "none";
   }
 
   // Human hover ghost with alignment guide crosshair
@@ -2520,9 +2664,132 @@ function renderBoard() {
 
   // Radial winning-line spark burst particles
   drawBoardSparks(cs, nowPerf);
+
+  // Off-screen latest move edge pill & Minimap radar
+  updateOffscreenMovePill(lastMove, W, H);
+  renderBoardMinimap(moves, minR, maxR, minC, maxC, themePalette);
 }
 
-function drawStone(r, c, symbol, cs, moveNumber, nowPerf = performance.now()) {
+let _lastMinimapBounds = null;
+
+function updateOffscreenMovePill(lastMove, W, H) {
+  const pill = document.getElementById("offscreen-move-pill");
+  if (!pill) return;
+  if (!lastMove || !W || !H) {
+    pill.style.display = "none";
+    return;
+  }
+  const pt = boardToScreen(lastMove.row, lastMove.col);
+  const pad = 18;
+  const isOffscreen = pt.x < pad || pt.x > W - pad || pt.y < pad || pt.y > H - pad;
+  if (!isOffscreen) {
+    pill.style.display = "none";
+    return;
+  }
+  pill.dataset.row = String(lastMove.row);
+  pill.dataset.col = String(lastMove.col);
+  pill.textContent = `Last move (${lastMove.row}, ${lastMove.col}) →`;
+  pill.style.display = "inline-flex";
+}
+
+function renderBoardMinimap(moves, viewMinR, viewMaxR, viewMinC, viewMaxC, themePalette) {
+  const mm = document.getElementById("board-minimap");
+  if (!mm) return;
+  if (!showMinimap || !Array.isArray(moves) || moves.length < 2) {
+    mm.style.display = "none";
+    _lastMinimapBounds = null;
+    return;
+  }
+  mm.style.display = "block";
+  const mCtx = mm.getContext("2d");
+  const W = mm.width || 96;
+  const H = mm.height || 96;
+
+  let bMinR = 0, bMaxR = 0, bMinC = 0, bMaxC = 0;
+  moves.forEach((m, i) => {
+    if (i === 0) {
+      bMinR = bMaxR = m.row;
+      bMinC = bMaxC = m.col;
+    } else {
+      if (m.row < bMinR) bMinR = m.row;
+      if (m.row > bMaxR) bMaxR = m.row;
+      if (m.col < bMinC) bMinC = m.col;
+      if (m.col > bMaxC) bMaxC = m.col;
+    }
+  });
+
+  const pad = 6;
+  bMinR = Math.min(bMinR - pad, viewMinR);
+  bMaxR = Math.max(bMaxR + pad, viewMaxR);
+  bMinC = Math.min(bMinC - pad, viewMinC);
+  bMaxC = Math.max(bMaxC + pad, viewMaxC);
+
+  const span = Math.max(16, bMaxR - bMinR + 1, bMaxC - bMinC + 1);
+  const midR = (bMinR + bMaxR) / 2;
+  const midC = (bMinC + bMaxC) / 2;
+  const minR = midR - span / 2;
+  const minC = midC - span / 2;
+  _lastMinimapBounds = { minR, minC, spanR: span, spanC: span };
+
+  mCtx.clearRect(0, 0, W, H);
+  mCtx.fillStyle = themePalette?.bgStops?.[1] || "#ecc483";
+  mCtx.fillRect(0, 0, W, H);
+
+  // Subtle origin crosshair on minimap
+  const ox = ((0 - minC) / span) * W;
+  const oy = ((0 - minR) / span) * H;
+  mCtx.strokeStyle = "rgba(120, 113, 108, 0.35)";
+  mCtx.lineWidth = 1;
+  mCtx.beginPath();
+  mCtx.moveTo(ox, 0); mCtx.lineTo(ox, H);
+  mCtx.moveTo(0, oy); mCtx.lineTo(W, oy);
+  mCtx.stroke();
+
+  // Draw stones
+  moves.forEach((m, idx) => {
+    const x = ((m.col - minC) / span) * W;
+    const y = ((m.row - minR) / span) * H;
+    const meta = getPlayerMeta(m.player);
+    mCtx.fillStyle = meta.color || "#d97706";
+    mCtx.beginPath();
+    mCtx.arc(x, y, idx === moves.length - 1 ? 3.2 : 2.2, 0, Math.PI * 2);
+    mCtx.fill();
+    if (idx === moves.length - 1) {
+      mCtx.strokeStyle = "#ffffff";
+      mCtx.lineWidth = 1.2;
+      mCtx.stroke();
+    }
+  });
+
+  // Draw current viewport box
+  const vx = Math.max(0, ((viewMinC - minC) / span) * W);
+  const vy = Math.max(0, ((viewMinR - minR) / span) * H);
+  const vw = Math.min(W - vx, ((viewMaxC - viewMinC) / span) * W);
+  const vh = Math.min(H - vy, ((viewMaxR - viewMinR) / span) * H);
+  mCtx.strokeStyle = "rgba(180, 83, 9, 0.9)";
+  mCtx.lineWidth = 1.5;
+  mCtx.strokeRect(vx, vy, Math.max(8, vw), Math.max(8, vh));
+}
+
+function drawRecentMoveTrail(recentMoves, cs, themeId) {
+  if (!Array.isArray(recentMoves) || recentMoves.length < 2) return;
+  ctx.save();
+  const isDarkTheme = themeId === "obsidian" || themeId === "cyber";
+  ctx.strokeStyle = isDarkTheme ? "rgba(226, 232, 240, 0.55)" : "rgba(41, 37, 36, 0.48)";
+  ctx.lineWidth = Math.max(1.3, 1.8 * camera.zoom);
+  ctx.setLineDash([4 * camera.zoom, 3 * camera.zoom]);
+  ctx.beginPath();
+  recentMoves.forEach((m, idx) => {
+    const pt = boardToScreen(m.row, m.col);
+    if (idx === 0) ctx.moveTo(pt.x, pt.y);
+    else ctx.lineTo(pt.x, pt.y);
+  });
+  ctx.stroke();
+  ctx.setLineDash([]);
+  ctx.restore();
+}
+
+function drawStone(r, c, symbol, cs, moveNumber, nowPerf = performance.now(), isRecentTrail = false) {
   const pt = boardToScreen(r, c);
   let scale = 1.0;
   if (!prefersReducedMotion()) {
@@ -2547,37 +2814,87 @@ function drawStone(r, c, symbol, cs, moveNumber, nowPerf = performance.now()) {
   const meta = getPlayerMeta(symbol);
   const body = meta.body || STONE_STYLES.laya.body;
   const textCol = meta.text || "#fff";
+  const stoneFinish = window.CaroAuth?.getSelectedStoneStyle?.() || "classic";
 
   ctx.save();
   ctx.shadowColor = "rgba(60, 30, 10, 0.35)";
-  ctx.shadowBlur = 5 * camera.zoom * scale;
+  ctx.shadowBlur = (stoneFinish === "matte" ? 3 : 5) * camera.zoom * scale;
   ctx.shadowOffsetX = 1.2 * camera.zoom * scale;
-  ctx.shadowOffsetY = 2.4 * camera.zoom * scale;
+  ctx.shadowOffsetY = 2.2 * camera.zoom * scale;
 
-  const stoneGrad = ctx.createRadialGradient(
-    pt.x - radius * 0.35, pt.y - radius * 0.35, radius * 0.08,
-    pt.x, pt.y, radius
-  );
-  stoneGrad.addColorStop(0, body[2]);
-  stoneGrad.addColorStop(0.6, body[1]);
-  stoneGrad.addColorStop(1, body[0]);
-  ctx.fillStyle = stoneGrad;
-  ctx.beginPath();
-  ctx.arc(pt.x, pt.y, radius, 0, Math.PI * 2);
-  ctx.fill();
+  if (stoneFinish === "matte") {
+    // Velvet matte ceramic disc with soft inner bevel
+    ctx.fillStyle = body[1];
+    ctx.beginPath();
+    ctx.arc(pt.x, pt.y, radius, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.shadowBlur = 0;
+    ctx.strokeStyle = "rgba(255, 255, 255, 0.24)";
+    ctx.lineWidth = Math.max(1, 1.4 * camera.zoom);
+    ctx.beginPath();
+    ctx.arc(pt.x, pt.y, radius * 0.84, 0, Math.PI * 2);
+    ctx.stroke();
+  } else if (stoneFinish === "shell") {
+    // Shell & Slate with subtle concentric grain bands
+    const stoneGrad = ctx.createRadialGradient(
+      pt.x - radius * 0.25, pt.y - radius * 0.25, radius * 0.05,
+      pt.x, pt.y, radius
+    );
+    stoneGrad.addColorStop(0, body[2]);
+    stoneGrad.addColorStop(0.65, body[1]);
+    stoneGrad.addColorStop(1, body[0]);
+    ctx.fillStyle = stoneGrad;
+    ctx.beginPath();
+    ctx.arc(pt.x, pt.y, radius, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.shadowBlur = 0;
+    ctx.strokeStyle = "rgba(255, 255, 255, 0.25)";
+    ctx.lineWidth = Math.max(0.9, 1.1 * camera.zoom);
+    for (const frac of [0.52, 0.76]) {
+      ctx.beginPath();
+      ctx.arc(pt.x, pt.y, radius * frac, -0.7, 1.8);
+      ctx.stroke();
+    }
+  } else if (stoneFinish === "mono") {
+    // High-contrast editorial ring finish
+    ctx.fillStyle = body[0];
+    ctx.beginPath();
+    ctx.arc(pt.x, pt.y, radius, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.shadowBlur = 0;
+    ctx.strokeStyle = "rgba(255, 255, 255, 0.9)";
+    ctx.lineWidth = Math.max(1.2, 1.8 * camera.zoom);
+    ctx.beginPath();
+    ctx.arc(pt.x, pt.y, radius * 0.72, 0, Math.PI * 2);
+    ctx.stroke();
+  } else {
+    // Classic 3D Glazed Stone
+    const stoneGrad = ctx.createRadialGradient(
+      pt.x - radius * 0.35, pt.y - radius * 0.35, radius * 0.08,
+      pt.x, pt.y, radius
+    );
+    stoneGrad.addColorStop(0, body[2]);
+    stoneGrad.addColorStop(0.6, body[1]);
+    stoneGrad.addColorStop(1, body[0]);
+    ctx.fillStyle = stoneGrad;
+    ctx.beginPath();
+    ctx.arc(pt.x, pt.y, radius, 0, Math.PI * 2);
+    ctx.fill();
 
-  const sheen = ctx.createRadialGradient(
-    pt.x - radius * 0.35, pt.y - radius * 0.35, 1,
-    pt.x - radius * 0.35, pt.y - radius * 0.35, radius * 0.55
-  );
-  sheen.addColorStop(0, "rgba(255,255,255,0.32)");
-  sheen.addColorStop(1, "rgba(255,255,255,0)");
-  ctx.fillStyle = sheen;
-  ctx.beginPath(); ctx.arc(pt.x, pt.y, radius, 0, Math.PI * 2); ctx.fill();
+    const sheen = ctx.createRadialGradient(
+      pt.x - radius * 0.35, pt.y - radius * 0.35, 1,
+      pt.x - radius * 0.35, pt.y - radius * 0.35, radius * 0.55
+    );
+    sheen.addColorStop(0, "rgba(255,255,255,0.32)");
+    sheen.addColorStop(1, "rgba(255,255,255,0)");
+    ctx.fillStyle = sheen;
+    ctx.beginPath(); ctx.arc(pt.x, pt.y, radius, 0, Math.PI * 2); ctx.fill();
+  }
 
   ctx.restore();
 
-  if (showMoveNumbers && moveNumber !== null && camera.zoom > 0.38) {
+  const shouldDrawNumber = (showMoveNumbers || (showTrail && isRecentTrail)) && moveNumber !== null && camera.zoom > 0.38;
+  if (shouldDrawNumber) {
     ctx.fillStyle = textCol;
     ctx.font = `600 ${Math.round(radius * 0.72)}px var(--font-sans, sans-serif)`;
     ctx.textAlign = "center"; ctx.textBaseline = "middle";
@@ -2952,16 +3269,210 @@ function shareCurrentReplay() {
   }
   if (btn) {
     const orig = btn.textContent;
-    btn.textContent = "✓ Copied!";
+    btn.textContent = "Copied";
     setTimeout(() => { btn.textContent = orig; }, 2000);
   }
   return url;
+}
+
+function toggleReplayHints() {
+  showReplayHints = !showReplayHints;
+  const btn = document.getElementById("btn-replay-hints");
+  if (btn) {
+    btn.classList.toggle("btn-active", showReplayHints);
+    btn.textContent = showReplayHints ? "Hints: On" : "Hints";
+  }
+  renderBoard();
+}
+
+let _cachedReplayHintKey = null;
+let _cachedReplayHintData = null;
+
+function computeReplayMoveAnalysis() {
+  if (!isReplayMode || !Array.isArray(replayMoves) || replayMoves.length === 0 || replayIndex < 1) {
+    return null;
+  }
+  if (!window.CaroEngine?.TacticalEvaluator || !window.CaroEngine?.CaroBoard) {
+    return null;
+  }
+  const actualMove = replayMoves[replayIndex - 1];
+  if (!actualMove) return null;
+
+  const key = `${replayMoves.length}:${replayIndex}:${actualMove.row},${actualMove.col}:${actualMove.player}`;
+  if (_cachedReplayHintKey === key && _cachedReplayHintData) {
+    return _cachedReplayHintData;
+  }
+
+  const symbols = (replayPlayers || []).map(p => p.symbol);
+  const boardBefore = new window.CaroEngine.CaroBoard(symbols.length ? symbols : ["A", "B", "C", "D"]);
+  for (let i = 0; i < replayIndex - 1; i++) {
+    const m = replayMoves[i];
+    boardBefore.makeMove(m.row, m.col, m.player, m.metadata);
+  }
+
+  let topCandidates = [];
+  let actualEval = { total_score: 0, summary: "" };
+  let missedCritical = false;
+
+  if (boardBefore.stones.size === 0) {
+    topCandidates = [{ row: 0, col: 0, total_score: 100, summary: "Center opening" }];
+    actualEval = { total_score: actualMove.row === 0 && actualMove.col === 0 ? 100 : 50, summary: "Opening" };
+  } else {
+    topCandidates = window.CaroEngine.TacticalEvaluator.getRankedCandidates(boardBefore, actualMove.player, 3, 2) || [];
+    actualEval = window.CaroEngine.TacticalEvaluator.evaluateMove(
+      boardBefore,
+      actualMove.row,
+      actualMove.col,
+      actualMove.player
+    ) || { total_score: 0, summary: "" };
+    const best = topCandidates[0];
+    const bestScore = Number(best?.total_score ?? best?.score) || 0;
+    const actualScore = Number(actualEval?.total_score ?? actualEval?.score) || 0;
+    const playedBest = best && best.row === actualMove.row && best.col === actualMove.col;
+    if (best && !playedBest && bestScore >= 15000 && (bestScore - actualScore) >= 6000) {
+      missedCritical = true;
+    }
+  }
+
+  _cachedReplayHintKey = key;
+  _cachedReplayHintData = { actualMove, topCandidates, actualEval, missedCritical };
+  return _cachedReplayHintData;
+}
+
+function drawReplayCandidateHints(cs) {
+  const pill = document.getElementById("replay-analysis-pill");
+  const analysis = computeReplayMoveAnalysis();
+  if (!analysis) {
+    if (pill) pill.style.display = "none";
+    return;
+  }
+
+  const { actualMove, topCandidates, missedCritical } = analysis;
+  const best = topCandidates[0];
+  const bestScore = Number(best?.total_score ?? best?.score) || 0;
+
+  if (pill) {
+    if (missedCritical && best) {
+      pill.style.display = "inline-flex";
+      pill.className = "replay-analysis-pill missed";
+      const kind = bestScore >= 80000 ? "win" : "defense";
+      pill.textContent = `Missed ${kind} at (${best.row}, ${best.col})`;
+    } else if (showReplayHints && best) {
+      pill.style.display = "inline-flex";
+      pill.className = "replay-analysis-pill";
+      const matched = best.row === actualMove.row && best.col === actualMove.col;
+      pill.textContent = matched
+        ? `Best #1 played (${best.row}, ${best.col})`
+        : `Best #1: (${best.row}, ${best.col}) · Played (${actualMove.row}, ${actualMove.col})`;
+    } else {
+      pill.style.display = "none";
+    }
+  }
+
+  if (!showReplayHints || !Array.isArray(topCandidates) || topCandidates.length === 0) {
+    return;
+  }
+
+  ctx.save();
+  topCandidates.slice(0, 3).forEach((cand, idx) => {
+    const rank = idx + 1;
+    const pt = boardToScreen(cand.row, cand.col);
+    const isRank1 = rank === 1;
+    const strokeCol = (isRank1 && missedCritical)
+      ? "#b91c1c"
+      : (isRank1 ? "#047857" : "#b45309");
+
+    ctx.strokeStyle = strokeCol;
+    ctx.lineWidth = (isRank1 ? 2.2 : 1.5) * camera.zoom;
+    ctx.setLineDash([4 * camera.zoom, 3 * camera.zoom]);
+    ctx.beginPath();
+    ctx.arc(pt.x, pt.y, cs * 0.38, 0, Math.PI * 2);
+    ctx.stroke();
+    ctx.setLineDash([]);
+
+    // Small candidate rank tag (#1, #2, #3)
+    const label = `#${rank}`;
+    ctx.font = `700 ${Math.max(9, Math.round(10 * camera.zoom))}px var(--font-mono, monospace)`;
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    const tagW = Math.max(20, 22 * camera.zoom);
+    const tagH = Math.max(14, 15 * camera.zoom);
+    const tagX = pt.x + cs * 0.34;
+    const tagY = pt.y - cs * 0.34;
+
+    ctx.fillStyle = strokeCol;
+    ctx.beginPath();
+    if (ctx.roundRect) ctx.roundRect(tagX - tagW / 2, tagY - tagH / 2, tagW, tagH, 4);
+    else ctx.rect(tagX - tagW / 2, tagY - tagH / 2, tagW, tagH);
+    ctx.fill();
+
+    ctx.fillStyle = "#ffffff";
+    ctx.fillText(label, tagX, tagY);
+  });
+  ctx.restore();
+}
+
+function downloadBoardSnapshot() {
+  if (!canvas) return null;
+  renderBoard();
+
+  const bn = gameState?.series?.battle_number || gameState?.battle_number || 1;
+  const moves = isReplayMode ? replayMoves.slice(0, replayIndex) : (gameState?.board?.moves || []);
+  const players = isReplayMode ? replayPlayers : (gameState?.players || []);
+  const playerNames = players.map(p => getPlayerMeta(p.symbol).name).join(" vs ");
+
+  const headerH = 38;
+  const footerH = 30;
+  const out = document.createElement("canvas");
+  out.width = canvas.width;
+  out.height = canvas.height + headerH + footerH;
+  const oCtx = out.getContext("2d");
+
+  oCtx.fillStyle = "#1c1917";
+  oCtx.fillRect(0, 0, out.width, out.height);
+  oCtx.drawImage(canvas, 0, headerH);
+
+  // Header stamp
+  oCtx.fillStyle = "#fafaf9";
+  oCtx.font = "700 13px 'Plus Jakarta Sans', sans-serif";
+  oCtx.textBaseline = "middle";
+  oCtx.textAlign = "left";
+  oCtx.fillText(`Caro Arena · ${isReplayMode ? `Replay (${moves.length} moves)` : `Battle #${bn}`}`, 14, headerH / 2);
+
+  oCtx.fillStyle = "#d6d3d1";
+  oCtx.font = "500 11px 'JetBrains Mono', monospace";
+  oCtx.textAlign = "right";
+  oCtx.fillText(playerNames || "Free-for-All", out.width - 14, headerH / 2);
+
+  // Footer stamp
+  const turnText = document.getElementById("turn-text")?.textContent || "";
+  oCtx.fillStyle = "#a8a29e";
+  oCtx.font = "500 11px 'JetBrains Mono', monospace";
+  oCtx.textAlign = "left";
+  oCtx.fillText(`${moves.length} moves · ${turnText}`, 14, headerH + canvas.height + footerH / 2);
+
+  const dataUrl = out.toDataURL("image/png");
+  window._lastBoardSnapshotDataUrl = dataUrl;
+
+  try {
+    const link = document.createElement("a");
+    link.download = `caro-arena-battle-${bn}.png`;
+    link.href = dataUrl;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+  } catch {}
+
+  showArenaToast("Saved board snapshot PNG");
+  return dataUrl;
 }
 
 window.encodeReplayPayload = encodeReplayPayload;
 window.decodeReplayPayload = decodeReplayPayload;
 window.getShareReplayUrl = getShareReplayUrl;
 window.shareCurrentReplay = shareCurrentReplay;
+window.toggleReplayHints = toggleReplayHints;
+window.downloadBoardSnapshot = downloadBoardSnapshot;
 
 function exitReplayMode() {
   isReplayMode = false;
@@ -2970,6 +3481,8 @@ function exitReplayMode() {
   replayPlayers = [];
   replayPlacements = [];
   highlightedMoveCoord = null;
+  const pill = document.getElementById("replay-analysis-pill");
+  if (pill) pill.style.display = "none";
   document.getElementById("replay-bar").style.display = "none";
   document.getElementById("btn-auto").disabled = false;
   userInteractedWithCamera = false;
@@ -3106,6 +3619,8 @@ function initMultiplayerIntegration() {
     onStateSync: handleMultiplayerStateSync,
     onHostMigrated: handleMultiplayerHostMigrated,
     onEmote: handleMultiplayerEmote,
+    onActivityLogChange: renderMultiplayerActivityLog,
+    onSessionScoreChange: () => updateMultiplayerHudBadges(),
     getHostState: getMultiplayerHostState,
     onStatusMessage: (msg) => {
       updateMultiplayerHudStatus(msg);
@@ -3127,6 +3642,8 @@ function getMultiplayerHostState() {
     roomId: window.CaroMultiplayer?.roomId,
     roomName: window.CaroMultiplayer?.roomName,
     entryFee: window.CaroMultiplayer?.entryFee || 0,
+    turnTimeoutSec: window.CaroMultiplayer?.turnTimeoutSec ?? 30,
+    sessionScores: window.CaroMultiplayer?.getSessionScores?.() || {},
     roster: multiplayerRoster,
     battleNumber: clientEngine.battleNumber || 1,
     status: clientEngine.status || "playing",
@@ -3227,6 +3744,92 @@ function renderLobbyHomeWalletAndThemes() {
       grid.appendChild(card);
     });
   }
+
+  // Update board footer Stone Finish selector & Lobby Stone Finishes grid
+  const stoneSel = document.getElementById("select-stone-style");
+  const selectedStone = window.CaroAuth.getSelectedStoneStyle?.() || "classic";
+  const stoneCatalogObj = window.CaroAuth.STONE_STYLES_CATALOG || {};
+  const stoneCatalog = Object.values(stoneCatalogObj);
+  if (stoneSel && stoneCatalog.length > 0) {
+    Array.from(stoneSel.options).forEach(opt => {
+      const item = stoneCatalog.find(s => s.id === opt.value);
+      if (!item) return;
+      const unlocked = window.CaroAuth.isStoneStyleUnlocked(item.id);
+      opt.textContent = unlocked
+        ? `${item.name}`
+        : `${item.name} (${item.cost} Cranes)`;
+    });
+    stoneSel.value = selectedStone;
+  }
+
+  const stoneGrid = document.getElementById("lobby-home-stones-grid");
+  const stoneSwatchStyles = {
+    classic: "radial-gradient(circle at 32% 32%, #38bdf8, #0891b2 65%, #0e7490)",
+    matte: "linear-gradient(135deg, #059669, #047857)",
+    shell: "repeating-radial-gradient(circle at 40% 40%, #f59e0b 0px, #d97706 4px, #b45309 8px)",
+    mono: "radial-gradient(circle, #1c1917 45%, #fafaf9 47%, #fafaf9 62%, #1c1917 65%)"
+  };
+  if (stoneGrid && stoneCatalog.length > 0) {
+    stoneGrid.innerHTML = "";
+    stoneCatalog.forEach(item => {
+      const unlocked = window.CaroAuth.isStoneStyleUnlocked(item.id);
+      const isSelected = selectedStone === item.id;
+      const card = document.createElement("div");
+      card.className = `theme-cosmetic-card ${isSelected ? "active-theme" : ""}`;
+      card.dataset.stoneStyleId = item.id;
+      card.innerHTML = `
+        <div class="theme-cosmetic-top">
+          <span class="theme-cosmetic-swatch" style="border-radius: 50%; background: ${stoneSwatchStyles[item.id] || stoneSwatchStyles.classic};"></span>
+          <div class="theme-cosmetic-text">
+            <span class="theme-cosmetic-name">${escapeHtml(item.name)}</span>
+            <span class="theme-cosmetic-desc">${escapeHtml(item.desc || "")}</span>
+          </div>
+        </div>
+        <div class="theme-cosmetic-status ${isSelected ? "active" : (unlocked ? "unlocked" : "locked")}">
+          ${isSelected ? "Equipped" : (unlocked ? "Equip" : `${item.cost} Cranes`)}
+        </div>
+      `;
+      card.addEventListener("click", async () => {
+        if (window.CaroAuth.isStoneStyleUnlocked(item.id)) {
+          window.CaroAuth.setSelectedStoneStyle(item.id);
+          renderLobbyHomeWalletAndThemes();
+          renderBoard();
+          showArenaToast(`Equipped ${item.name}`);
+        } else {
+          try {
+            await window.CaroAuth.unlockStoneStyle(item.id);
+            renderLobbyHomeWalletAndThemes();
+            renderBoard();
+            showArenaToast(`Unlocked and equipped ${item.name}`);
+          } catch (err) {
+            showArenaToast(err.message);
+          }
+        }
+      });
+      stoneGrid.appendChild(card);
+    });
+  }
+
+  if (typeof renderAuthCranesLedger === "function") {
+    renderAuthCranesLedger();
+  }
+}
+
+async function launchPresetBattle(playerTypes, autoPlay = true) {
+  if (!Array.isArray(playerTypes) || playerTypes.length < 2) return;
+  const setTypes = new Set(playerTypes);
+  document.querySelectorAll("#roster-config .roster-toggle").forEach(label => {
+    const cb = label.querySelector("input");
+    if (cb) {
+      cb.checked = setTypes.has(label.dataset.model);
+    }
+  });
+  updateRosterCount();
+  enterArenaBattleground();
+  await newBattle();
+  if (autoPlay && !gameState?.is_auto_playing) {
+    await toggleAutoPlay();
+  }
 }
 
 function setupLobbyHomeScreenUI() {
@@ -3247,6 +3850,17 @@ function setupLobbyHomeScreenUI() {
 
   document.getElementById("btn-lobby-home-account")?.addEventListener("click", () => {
     document.getElementById("btn-auth-profile")?.click();
+  });
+
+  // Quick-Start Solo Presets
+  document.getElementById("btn-preset-1v1-von")?.addEventListener("click", () => {
+    launchPresetBattle(["human", "von"], true);
+  });
+  document.getElementById("btn-preset-human-3ai")?.addEventListener("click", () => {
+    launchPresetBattle(["human", "laya", "jev", "von"], true);
+  });
+  document.getElementById("btn-preset-4ai-watch")?.addEventListener("click", () => {
+    launchPresetBattle(["laya", "jev", "von", "mojev"], true);
   });
 
   const handleDailyBonusClaim = async () => {
@@ -3299,6 +3913,8 @@ function setupLobbyHomeScreenUI() {
     const roomSlug = document.getElementById("lobby-home-room-slug")?.value?.trim() || "";
     const wagerEl = document.getElementById("lobby-home-wager-select") || document.getElementById("lobby-home-wager");
     const entryFee = Number(wagerEl?.value) || 0;
+    const timerEl = document.getElementById("lobby-home-timer-select");
+    const turnTimeoutSec = timerEl ? Number(timerEl.value) : 30;
     const isPublic = document.getElementById("lobby-home-public")?.checked ?? true;
 
     if (entryFee > 0 && (window.CaroAuth?.getCranesBalance() || 0) < entryFee) {
@@ -3309,16 +3925,18 @@ function setupLobbyHomeScreenUI() {
     const btn = document.getElementById("btn-lobby-home-create");
     try {
       if (btn) { btn.disabled = true; btn.textContent = "Creating..."; }
-      await window.CaroMultiplayer.createRoom(name, { roomName, roomSlug, isPublic, entryFee });
+      await window.CaroMultiplayer.createRoom(name, { roomName, roomSlug, isPublic, entryFee, turnTimeoutSec });
       // Sync modal inputs as well
       const modalHostName = document.getElementById("mp-host-name-input");
       const modalRoomName = document.getElementById("mp-room-name-input");
       const modalSlug = document.getElementById("mp-room-slug-input");
       const modalWager = document.getElementById("mp-room-wager-select");
+      const modalTimer = document.getElementById("mp-room-timer-select");
       if (modalHostName) modalHostName.value = name;
       if (modalRoomName) modalRoomName.value = window.CaroMultiplayer.roomName;
       if (modalSlug) modalSlug.value = window.CaroMultiplayer.roomId;
       if (modalWager) modalWager.value = String(entryFee);
+      if (modalTimer) modalTimer.value = String(turnTimeoutSec);
 
       enterArenaBattleground();
       showMultiplayerHud(window.CaroMultiplayer.roomId);
@@ -3383,10 +4001,11 @@ function setupMultiplayerUI() {
 
   btnNewRoomFromLobby?.addEventListener("click", () => switchMpTab("create"));
 
-  // Sync live room name / public toggle / wager changes when already hosting
+  // Sync live room name / public toggle / wager / timer changes when already hosting
   const roomNameInput = document.getElementById("mp-room-name-input");
   const roomPublicToggle = document.getElementById("mp-room-public-toggle");
   const roomWagerSelect = document.getElementById("mp-room-wager-select");
+  const roomTimerSelect = document.getElementById("mp-room-timer-select");
   const hostNameInput = document.getElementById("mp-host-name-input");
 
   roomNameInput?.addEventListener("change", () => {
@@ -3402,6 +4021,13 @@ function setupMultiplayerUI() {
   roomWagerSelect?.addEventListener("change", () => {
     if (window.CaroMultiplayer?.isHost && window.CaroMultiplayer?.roomId) {
       window.CaroMultiplayer.setRoomMeta({ entryFee: Number(roomWagerSelect.value) || 0 });
+    }
+  });
+  roomTimerSelect?.addEventListener("change", () => {
+    if (window.CaroMultiplayer?.isHost && window.CaroMultiplayer?.roomId) {
+      window.CaroMultiplayer.setRoomMeta({ turnTimeoutSec: Number(roomTimerSelect.value) });
+      mpTurnTimerKey = null;
+      syncMultiplayerTurnTimer();
     }
   });
   hostNameInput?.addEventListener("change", () => {
@@ -3426,10 +4052,12 @@ function setupMultiplayerUI() {
     const roomSlug = document.getElementById("mp-room-slug-input")?.value || "";
     const isPublic = document.getElementById("mp-room-public-toggle")?.checked ?? true;
     const entryFee = Number(document.getElementById("mp-room-wager-select")?.value) || 0;
+    const timerEl = document.getElementById("mp-room-timer-select");
+    const turnTimeoutSec = timerEl ? Number(timerEl.value) : 30;
     try {
       btnCreateRoom.disabled = true;
       btnCreateRoom.textContent = "Creating...";
-      await window.CaroMultiplayer.createRoom(name, { roomName, roomSlug, isPublic, entryFee });
+      await window.CaroMultiplayer.createRoom(name, { roomName, roomSlug, isPublic, entryFee, turnTimeoutSec });
       btnCreateRoom.disabled = false;
       btnCreateRoom.textContent = "Recreate room";
       if (btnStartMp) btnStartMp.style.display = "inline-flex";
@@ -3440,6 +4068,7 @@ function setupMultiplayerUI() {
       enterArenaBattleground();
       showMultiplayerHud(window.CaroMultiplayer.roomId);
       updateMultiplayerHudBadges();
+      renderMultiplayerActivityLog();
     } catch (err) {
       alert(err.message);
       btnCreateRoom.disabled = false;
@@ -3526,6 +4155,29 @@ function handleMultiplayerEmote(evt) {
   }, 2400);
 }
 
+function renderMultiplayerActivityLog(entries = null) {
+  const listEl = document.getElementById("mp-activity-log-list");
+  if (!listEl) return;
+  const items = Array.isArray(entries)
+    ? entries
+    : (window.CaroMultiplayer?.getActivityLog?.() || []);
+  if (items.length === 0) {
+    listEl.innerHTML = `<div class="mp-empty-rooms">Room events will appear here.</div>`;
+    return;
+  }
+  listEl.innerHTML = items.map(ev => {
+    const dt = ev.ts ? new Date(ev.ts) : new Date();
+    const hh = String(dt.getHours()).padStart(2, "0");
+    const mm = String(dt.getMinutes()).padStart(2, "0");
+    const ss = String(dt.getSeconds()).padStart(2, "0");
+    return `<div class="mp-activity-log-item">
+      <span class="mp-activity-time">${hh}:${mm}:${ss}</span>
+      <span>${escapeHtml(ev.text || "")}</span>
+    </div>`;
+  }).join("");
+  listEl.scrollTop = listEl.scrollHeight;
+}
+
 function openMultiplayerModal(forceTab = null) {
   const modal = document.getElementById("modal-multiplayer");
   if (!modal) return;
@@ -3543,6 +4195,7 @@ function openMultiplayerModal(forceTab = null) {
   renderActiveRoomsLobby(window.CaroMultiplayer?.getActiveRooms() || []);
   renderMultiplayerSlots();
   renderSpectatorsAndRequests();
+  renderMultiplayerActivityLog();
   updateMultiplayerModeBadge();
 }
 
@@ -3693,6 +4346,7 @@ function handleMultiplayerLobbyUpdate(lobbyState) {
   renderMultiplayerSlots();
   renderSpectatorsAndRequests();
   renderHostApprovalBar();
+  renderMultiplayerActivityLog();
   updateMultiplayerHudBadges();
 
   const shareBox = document.getElementById("mp-share-box");
@@ -3702,6 +4356,7 @@ function handleMultiplayerLobbyUpdate(lobbyState) {
   const slugInput = document.getElementById("mp-room-slug-input");
   const roomNameInput = document.getElementById("mp-room-name-input");
   const wagerSelect = document.getElementById("mp-room-wager-select");
+  const timerSelect = document.getElementById("mp-room-timer-select");
 
   if (lobbyState.roomId) {
     if (shareBox) shareBox.style.display = "block";
@@ -3709,6 +4364,7 @@ function handleMultiplayerLobbyUpdate(lobbyState) {
     if (slugInput && !slugInput.value) slugInput.value = lobbyState.roomId;
     if (roomNameInput && !roomNameInput.value && lobbyState.roomName) roomNameInput.value = lobbyState.roomName;
     if (wagerSelect && lobbyState.entryFee !== undefined) wagerSelect.value = String(lobbyState.entryFee || 0);
+    if (timerSelect && lobbyState.turnTimeoutSec !== undefined) timerSelect.value = String(lobbyState.turnTimeoutSec);
     if (btnStartMp) {
       btnStartMp.style.display = lobbyState.isHost ? "inline-flex" : "none";
       btnStartMp.textContent = lobbyState.inGame ? "Restart match" : "Start match";
@@ -4007,8 +4663,16 @@ function applyRoomWagerForMatch(entryFee, gameId) {
   const humanParticipants = Math.max(1, (multiplayerRoster || []).filter(r => r.type === "human").length);
   currentMatchWagerPot = fee * humanParticipants;
 
-  if (fee > 0 && myMultiplayerSymbol && wagerDeductedForGameId !== gameId) {
+  const walletId = window.CaroAuth?.getCurrentUser?.()?.user_id || "guest";
+  const paidKey = `caro_wager_paid_${walletId}_${gameId}`;
+  let alreadyPaidInWallet = false;
+  try {
+    alreadyPaidInWallet = localStorage.getItem(paidKey) === "1";
+  } catch {}
+
+  if (fee > 0 && myMultiplayerSymbol && wagerDeductedForGameId !== gameId && !alreadyPaidInWallet) {
     wagerDeductedForGameId = gameId;
+    try { localStorage.setItem(paidKey, "1"); } catch {}
     if (window.CaroAuth?.adjustCranes) {
       window.CaroAuth.adjustCranes(-fee, "Match entry fee").then(() => {
         renderLobbyHomeWalletAndThemes();
@@ -4308,6 +4972,7 @@ function updateMultiplayerHudBadges() {
   const roleBadge = document.getElementById("mp-hud-role");
   const specBadge = document.getElementById("mp-hud-spectators");
   const wagerBadge = document.getElementById("mp-hud-wager");
+  const scoreBadge = document.getElementById("mp-hud-scoreboard");
   const reqJoinBtn = document.getElementById("btn-mp-hud-request-join");
   const reqCountBadge = document.getElementById("mp-hud-req-badge");
   const rmName = document.getElementById("mp-hud-room-name");
@@ -4336,6 +5001,25 @@ function updateMultiplayerHudBadges() {
       wagerBadge.textContent = `Pot: ${pot} (${fee} Entry)`;
     } else {
       wagerBadge.style.display = "none";
+    }
+  }
+  if (scoreBadge) {
+    const scores = lobby.sessionScores || window.CaroMultiplayer.getSessionScores?.() || {};
+    const slots = lobby.slots || [];
+    if (lobby.roomId && slots.length >= 2) {
+      const symbols = ["A", "B", "C", "D"];
+      const parts = slots.map((s, idx) => {
+        const sym = symbols[idx] || "A";
+        const entry = scores[sym];
+        const wins = (entry && typeof entry === "object") ? (Number(entry.wins) || 0) : (Number(entry) || 0);
+        const rawName = (s.name && s.name !== "Open human slot") ? s.name : sym;
+        const shortName = rawName.replace(/\s*\(AI\)$/i, "").split(" ")[0];
+        return `${shortName} ${wins}`;
+      });
+      scoreBadge.style.display = "inline-block";
+      scoreBadge.textContent = `Score: ${parts.join(" – ")}`;
+    } else {
+      scoreBadge.style.display = "none";
     }
   }
   if (reqJoinBtn) {
@@ -4374,6 +5058,11 @@ function clearMultiplayerTurnTimer() {
   mpTurnAutoPlayedKey = null;
   const badge = document.getElementById("mp-hud-timer");
   if (badge) badge.style.display = "none";
+  const bar = document.getElementById("mp-hud-timer-bar");
+  if (bar) {
+    bar.style.width = "0%";
+    bar.classList.remove("warning", "danger");
+  }
 }
 
 function chooseTacticalAutoMove(symbol) {
@@ -4394,26 +5083,29 @@ function chooseTacticalAutoMove(symbol) {
 }
 
 function syncMultiplayerTurnTimer() {
-  if (!isMultiplayerActive || isReplayMode || !gameState || gameState.status === "finished") {
+  const rawTimeout = Number(window.CaroMultiplayer?.turnTimeoutSec ?? 30);
+  if (!isMultiplayerActive || isReplayMode || !gameState || gameState.status === "finished" || rawTimeout === 0) {
     clearMultiplayerTurnTimer();
     return;
   }
+  const timeoutSec = Math.max(1, rawTimeout || 30);
   const currSymbol = gameState.current_player?.symbol || "";
   const moveCount = gameState.board?.move_count || 0;
-  const turnKey = `${gameState.game_id || ""}:${moveCount}:${currSymbol}`;
+  const turnKey = `${gameState.game_id || ""}:${moveCount}:${currSymbol}:${timeoutSec}`;
 
   if (turnKey !== mpTurnTimerKey) {
     mpTurnTimerKey = turnKey;
-    const timeoutSec = Math.max(1, Number(window.CaroMultiplayer?.turnTimeoutSec) || 30);
     mpTurnDeadline = Date.now() + timeoutSec * 1000;
     mpTurnAutoPlayedKey = null;
   }
 
   const updateTimerTick = () => {
-    if (!isMultiplayerActive || !gameState || gameState.status === "finished") {
+    const currentTimeout = Number(window.CaroMultiplayer?.turnTimeoutSec ?? 30);
+    if (!isMultiplayerActive || !gameState || gameState.status === "finished" || currentTimeout === 0) {
       clearMultiplayerTurnTimer();
       return;
     }
+    const totalMs = Math.max(1000, currentTimeout * 1000);
     const remMs = Math.max(0, mpTurnDeadline - Date.now());
     const remSec = Math.ceil(remMs / 1000);
     const badge = document.getElementById("mp-hud-timer");
@@ -4421,6 +5113,13 @@ function syncMultiplayerTurnTimer() {
       badge.style.display = "inline-block";
       badge.textContent = `${remSec}s`;
       badge.style.color = remSec <= 5 ? "#ef4444" : "";
+    }
+    const bar = document.getElementById("mp-hud-timer-bar");
+    if (bar) {
+      const pct = Math.max(0, Math.min(100, (remMs / totalMs) * 100));
+      bar.style.width = `${pct.toFixed(1)}%`;
+      bar.classList.toggle("danger", remSec <= 5);
+      bar.classList.toggle("warning", remSec > 5 && remSec <= 10);
     }
 
     if (remMs <= 0 && mpTurnAutoPlayedKey !== mpTurnTimerKey) {
@@ -4535,6 +5234,45 @@ function checkUrlForRoomInvite() {
 // ─────────────────────────────────────────
 // Simple Account & Cranes Auth Modal UI
 // ─────────────────────────────────────────
+function formatCranesLedgerReason(reason) {
+  const r = String(reason || "activity");
+  if (r === "daily_bonus") return "Daily bonus claimed";
+  if (r === "multiplayer_win_1st") return "1st place multiplayer victory";
+  if (r === "solo_practice_win_1st") return "1st place practice victory";
+  if (r === "Match entry fee") return "Room entry wager staked";
+  if (r.startsWith("unlock_theme_")) {
+    const id = r.replace("unlock_theme_", "");
+    const item = window.CaroAuth?.BOARD_THEMES_CATALOG?.[id];
+    return `Unlocked ${item?.name || id} board`;
+  }
+  if (r.startsWith("unlock_stone_")) {
+    const id = r.replace("unlock_stone_", "");
+    const item = window.CaroAuth?.STONE_STYLES_CATALOG?.[id];
+    return `Unlocked ${item?.name || id} stones`;
+  }
+  return r.replace(/_/g, " ");
+}
+
+function renderAuthCranesLedger() {
+  const listEl = document.getElementById("auth-cranes-ledger-list");
+  if (!listEl || !window.CaroAuth) return;
+  const ledger = window.CaroAuth.getCranesLedger?.() || [];
+  if (ledger.length === 0) {
+    listEl.innerHTML = `<div class="mp-empty-rooms">No Cranes activity yet.</div>`;
+    return;
+  }
+  listEl.innerHTML = ledger.slice(0, 12).map(entry => {
+    const delta = Number(entry.delta) || 0;
+    const sign = delta >= 0 ? "+" : "";
+    const cls = delta >= 0 ? "positive" : "negative";
+    const label = formatCranesLedgerReason(entry.reason);
+    return `<div class="cranes-ledger-item">
+      <span class="cranes-ledger-reason">${escapeHtml(label)}</span>
+      <span class="cranes-ledger-delta ${cls}">${sign}${delta}</span>
+    </div>`;
+  }).join("");
+}
+
 function setupAuthUI() {
   if (!window.CaroAuth) return;
 
@@ -4599,6 +5337,7 @@ function setupAuthUI() {
       if (profileView) profileView.style.display = "none";
       switchAuthTab("login");
     }
+    renderAuthCranesLedger();
     renderLobbyHomeWalletAndThemes();
   };
 
