@@ -81,13 +81,16 @@
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 7px 20px;
-  background: #1c1917;
+  margin: 0 22px 8px;
+  padding: 8px 18px;
+  border-radius: 999px;
+  background: var(--ink);
   color: #fafaf9;
   font-size: 0.78rem;
-  border-bottom: 1px solid #292524;
+  box-shadow: var(--lift);
   z-index: 50;
-  animation: slideDown 0.18s ease-out;
+  animation: slideDown 0.2s var(--ease-spring);
+  overflow: hidden;
 }
 .mp-hud-left {
   display: flex;
@@ -96,8 +99,8 @@
 }
 .mp-live-dot {
   display: inline-block;
-  width: 6px;
-  height: 6px;
+  width: 7px;
+  height: 7px;
   border-radius: 50%;
   background: var(--von-color);
   color: transparent;
@@ -106,36 +109,36 @@
 }
 .mp-hud-title {
   color: #a8a29e;
-  font-weight: 500;
+  font-weight: 600;
 }
 .mp-room-badge {
   font-family: var(--font-mono);
   font-variant-numeric: tabular-nums;
   font-size: 0.72rem;
-  font-weight: 600;
+  font-weight: 700;
   background: #292524;
-  color: #e7e5e4;
-  padding: 2px 8px;
-  border-radius: 4px;
+  color: #ffffff;
+  padding: 3px 10px;
+  border-radius: 999px;
   border: 1px solid #44403c;
 }
 .btn-copy-code {
   background: #292524;
-  color: #e7e5e4;
+  color: #ffffff;
   border: 1px solid #44403c;
-  font: 500 0.72rem/1 var(--font-sans);
-  padding: 4px 9px;
-  border-radius: 4px;
+  font: 700 0.72rem/1 var(--font-sans);
+  padding: 5px 11px;
+  border-radius: 999px;
   cursor: pointer;
-  transition: background 0.12s, border-color 0.12s;
+  transition: transform 0.16s var(--ease-spring), background 0.12s;
 }
 .btn-copy-code:hover {
+  transform: translateY(-1px);
   background: #44403c;
-  border-color: #57534e;
 }
 .mp-hud-center {
-  font-weight: 500;
-  color: #d6d3d1;
+  font-weight: 700;
+  color: #f5f5f4;
   font-size: 0.76rem;
 }
 .mp-hud-right {
@@ -146,11 +149,11 @@
 .modal-mp {
   max-width: 500px;
   width: 92%;
-  padding: 22px 24px;
-  border-radius: var(--radius-lg);
-  background: var(--bg-surface);
-  box-shadow: 0 20px 40px -12px rgba(28, 25, 23, 0.22);
-  border: 1px solid var(--border);
+  padding: 24px 26px;
+  border-radius: 26px;
+  background: var(--card);
+  box-shadow: var(--float);
+  border: none;
 }
 .modal-mp-header {
   display: flex;
@@ -158,38 +161,39 @@
   justify-content: space-between;
   margin-bottom: 16px;
   padding-bottom: 12px;
-  border-bottom: 1px solid var(--border);
+  border-bottom: 1px solid var(--line);
 }
 .modal-mp-title-wrap {
   display: flex;
   align-items: center;
   gap: 8px;
-  color: var(--text-primary);
+  color: var(--ink);
 }
 .modal-mp-title {
-  font-size: 1rem;
-  font-weight: 700;
-  letter-spacing: -0.01em;
+  font-size: 1.08rem;
+  font-weight: 800;
+  letter-spacing: -0.025em;
   margin: 0;
-  color: var(--text-primary);
+  color: var(--ink);
 }
 .modal-close {
   cursor: pointer;
   font-size: 0.95rem;
-  background: transparent;
+  background: var(--card-2);
   border: none;
-  color: var(--text-tertiary);
-  padding: 4px 6px;
-  border-radius: var(--radius-sm);
+  color: var(--ink-2);
+  padding: 5px 9px;
+  border-radius: 999px;
+  font-weight: 700;
 }
 .modal-close:hover {
-  color: var(--text-primary);
-  background: var(--bg-raised);
+  color: var(--ink);
+  background: var(--bg-hover);
 }
 
 .mp-subtitle {
   font-size: 0.82rem;
-  color: var(--text-secondary);
+  color: var(--ink-2);
   line-height: 1.45;
   margin-bottom: 14px;
 }
@@ -199,72 +203,71 @@
 .mp-form-group label,
 .mp-field-row label {
   display: block;
-  font-size: 0.75rem;
-  font-weight: 600;
-  color: var(--text-secondary);
+  font-size: 0.74rem;
+  font-weight: 700;
+  color: var(--ink-2);
   margin-bottom: 5px;
   white-space: nowrap;
 }
 .field-optional {
-  font-weight: 400;
-  color: var(--text-tertiary);
+  font-weight: 500;
+  color: var(--ink-3);
 }
 .mp-form-group input,
 .mp-field-row input {
   width: 100%;
-  padding: 8px 11px;
-  border-radius: var(--radius-sm);
-  border: 1px solid var(--border-medium);
-  background: var(--bg-surface);
-  color: var(--text-primary);
-  font: 400 0.82rem/1.3 var(--font-sans);
+  padding: 8px 13px;
+  border-radius: 14px;
+  border: 1.5px solid rgba(22, 19, 15, 0.12);
+  background: var(--card-2);
+  color: var(--ink);
+  font: 600 0.82rem/1.3 var(--font-sans);
   box-sizing: border-box;
-  transition: border-color 0.12s, box-shadow 0.12s;
+  transition: border-color 0.15s, background-color 0.15s;
 }
 .mp-form-group input::placeholder,
 .mp-field-row input::placeholder {
-  color: var(--text-muted);
+  color: var(--ink-3);
 }
 .mp-form-group input:focus,
 .mp-field-row input:focus,
 .mp-slot-select:focus,
 .lobby-quick-join-controls input:focus {
   outline: none;
-  border-color: var(--text-primary);
-  box-shadow: 0 0 0 2px rgba(28, 25, 23, 0.08);
+  border-color: var(--ink);
+  background: #ffffff;
 }
 .mp-hint {
   font-size: 0.76rem;
-  color: var(--text-secondary);
+  color: var(--ink-2);
   line-height: 1.45;
   margin-bottom: 16px;
 }
 
 .mp-tabs {
   display: flex;
-  gap: 4px;
+  gap: 6px;
   margin-bottom: 14px;
-  border-bottom: 1px solid var(--border);
+  border-bottom: 1px solid var(--line);
   padding-bottom: 8px;
 }
 .mp-tab-btn {
-  background: transparent;
-  border: 1px solid transparent;
-  padding: 5px 12px;
-  font: 600 0.78rem/1.2 var(--font-sans);
-  color: var(--text-secondary);
+  background: var(--card-2);
+  border: none;
+  padding: 6px 14px;
+  font: 700 0.78rem/1.2 var(--font-sans);
+  color: var(--ink-2);
   cursor: pointer;
-  border-radius: var(--radius-sm);
-  transition: all 0.12s ease;
+  border-radius: 999px;
+  transition: transform 0.16s var(--ease-spring), background 0.15s, color 0.15s;
 }
 .mp-tab-btn:hover {
-  color: var(--text-primary);
-  background: var(--bg-raised);
+  color: var(--ink);
+  transform: translateY(-1px);
 }
 .mp-tab-btn.active {
-  color: var(--text-primary);
-  background: var(--bg-raised);
-  border-color: var(--border-medium);
+  color: #ffffff;
+  background: var(--ink);
 }
 
 .mp-mode-banner {
@@ -376,17 +379,17 @@
 }
 .mp-slot-select {
   width: 100%;
-  font: 500 0.8rem/1.3 var(--font-sans);
-  padding: 7px 10px;
-  border-radius: var(--radius-sm);
-  border: 1px solid var(--border-medium);
-  background: var(--bg-surface);
-  color: var(--text-primary);
+  font: 700 0.8rem/1.3 var(--font-sans);
+  padding: 8px 12px;
+  border-radius: 14px;
+  border: 1.5px solid rgba(22, 19, 15, 0.12);
+  background: var(--card-2);
+  color: var(--ink);
   cursor: pointer;
 }
 .mp-slot-right .mp-slot-select {
   width: auto;
-  padding: 4px 8px;
+  padding: 5px 10px;
   font-size: 0.76rem;
 }
 

@@ -137,6 +137,8 @@ document.addEventListener("DOMContentLoaded", async () => {
     rebuildSymbolMap();
   }
   setupEventListeners();
+  if (typeof initRoomMoodSwitcher === "function") initRoomMoodSwitcher();
+  if (typeof initCreatureEyeTracking === "function") initCreatureEyeTracking();
   if (typeof initMultiplayerIntegration === "function") {
     initMultiplayerIntegration();
   }
@@ -1488,9 +1490,10 @@ function renderLeaderboard() {
     const meta = PLAYER_COLORS[r.player_type] || { fill: "#94a3b8", name: r.player_type };
     const rankNum = i + 1;
     const isLeader = i === 0 && totalBattles > 0;
+    const creatureSvg = typeof getCreatureMascotSvg === "function" ? getCreatureMascotSvg(r.player_type, 20) : "";
     return `<tr class="${isLeader ? "leader" : ""}">
       <td class="rank-cell mono">${rankNum}</td>
-      <td><span class="model-dot" style="background:${escapeHtml(meta.fill)}"></span>${escapeHtml(meta.name)}</td>
+      <td><span class="leaderboard-creature-cell">${creatureSvg}<span class="model-dot" style="background:${escapeHtml(meta.fill)};display:none;"></span><span>${escapeHtml(meta.name)}</span></span></td>
       <td class="mono"><strong>${escapeHtml(r.total_points)}</strong></td>
       <td class="mono muted">${escapeHtml(r.wins)}</td>
       <td class="mono muted">${escapeHtml(r.avg_placement)}</td>
@@ -1530,22 +1533,22 @@ function renderBattleRoster() {
     let statusClass = "";
     if (placement) {
       const rank = placement.rank;
-      statusText = rank === 1 ? "1st" : rank === 2 ? "2nd" : rank === 3 ? "3rd" : `${rank}th`;
+      statusText = rank === 1 ? "winner! 🏆" : rank === 2 ? "2nd place" : rank === 3 ? "3rd place" : `${rank}th`;
       statusClass = rank === 1 ? "winner" : "eliminated";
     } else if (isHumanWaiting) {
-      statusText = "Your turn";
+      statusText = "your turn!";
       statusClass = "active";
     } else if (isThinking) {
-      statusText = "Thinking...";
+      statusText = "thinking...";
       statusClass = "thinking";
     } else if (isCurrent) {
-      statusText = "Turn";
+      statusText = "up now";
       statusClass = "active";
     } else if (isElim) {
-      statusText = "Out";
+      statusText = "knocked out";
       statusClass = "eliminated";
     } else {
-      statusText = isReplayMode ? "Replay" : "Waiting";
+      statusText = isReplayMode ? "reviewing" : "ready";
       statusClass = "";
     }
 
@@ -1554,17 +1557,25 @@ function renderBattleRoster() {
     const takeoverBtn = canRequestTakeover
       ? `<button class="btn btn-xs btn-ghost btn-roster-takeover" data-symbol="${escapeHtml(p.symbol)}" title="Request host approval to take over this player slot">Takeover</button>`
       : "";
+    const creatureSvg = typeof getCreatureMascotSvg === "function"
+      ? getCreatureMascotSvg(p.type || meta.type || "laya", 34, { active: isCurrent, eliminated: isElim && statusClass !== "winner" })
+      : "";
 
     return `<div class="roster-slot ${statusClass}" style="--pc: ${escapeHtml(meta.fill)}">
       <div class="roster-ident">
-        <span class="roster-dot" style="background: ${escapeHtml(meta.fill)}"></span>
-        <span class="roster-name">${escapeHtml(meta.name)}</span>
-        <span class="roster-symbol">${escapeHtml(p.symbol)}</span>
+        <span class="roster-creature">${creatureSvg}</span>
+        <span class="roster-dot" style="background: ${escapeHtml(meta.fill)}; display: none;"></span>
+        <div class="roster-ident-stack">
+          <div class="roster-ident-top">
+            <span class="roster-name">${escapeHtml(meta.name)}</span>
+            <span class="roster-symbol">${escapeHtml(p.symbol)}</span>
+          </div>
+          <span class="roster-status ${statusClass}">${escapeHtml(statusText)}</span>
+        </div>
       </div>
       <div class="roster-stats">
         ${takeoverBtn}
         <span class="roster-moves">${moveCount} moves</span>
-        <span class="roster-status ${statusClass}">${escapeHtml(statusText)}</span>
       </div>
     </div>`;
   }).join("");
@@ -1587,7 +1598,8 @@ function renderPlayerLegend() {
   if (!el || !players) return;
   el.innerHTML = players.map(p => {
     const meta = getPlayerMeta(p.symbol);
-    return `<div class="legend-item"><span class="legend-swatch" style="background:${escapeHtml(meta.fill)}"></span>${escapeHtml(meta.name)} (${escapeHtml(p.symbol)})</div>`;
+    const creatureSvg = typeof getCreatureMascotSvg === "function" ? getCreatureMascotSvg(p.type || meta.type || "laya", 18) : "";
+    return `<div class="legend-item">${creatureSvg}<span class="legend-swatch" style="background:${escapeHtml(meta.fill)};display:none;"></span><span>${escapeHtml(meta.name)} (${escapeHtml(p.symbol)})</span></div>`;
   }).join("");
 }
 

@@ -1,35 +1,51 @@
 /* ==========================================================================
-   Caro Arena – Battle Royale Design System
-   Light mode, editorial, anti-slop, taste-skill compliant
+   Caro Arena – Playful Indie Game Design System (OpenPictionary-inspired)
+   Vibrant pastel room backdrop, floating white cards, Bricolage Grotesque,
+   animated geometric creature mascots, and tactile pill controls.
    ========================================================================== */
 
 :root {
-  --bg-app: #fafaf9;
+  --room: #BBA8FF;
+  --ink: #16130f;
+  --ink-2: rgba(22, 19, 15, 0.68);
+  --ink-3: rgba(22, 19, 15, 0.45);
+  --ink-4: rgba(22, 19, 15, 0.14);
+  --line: rgba(22, 19, 15, 0.08);
+  --card: #ffffff;
+  --card-2: #f6f3ee;
+
+  --bg-app: var(--room);
   --bg-surface: #ffffff;
-  --bg-raised: #f5f5f4;
-  --bg-hover: #e7e5e4;
-  --border: #e7e5e4;
-  --border-medium: #d6d3d1;
+  --bg-raised: #f6f3ee;
+  --bg-hover: #ede8df;
+  --border: rgba(22, 19, 15, 0.09);
+  --border-medium: rgba(22, 19, 15, 0.16);
 
-  --text-primary: #1c1917;
-  --text-secondary: #57534e;
-  --text-tertiary: #78716c;
-  --text-muted: #a8a29e;
+  --text-primary: #16130f;
+  --text-secondary: rgba(22, 19, 15, 0.68);
+  --text-tertiary: rgba(22, 19, 15, 0.48);
+  --text-muted: rgba(22, 19, 15, 0.36);
 
-  --laya-color: #0891b2;
-  --jev-color: #7c3aed;
-  --von-color: #059669;
-  --mojev-color: #e11d48;
-  --accent-amber: #d97706;
+  --laya-color: #00B2D6;
+  --jev-color: #6B4EFF;
+  --von-color: #00A870;
+  --mojev-color: #F2442E;
+  --accent-amber: #FF7A1A;
 
-  --font-sans: "Plus Jakarta Sans", system-ui, -apple-system, sans-serif;
+  --font-sans: "Bricolage Grotesque", "Plus Jakarta Sans", system-ui, -apple-system, sans-serif;
   --font-mono: "JetBrains Mono", ui-monospace, monospace;
 
-  --radius-sm: 6px;
-  --radius-md: 10px;
-  --radius-lg: 14px;
-  --shadow-sm: 0 1px 2px rgba(0,0,0,0.04);
-  --shadow-card: 0 1px 3px rgba(0,0,0,0.06);
+  --radius-sm: 12px;
+  --radius-md: 18px;
+  --radius-lg: 24px;
+  --ease-out: cubic-bezier(0.22, 1, 0.36, 1);
+  --ease-spring: cubic-bezier(0.34, 1.56, 0.64, 1);
+
+  --lift: 0 1px 0 rgba(22, 19, 15, 0.04), 0 1px 2px rgba(22, 19, 15, 0.06), 0 8px 24px -12px rgba(22, 19, 15, 0.22);
+  --lift-hi: 0 1px 0 rgba(22, 19, 15, 0.04), 0 2px 4px rgba(22, 19, 15, 0.06), 0 16px 36px -14px rgba(22, 19, 15, 0.32);
+  --float: 0 2px 0 rgba(22, 19, 15, 0.05), 0 30px 70px -28px rgba(22, 19, 15, 0.45), 0 12px 24px -16px rgba(22, 19, 15, 0.2);
+  --shadow-sm: var(--lift);
+  --shadow-card: var(--lift);
 }
 
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
@@ -39,131 +55,241 @@ html, body {
   max-height: 100vh;
   overflow: hidden;
   font-family: var(--font-sans);
-  background: var(--bg-app);
+  background: var(--room);
   color: var(--text-primary);
-  line-height: 1.5;
+  line-height: 1.45;
   display: flex;
   flex-direction: column;
   -webkit-font-smoothing: antialiased;
+  transition: background-color 0.55s var(--ease-out);
 }
 
 /* ==========================================================================
-   Header
+   Creature Animations (Blink, Bob, Pupil Tracking)
+   ========================================================================== */
+.creature-svg {
+  overflow: visible;
+  flex-shrink: 0;
+  display: block;
+}
+
+.creature-blink {
+  transform-box: fill-box;
+  transform-origin: 50% 50%;
+  animation: creatureBlink 5.2s infinite;
+}
+
+.creature-pupil {
+  transition: transform 0.14s var(--ease-out);
+  will-change: transform;
+}
+
+.idle-bob {
+  animation: idleBob 3.2s ease-in-out infinite;
+}
+
+@keyframes creatureBlink {
+  0%, 92%, 100% { transform: scaleY(1); }
+  95% { transform: scaleY(0.08); }
+}
+
+@keyframes idleBob {
+  0%, 100% { transform: translateY(0); }
+  50% { transform: translateY(-2.5px); }
+}
+
+/* ==========================================================================
+   Floating Open Header (OpenPictionary Pill Style)
    ========================================================================== */
 .app-header {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 0 20px;
-  height: 52px;
-  background: var(--bg-surface);
-  border-bottom: 1px solid var(--border);
+  padding: 10px 24px 6px;
+  height: 58px;
+  background: transparent;
+  border-bottom: none;
   flex-shrink: 0;
+  z-index: 20;
 }
 
-.header-left, .header-right { display: flex; align-items: center; gap: 12px; }
-
-.brand {
+.header-left, .header-right {
   display: flex;
   align-items: center;
-  gap: 6px;
-  color: var(--text-primary);
+  gap: 10px;
+}
+
+.brand {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--ink);
+  padding: 4px 10px 4px 4px;
+  border-radius: 999px;
+  transition: transform 0.2s var(--ease-spring);
+}
+.brand:hover {
+  transform: translateY(-1px) scale(1.02);
+}
+.brand:active {
+  transform: scale(0.97);
 }
 .brand svg { flex-shrink: 0; }
 .brand-name {
-  font-weight: 700;
-  font-size: 0.88rem;
-  letter-spacing: -0.02em;
+  font-weight: 800;
+  font-size: 1.16rem;
+  letter-spacing: -0.04em;
+  color: var(--ink);
 }
 
 .header-chip {
-  display: flex;
+  display: inline-flex;
   align-items: center;
-  gap: 6px;
-  padding: 3px 10px;
-  background: var(--bg-raised);
+  gap: 7px;
+  padding: 6px 14px;
+  background: rgba(255, 255, 255, 0.46);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  border: 1px solid rgba(255, 255, 255, 0.55);
   border-radius: 999px;
-  font-size: 0.72rem;
-  font-weight: 500;
-  color: var(--text-secondary);
+  font-size: 0.78rem;
+  font-weight: 700;
+  color: var(--ink);
   white-space: nowrap;
+  box-shadow: 0 2px 8px rgba(22, 19, 15, 0.06);
 }
 .chip-dot {
-  width: 7px; height: 7px;
-  border-radius: 50%;
-  background: var(--text-muted);
-  flex-shrink: 0;
-}
-
-.header-actions { display: flex; gap: 6px; }
-
-.model-status-row {
-  display: flex;
-  gap: 8px;
-  margin-left: 8px;
-}
-.status-pip {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  font-size: 0.66rem;
-  font-weight: 500;
-  color: var(--text-tertiary);
-}
-.pip-dot {
-  width: 5px; height: 5px;
+  width: 8px;
+  height: 8px;
   border-radius: 50%;
   background: var(--von-color);
+  flex-shrink: 0;
+  box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.8);
 }
-.pip-dot.offline { background: var(--text-muted); }
+
+.header-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 4px 6px;
+  background: rgba(255, 255, 255, 0.44);
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
+  border: 1px solid rgba(255, 255, 255, 0.55);
+  border-radius: 999px;
+  box-shadow: 0 2px 10px rgba(22, 19, 15, 0.06);
+}
+
+.mood-swatch-dot {
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: var(--room);
+  border: 2px solid var(--ink);
+  display: inline-block;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.15);
+  transition: transform 0.2s var(--ease-spring), background-color 0.3s ease;
+}
+#btn-room-mood:hover .mood-swatch-dot {
+  transform: scale(1.18) rotate(15deg);
+}
 
 /* ==========================================================================
-   Buttons
+   Playful Pill Buttons
    ========================================================================== */
 .btn {
   display: inline-flex;
   align-items: center;
-  gap: 5px;
-  padding: 5px 12px;
-  border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
-  background: var(--bg-surface);
-  color: var(--text-primary);
-  font: 500 0.74rem/1 var(--font-sans);
+  justify-content: center;
+  gap: 6px;
+  padding: 7px 14px;
+  border: 1px solid rgba(22, 19, 15, 0.1);
+  border-radius: 999px;
+  background: var(--card);
+  color: var(--ink);
+  font: 700 0.78rem/1 var(--font-sans);
+  letter-spacing: -0.01em;
   cursor: pointer;
-  transition: background 0.12s, border-color 0.12s;
+  transition: transform 0.18s var(--ease-spring), background-color 0.15s ease, box-shadow 0.15s ease;
   white-space: nowrap;
+  box-shadow: 0 1px 2px rgba(22, 19, 15, 0.06);
 }
-.btn:hover { background: var(--bg-raised); border-color: var(--border-medium); }
-.btn:active { transform: scale(0.98); }
-.btn:disabled { opacity: 0.45; cursor: not-allowed; pointer-events: none; transform: none; }
+.btn:hover {
+  background: var(--card-2);
+  transform: translateY(-1.5px);
+  box-shadow: 0 4px 12px -4px rgba(22, 19, 15, 0.18);
+}
+.btn:active {
+  transition-duration: 70ms;
+  transform: scale(0.96);
+}
+.btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+  pointer-events: none;
+  transform: none;
+}
 
 .btn-primary {
-  background: var(--text-primary);
-  color: var(--bg-surface);
-  border-color: var(--text-primary);
+  background: var(--ink);
+  color: #ffffff;
+  border-color: var(--ink);
+  box-shadow: 0 4px 12px -2px rgba(22, 19, 15, 0.28);
 }
-.btn-primary:hover { background: #292524; }
+.btn-primary:hover {
+  background: #2c2620;
+  color: #ffffff;
+}
 .btn-primary.btn-active {
   background: var(--mojev-color);
   border-color: var(--mojev-color);
-  color: #fff;
+  color: #ffffff;
+}
+
+.btn-secondary {
+  background: var(--card-2);
+  color: var(--ink);
+  border-color: rgba(22, 19, 15, 0.12);
+}
+.btn-secondary:hover {
+  background: #ebe5dc;
 }
 
 .btn-ghost {
   background: transparent;
   border-color: transparent;
-  color: var(--text-secondary);
+  color: var(--ink);
+  box-shadow: none;
 }
-.btn-ghost:hover { background: var(--bg-raised); border-color: var(--border); }
+.btn-ghost:hover {
+  background: rgba(255, 255, 255, 0.65);
+  border-color: rgba(22, 19, 15, 0.06);
+  box-shadow: 0 2px 6px rgba(22, 19, 15, 0.06);
+}
+
+.btn-sm {
+  padding: 6px 12px;
+  font-size: 0.76rem;
+}
 
 .btn-xs {
-  padding: 3px 8px;
-  font-size: 0.68rem;
-  border-radius: 4px;
+  padding: 5px 11px;
+  font-size: 0.72rem;
+  border-radius: 999px;
 }
-.btn-danger { color: var(--mojev-color); border-color: var(--mojev-color); background: transparent; }
-.btn-danger:hover { background: rgba(225,29,72,0.06); }
+
+.btn-icon-only {
+  padding: 6px 8px;
+}
+
+.btn-danger {
+  color: var(--mojev-color);
+  border-color: rgba(242, 68, 46, 0.28);
+  background: #ffe4e0;
+}
+.btn-danger:hover {
+  background: #ffd3cc;
+}
 
 /* ==========================================================================
    Gameplay Motion, Focus & Accessibility Polish
@@ -174,8 +300,8 @@ html, body {
 }
 
 #caro-canvas:focus-visible {
-  outline: 2px solid var(--accent-amber, #d97706);
-  outline-offset: -2px;
+  outline: 3px solid var(--jev-color, #6B4EFF);
+  outline-offset: -3px;
 }
 
 .canvas-wrap {
@@ -183,24 +309,24 @@ html, body {
 }
 
 .canvas-wrap.human-turn-glow {
-  box-shadow: inset 0 0 0 2px rgba(217, 119, 6, 0.45);
+  box-shadow: inset 0 0 0 3px rgba(255, 122, 26, 0.55);
 }
 
 .header-chip.turn-pulse {
-  animation: chipTurnPulse 0.32s cubic-bezier(0.22, 1, 0.36, 1);
+  animation: chipTurnPulse 0.34s var(--ease-spring);
 }
 
 @keyframes chipTurnPulse {
   0% { transform: scale(1); }
-  45% { transform: scale(1.04); }
+  45% { transform: scale(1.06); }
   100% { transform: scale(1); }
 }
 
 /* Toast Notifications */
 .arena-toast-container {
   position: fixed;
-  bottom: 20px;
-  right: 20px;
+  bottom: 22px;
+  right: 22px;
   display: flex;
   flex-direction: column;
   gap: 8px;
@@ -210,25 +336,23 @@ html, body {
 
 .arena-toast {
   pointer-events: auto;
-  background: var(--text-primary);
-  color: var(--bg-surface);
-  padding: 9px 14px;
-  border-radius: var(--radius-sm);
-  font-size: 0.76rem;
-  font-weight: 500;
-  box-shadow: 0 10px 24px -6px rgba(28, 25, 23, 0.3);
-  border-left: 3px solid var(--accent-amber);
-  animation: toastSlideIn 0.2s cubic-bezier(0.22, 1, 0.36, 1);
+  background: var(--ink);
+  color: #ffffff;
+  padding: 10px 18px;
+  border-radius: 999px;
+  font-size: 0.78rem;
+  font-weight: 700;
+  box-shadow: var(--lift-hi);
+  animation: toastSlideIn 0.24s var(--ease-spring);
 }
 
 @keyframes toastSlideIn {
   from {
     opacity: 0;
-    transform: translateY(8px);
+    transform: translateY(10px) scale(0.95);
   }
   to {
     opacity: 1;
-    transform: translateY(0);
+    transform: translateY(0) scale(1);
   }
 }
-

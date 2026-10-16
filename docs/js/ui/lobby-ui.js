@@ -349,6 +349,13 @@ function setupLobbyHomeScreenUI() {
   });
 
   // Quick-Start Solo Presets
+  const paradeEl = document.getElementById("lobby-creatures-parade");
+  if (paradeEl && typeof getCreatureMascotSvg === "function") {
+    paradeEl.innerHTML = ["laya", "jev", "von", "mojev", "human"]
+      .map((m, i) => `<span class="parade-creature" title="${m.toUpperCase()}">${getCreatureMascotSvg(m, 28, { delay: `-${(i * 1.15).toFixed(2)}s`, active: true })}</span>`)
+      .join("");
+  }
+
   document.getElementById("btn-preset-1v1-von")?.addEventListener("click", () => {
     launchPresetBattle(["human", "von"], true);
   });

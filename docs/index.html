@@ -7,18 +7,18 @@
   <meta name="theme-color" content="#1c1917">
   <link rel="icon" type="image/svg+xml" href="icon.svg">
   <link rel="manifest" href="manifest.json">
-  <link rel="stylesheet" href="style.css?v=2.9.0">
+  <link rel="stylesheet" href="style.css?v=3.2.0">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+  <link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,400;12..96,500;12..96,600;12..96,700;12..96,800&family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
   <style id="arena-critical-styles">
     /* Guaranteed styles immune to HTTP caching */
     .modal-backdrop {
       position: fixed !important;
       inset: 0 !important;
-      background: rgba(15, 23, 42, 0.65) !important;
-      backdrop-filter: blur(8px) !important;
-      -webkit-backdrop-filter: blur(8px) !important;
+      background: rgba(22, 19, 15, 0.55) !important;
+      backdrop-filter: blur(10px) !important;
+      -webkit-backdrop-filter: blur(10px) !important;
       align-items: center !important;
       justify-content: center !important;
       z-index: 99999 !important;
@@ -33,9 +33,9 @@
       width: 92% !important;
       max-width: 480px !important;
       background: #ffffff !important;
-      border: 1px solid #e2e8f0 !important;
-      border-radius: 16px !important;
-      box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.25) !important;
+      border: none !important;
+      border-radius: 24px !important;
+      box-shadow: 0 2px 0 rgba(22, 19, 15, 0.05), 0 30px 70px -28px rgba(22, 19, 15, 0.45), 0 12px 24px -16px rgba(22, 19, 15, 0.2) !important;
       overflow: hidden !important;
     }
 
@@ -45,8 +45,8 @@
       align-items: center !important;
       justify-content: space-between !important;
       padding: 8px 16px !important;
-      background: #fffbeb !important;
-      border-bottom: 1.5px solid #fde68a !important;
+      background: #fff1d6 !important;
+      border-bottom: 1.5px solid rgba(180, 83, 9, 0.18) !important;
       color: #b45309 !important;
       font-weight: 700 !important;
       font-size: 0.78rem !important;
@@ -60,30 +60,29 @@
       display: inline-flex !important;
       align-items: center !important;
       gap: 6px !important;
-      font-size: 0.8rem !important;
-      font-weight: 600 !important;
-      color: #64748b !important;
+      font-size: 0.78rem !important;
+      font-weight: 700 !important;
+      color: #16130f !important;
       cursor: pointer !important;
-      padding: 4px 10px !important;
-      border-radius: 6px !important;
-      background: #f1f5f9 !important;
-      border: 1px solid #cbd5e1 !important;
+      padding: 5px 12px !important;
+      border-radius: 999px !important;
+      background: rgba(255, 255, 255, 0.55) !important;
+      border: 1px solid rgba(22, 19, 15, 0.1) !important;
       user-select: none !important;
-      transition: all 0.15s ease !important;
+      transition: all 0.18s cubic-bezier(.34, 1.56, .64, 1) !important;
     }
     .toggle-nonstop-wrap:hover {
-      color: #0f172a !important;
-      border-color: #94a3b8 !important;
-      background: #e2e8f0 !important;
+      transform: translateY(-1px) !important;
+      background: rgba(255, 255, 255, 0.85) !important;
     }
     .toggle-nonstop-wrap.active {
-      color: #2563eb !important;
-      border-color: #2563eb !important;
-      background: #eff6ff !important;
+      color: #ffffff !important;
+      border-color: #16130f !important;
+      background: #16130f !important;
     }
     .toggle-nonstop-wrap input[type="checkbox"] {
       cursor: pointer !important;
-      accent-color: #2563eb !important;
+      accent-color: #6B4EFF !important;
       width: 14px !important;
       height: 14px !important;
       margin: 0 !important;
@@ -94,11 +93,35 @@
   <header class="app-header">
     <div class="header-left">
       <div class="brand" id="brand-logo-home" title="Return to lobby" style="cursor: pointer;">
-        <svg viewBox="0 0 20 20" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" aria-hidden="true">
-          <circle cx="10" cy="10" r="7"/>
-          <path d="M10 3v14M3 10h14"/>
+        <svg class="brand-creatures" viewBox="0 0 68 38" width="38" height="22" aria-hidden="true">
+          <g fill="#F2442E">
+            <circle cx="19" cy="20" r="16"/>
+          </g>
+          <g class="creature-blink">
+            <ellipse cx="14" cy="20" rx="3.6" ry="4.2" fill="#fff"/>
+            <ellipse cx="24" cy="20" rx="3.6" ry="4.2" fill="#fff"/>
+            <g class="creature-pupil">
+              <circle cx="14.5" cy="20" r="2" fill="#16130f"/>
+              <circle cx="15.2" cy="19.2" r="0.65" fill="#fff"/>
+              <circle cx="24.5" cy="20" r="2" fill="#16130f"/>
+              <circle cx="25.2" cy="19.2" r="0.65" fill="#fff"/>
+            </g>
+          </g>
+          <g fill="#6B4EFF">
+            <rect x="34" y="5" width="30" height="30" rx="9"/>
+          </g>
+          <g class="creature-blink" style="animation-delay: -2.1s;">
+            <ellipse cx="43.5" cy="20" rx="3.6" ry="4.2" fill="#fff"/>
+            <ellipse cx="54.5" cy="20" rx="3.6" ry="4.2" fill="#fff"/>
+            <g class="creature-pupil">
+              <circle cx="43" cy="20" r="2" fill="#16130f"/>
+              <circle cx="43.7" cy="19.2" r="0.65" fill="#fff"/>
+              <circle cx="54" cy="20" r="2" fill="#16130f"/>
+              <circle cx="54.7" cy="19.2" r="0.65" fill="#fff"/>
+            </g>
+          </g>
         </svg>
-        <span class="brand-name">Caro Arena</span>
+        <span class="brand-name">caro arena</span>
       </div>
       <div class="header-chip" id="turn-banner" aria-live="polite" aria-atomic="true">
         <span class="chip-dot" id="turn-dot"></span>
@@ -109,17 +132,17 @@
     <div class="header-right">
       <div class="header-actions">
         <button class="btn btn-ghost btn-sm" id="btn-home-lobby" title="Return to lobby">
-          <svg viewBox="0 0 16 16" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-            <rect x="2" y="2" width="5" height="5" rx="1"/>
-            <rect x="9" y="2" width="5" height="5" rx="1"/>
-            <rect x="2" y="9" width="5" height="5" rx="1"/>
-            <rect x="9" y="9" width="5" height="5" rx="1"/>
+          <svg viewBox="0 0 16 16" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <rect x="2" y="2" width="5" height="5" rx="1.5"/>
+            <rect x="9" y="2" width="5" height="5" rx="1.5"/>
+            <rect x="2" y="9" width="5" height="5" rx="1.5"/>
+            <rect x="9" y="9" width="5" height="5" rx="1.5"/>
           </svg>
           <span>Lobby</span>
         </button>
         <button class="btn btn-ghost btn-sm" id="btn-auth-profile" title="Account and Cranes balance">100 · Sign in</button>
         <button class="btn btn-ghost btn-sm" id="btn-multiplayer" title="Browse or manage rooms">
-          <svg viewBox="0 0 16 16" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <svg viewBox="0 0 16 16" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
             <circle cx="6" cy="5.5" r="2.3"/>
             <path d="M2 13c0-2.1 1.8-3.6 4-3.6s4 1.5 4 3.6"/>
             <circle cx="11.5" cy="6" r="1.8"/>
@@ -127,14 +150,17 @@
           </svg>
           <span>Rooms</span>
         </button>
+        <button class="btn btn-ghost btn-sm btn-icon-only" id="btn-room-mood" title="Switch room backdrop color" aria-label="Switch room backdrop color">
+          <span class="mood-swatch-dot" id="mood-swatch-dot"></span>
+        </button>
         <button class="btn btn-ghost btn-sm btn-icon-only" id="btn-sound" title="Toggle sound" aria-label="Toggle sound">
-          <svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
             <path d="M3 6.2h2.3L8.8 3.5v9L5.3 9.8H3z"/>
             <path d="M11.2 5.6a3.5 3.5 0 0 1 0 4.8"/>
           </svg>
         </button>
         <button class="btn btn-ghost btn-sm btn-icon-only" id="btn-fullscreen" title="Toggle fullscreen" aria-label="Toggle fullscreen">
-          <svg viewBox="0 0 16 16" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <svg viewBox="0 0 16 16" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
             <path d="M2.5 6V2.5H6M10 2.5h3.5V6M13.5 10v3.5H10M6 13.5H2.5V10"/>
           </svg>
         </button>
@@ -195,17 +221,20 @@
     <div class="lobby-home-container">
       <div class="lobby-home-hero">
         <div class="lobby-home-hero-text">
-          <div class="lobby-live-pill">
-            <span class="mp-live-dot" aria-hidden="true"></span>
-            <span id="lobby-home-server-status">Live lobby</span>
+          <div class="lobby-hero-pills-row">
+            <div class="lobby-live-pill">
+              <span class="mp-live-dot" aria-hidden="true"></span>
+              <span id="lobby-home-server-status">Live lobby</span>
+            </div>
+            <div class="lobby-creatures-parade" id="lobby-creatures-parade" aria-hidden="true"></div>
           </div>
-          <h1 class="lobby-home-title">Five-in-a-row on an open grid</h1>
-          <p class="lobby-home-subtitle">Watch live rooms, take an open seat, or play local matches against the four built-in AI engines.</p>
+          <h1 class="lobby-home-title">five-in-a-row on an infinite board.</h1>
+          <p class="lobby-home-subtitle">You place. They scheme. Battle four quirky AI minds or challenge friends in live rooms.</p>
         </div>
         <div class="lobby-home-wallet-card">
           <div class="lobby-wallet-top">
             <div>
-              <div class="lobby-wallet-label">Cranes balance</div>
+              <div class="lobby-wallet-label">Cranes stash</div>
               <div class="lobby-wallet-user" id="lobby-home-account-status">Guest wallet</div>
             </div>
             <div class="lobby-wallet-amount" id="lobby-home-cranes-count">100</div>
@@ -227,7 +256,7 @@
               </div>
               <button class="btn btn-secondary btn-xs" id="btn-enter-practice-arena">Open board →</button>
             </div>
-            <p class="lobby-practice-desc">Jump straight into a local match against Laya, Jev, Von, and MoJev, or solve today's tactical puzzle.</p>
+            <p class="lobby-practice-desc">Pick a mode to jump straight onto the board against Laya, Jev, Von, and MoJev.</p>
             <div class="lobby-preset-row" role="group" aria-label="Quick start presets">
               <button class="btn btn-primary btn-xs lobby-preset-btn" id="btn-preset-1v1-von" type="button" title="Start 1v1 human vs Von (AI)">1v1 vs Von</button>
               <button class="btn btn-ghost btn-xs lobby-preset-btn" id="btn-preset-human-3ai" type="button" title="Start 4-player battle with you against 3 AI engines">Human vs 3 AI</button>

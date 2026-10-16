@@ -139,6 +139,141 @@ const BOARD_THEMES_PALETTES = {
   }
 };
 
+// ───────────────────────────────────────────────────────────────────────────
+// Playful Creature Mascots, Eye Tracking & Room Mood Backdrop Switcher
+// ───────────────────────────────────────────────────────────────────────────
+const ROOM_MOODS = [
+  { id: "lavender", name: "Lavender Studio", color: "#BBA8FF" },
+  { id: "buttercup", name: "Sunny Buttercup", color: "#FFD84A" },
+  { id: "mint", name: "Mint Arcade", color: "#9BF6B8" },
+  { id: "sky", name: "Sky Breeze", color: "#98D8FF" },
+  { id: "peach", name: "Peach Sorbet", color: "#FFB899" },
+  { id: "cream", name: "Warm Paper", color: "#F3EDE2" }
+];
+
+function applyRoomMood(moodId) {
+  const mood = ROOM_MOODS.find(m => m.id === moodId) || ROOM_MOODS[0];
+  document.documentElement.style.setProperty("--room", mood.color);
+  if (document.body) {
+    document.body.style.setProperty("--room", mood.color);
+  }
+  const dot = document.getElementById("mood-swatch-dot");
+  if (dot) {
+    dot.style.background = mood.color;
+  }
+  const btn = document.getElementById("btn-room-mood");
+  if (btn) {
+    btn.title = `Backdrop: ${mood.name} (click to switch)`;
+  }
+  try {
+    localStorage.setItem("caro_arena_room_mood", mood.id);
+  } catch {}
+  return mood;
+}
+
+function initRoomMoodSwitcher() {
+  let saved = "lavender";
+  try {
+    saved = localStorage.getItem("caro_arena_room_mood") || "lavender";
+  } catch {}
+  applyRoomMood(saved);
+
+  const btn = document.getElementById("btn-room-mood");
+  if (btn && !btn.dataset.moodBound) {
+    btn.dataset.moodBound = "1";
+    btn.addEventListener("click", () => {
+      const curId = localStorage.getItem("caro_arena_room_mood") || "lavender";
+      const idx = ROOM_MOODS.findIndex(m => m.id === curId);
+      const next = ROOM_MOODS[(idx + 1) % ROOM_MOODS.length];
+      applyRoomMood(next.id);
+      if (typeof window.CaroAudio !== "undefined") {
+        window.CaroAudio.playMove("human");
+      }
+    });
+  }
+}
+
+function getCreatureMascotSvg(modelType = "laya", size = 40, opts = {}) {
+  const m = String(modelType || "laya").toLowerCase();
+  const delay = opts.delay || (-((m.charCodeAt(0) * 1.37) % 4.8).toFixed(2) + "s");
+  const isEliminated = Boolean(opts.eliminated);
+  const isActive = Boolean(opts.active);
+  const bobClass = isActive ? "idle-bob" : "";
+
+  let shapeSvg = "";
+  let eyeY = 33;
+  let leftX = 22;
+  let rightX = 42;
+
+  if (m === "jev") {
+    // Electric Violet Squircle
+    shapeSvg = `<g fill="#6B4EFF" stroke-linejoin="round"><rect x="6" y="7" width="52" height="52" rx="16"></rect></g>`;
+    eyeY = 33; leftX = 22; rightX = 42;
+  } else if (m === "von") {
+    // Vibrant Emerald Rounded Triangle
+    shapeSvg = `<g fill="#00A870" stroke="#00A870" stroke-width="9" stroke-linejoin="round"><path d="M32 10 L57 54 L7 54 Z"></path></g>`;
+    eyeY = 40; leftX = 23; rightX = 41;
+  } else if (m === "mojev") {
+    // Coral-Crimson Circle Creature
+    shapeSvg = `<g fill="#F2442E" stroke-linejoin="round"><circle cx="32" cy="33" r="27"></circle></g>`;
+    eyeY = 33; leftX = 22; rightX = 42;
+  } else if (m === "human") {
+    // Sunny Tangerine Hexagon Creature
+    shapeSvg = `<g fill="#FF7A1A" stroke="#FF7A1A" stroke-width="10" stroke-linejoin="round"><path d="M57.0 33.0 L44.5 52.9 L19.5 52.9 L7.0 33.0 L19.5 13.1 L44.5 13.1 Z"></path></g>`;
+    eyeY = 34; leftX = 22; rightX = 42;
+  } else {
+    // Laya: Bright Cyan Rounded Star Creature
+    shapeSvg = `<g fill="#00B2D6" stroke="#00B2D6" stroke-width="8" stroke-linejoin="round"><path d="M32.0 8.0 L41.1 22.5 L57.7 26.7 L46.7 39.8 L47.9 56.8 L32.0 50.5 L16.1 56.8 L17.3 39.8 L6.3 26.7 L22.9 22.5 Z"></path></g>`;
+    eyeY = 36; leftX = 23; rightX = 41;
+  }
+
+  const eyesSvg = isEliminated
+    ? `<g stroke="#fff" stroke-width="3.2" stroke-linecap="round">
+         <path d="M${leftX - 4} ${eyeY - 4} L${leftX + 4} ${eyeY + 4} M${leftX + 4} ${eyeY - 4} L${leftX - 4} ${eyeY + 4}"/>
+         <path d="M${rightX - 4} ${eyeY - 4} L${rightX + 4} ${eyeY + 4} M${rightX + 4} ${eyeY - 4} L${rightX - 4} ${eyeY + 4}"/>
+       </g>`
+    : `<g class="creature-blink" style="animation-delay:${delay}">
+         <ellipse cx="${leftX}" cy="${eyeY}" rx="6.6" ry="7.6" fill="#fff"></ellipse>
+         <ellipse cx="${rightX}" cy="${eyeY}" rx="6.6" ry="7.6" fill="#fff"></ellipse>
+         <g class="creature-pupil">
+           <circle cx="${leftX}" cy="${eyeY}" r="3.7" fill="#16130f"></circle>
+           <circle cx="${leftX + 1.2}" cy="${eyeY - 1.3}" r="1.15" fill="#fff"></circle>
+           <circle cx="${rightX}" cy="${eyeY}" r="3.7" fill="#16130f"></circle>
+           <circle cx="${rightX + 1.2}" cy="${eyeY - 1.3}" r="1.15" fill="#fff"></circle>
+         </g>
+       </g>`;
+
+  return `<svg viewBox="0 0 64 64" width="${size}" height="${size}" aria-hidden="true" class="creature-svg ${bobClass}" style="${isEliminated ? "opacity:0.45;filter:grayscale(0.5);" : ""}">${shapeSvg}${eyesSvg}</svg>`;
+}
+window.getCreatureMascotSvg = getCreatureMascotSvg;
+
+function initCreatureEyeTracking() {
+  if (typeof window === "undefined" || window._creatureEyeTrackingBound) return;
+  window._creatureEyeTrackingBound = true;
+
+  let rafPending = false;
+  let lastClientX = window.innerWidth / 2;
+  let lastClientY = window.innerHeight / 2;
+
+  window.addEventListener("mousemove", (e) => {
+    lastClientX = e.clientX;
+    lastClientY = e.clientY;
+    if (rafPending || prefersReducedMotion()) return;
+    rafPending = true;
+    requestAnimationFrame(() => {
+      rafPending = false;
+      const pupils = document.querySelectorAll(".creature-pupil");
+      const nx = (lastClientX / Math.max(1, window.innerWidth) - 0.5) * 2;
+      const ny = (lastClientY / Math.max(1, window.innerHeight) - 0.5) * 2;
+      const tx = (nx * 2.1).toFixed(2);
+      const ty = (ny * 2.1).toFixed(2);
+      for (let i = 0; i < pupils.length; i++) {
+        pupils[i].style.transform = `translate(${tx}px, ${ty}px)`;
+      }
+    });
+  }, { passive: true });
+}
+
 // ─────────────────────────────────────────
 // Board Rendering & Threat Heatmap
 // ─────────────────────────────────────────
