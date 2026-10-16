@@ -1,0 +1,9 @@
+.venv/
+.github/
+caro_arena/
+docs/
+scripts/
+supabase/
+requirements.txt
+*.db
+*.py

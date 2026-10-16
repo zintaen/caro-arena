@@ -585,12 +585,24 @@ async function fetchBattleHistory() {
       renderLeaderboard();
     } catch {}
   } else if (window.CaroEngine) {
-    const battles = window.CaroEngine.ClientStorage.getBattles();
-    cachedBattlesCount = window.CaroEngine.ClientStorage.getTotalBattlesCount
-      ? window.CaroEngine.ClientStorage.getTotalBattlesCount()
+    const storage = window.CaroEngine.ClientStorage;
+    const battles = storage.getBattles();
+    cachedBattlesCount = storage.getTotalBattlesCount
+      ? storage.getTotalBattlesCount()
       : (Array.isArray(battles) ? battles.length : 0);
     renderBattleHistory(battles);
     renderLeaderboard();
+
+    if (storage.isCloudSyncEnabled && storage.isCloudSyncEnabled()) {
+      storage.pullFromSupabase(20).then(({ battles: syncedBattles, leaderboard: syncedLb }) => {
+        cachedLeaderboard = syncedLb || storage.getLeaderboard();
+        cachedBattlesCount = storage.getTotalBattlesCount
+          ? storage.getTotalBattlesCount()
+          : (Array.isArray(syncedBattles) ? syncedBattles.length : 0);
+        renderBattleHistory(syncedBattles);
+        renderLeaderboard();
+      }).catch(() => {});
+    }
   }
 }
 
@@ -1915,8 +1927,12 @@ async function startReplay(battleId) {
       const r = await apiFetch(`/api/battles/${encodeURIComponent(battleId)}`);
       if (r.ok) b = await r.json();
     } else if (window.CaroEngine) {
-      const battles = window.CaroEngine.ClientStorage.getBattles();
+      const storage = window.CaroEngine.ClientStorage;
+      const battles = storage.getBattles();
       b = battles.find(x => x.battle_id === battleId);
+      if (!b && storage.fetchBattleByIdFromSupabase) {
+        b = await storage.fetchBattleByIdFromSupabase(battleId);
+      }
     }
     if (!b) return;
     applyReplayBattleObject(b);

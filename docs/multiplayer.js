@@ -283,7 +283,7 @@
 
   async function subscribeToRoom(roomId) {
     const client = getClient();
-    const channelName = `caro_room_${roomId}`;
+    const channelName = `caro_arena_room_${roomId}`;
 
     if (client) {
       currentChannel = client.channel(channelName, {
@@ -811,6 +811,7 @@
   // Export to global scope
   window.CaroMultiplayer = {
     init,
+    getClient,
     isConfigured,
     getSavedCredentials,
     saveCredentials,

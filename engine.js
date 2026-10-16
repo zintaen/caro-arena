@@ -536,6 +536,28 @@ class ClientStorage {
     return this.getBattleSummaries().length;
   }
 
+  static getSupabaseClient() {
+    try {
+      return (typeof window !== "undefined" && window.CaroMultiplayer?.getClient)
+        ? window.CaroMultiplayer.getClient()
+        : null;
+    } catch {
+      return null;
+    }
+  }
+
+  static isCloudSyncEnabled() {
+    try {
+      if (typeof window === "undefined") return false;
+      if (window.CARO_DISABLE_CLOUD_STORAGE) return false;
+      if (window.CARO_FORCE_CLOUD_SYNC) return Boolean(this.getSupabaseClient());
+      if (typeof navigator !== "undefined" && navigator.webdriver) return false;
+      return Boolean(this.getSupabaseClient());
+    } catch {
+      return false;
+    }
+  }
+
   static sanitizeBattle(battle) {
     if (!battle) return null;
     const rawMoves = battle.moves_data || battle.moves || [];
@@ -550,6 +572,8 @@ class ClientStorage {
       total_moves: battle.total_moves || sanitizedMoves.length,
       started_at: battle.started_at,
       ended_at: battle.ended_at,
+      is_multiplayer: Boolean(battle.is_multiplayer),
+      room_code: battle.room_code || null,
       player_order: battle.player_order || [],
       placements: (battle.placements || []).map(p => ({
         rank: p.rank,
@@ -557,6 +581,7 @@ class ClientStorage {
         player: p.player,
         symbol: p.symbol || p.player,
         name: p.name,
+        move_number: p.move_number || null,
         winning_line: p.winning_line ? p.winning_line.slice() : null
       })),
       moves_data: sanitizedMoves
@@ -603,9 +628,142 @@ class ClientStorage {
       }
 
       this.updateLeaderboard();
+
+      // 3. Persist to Supabase (`caro_arena_battles` + `caro_arena_leaderboard`) asynchronously
+      if (this.isCloudSyncEnabled()) {
+        this.syncBattleToSupabase(clean).catch(() => {});
+      }
     } catch (e) {
       console.warn("ClientStorage: Failed to save battle without blocking game", e);
     }
+  }
+
+  static async syncBattleToSupabase(cleanBattle) {
+    const client = this.getSupabaseClient();
+    if (!client || !cleanBattle) return false;
+    try {
+      const row = {
+        battle_id: cleanBattle.battle_id,
+        started_at: Number(cleanBattle.started_at) || (Date.now() / 1000),
+        ended_at: Number(cleanBattle.ended_at) || (Date.now() / 1000),
+        total_moves: Number(cleanBattle.total_moves) || 0,
+        is_multiplayer: Boolean(cleanBattle.is_multiplayer),
+        room_code: cleanBattle.room_code || null,
+        player_order: cleanBattle.player_order || [],
+        placements: cleanBattle.placements || [],
+        moves_data: cleanBattle.moves_data || []
+      };
+      await client.from("caro_arena_battles").upsert(row, { onConflict: "battle_id" });
+
+      const lb = this.getLeaderboard();
+      if (Array.isArray(lb) && lb.length > 0) {
+        const lbRows = lb.map(item => ({
+          player_type: item.player_type,
+          total_points: Number(item.total_points) || 0,
+          battles_played: Number(item.battles_played) || 0,
+          wins: Number(item.wins) || 0,
+          avg_placement: Number(item.avg_placement) || 0,
+          best_streak: Number(item.best_streak) || 0,
+          updated_at: new Date().toISOString()
+        }));
+        await client.from("caro_arena_leaderboard").upsert(lbRows, { onConflict: "player_type" });
+      }
+      return true;
+    } catch (e) {
+      console.warn("ClientStorage: Supabase sync error", e);
+      return false;
+    }
+  }
+
+  static async pullFromSupabase(limit = 20) {
+    if (!this.isCloudSyncEnabled()) {
+      return { battles: this.getBattles(), leaderboard: this.getLeaderboard() };
+    }
+    const client = this.getSupabaseClient();
+    if (!client) {
+      return { battles: this.getBattles(), leaderboard: this.getLeaderboard() };
+    }
+    try {
+      const { data: remoteBattles, error: bErr } = await client
+        .from("caro_arena_battles")
+        .select("*")
+        .order("started_at", { ascending: false })
+        .limit(limit);
+
+      if (!bErr && Array.isArray(remoteBattles) && remoteBattles.length > 0) {
+        const localBattles = this.getBattles();
+        const mergedMap = new Map();
+        for (const b of localBattles) {
+          if (b && b.battle_id) mergedMap.set(b.battle_id, b);
+        }
+        for (const rb of remoteBattles) {
+          const clean = this.sanitizeBattle(rb);
+          if (clean && clean.battle_id && !mergedMap.has(clean.battle_id)) {
+            mergedMap.set(clean.battle_id, clean);
+          }
+        }
+        const mergedList = Array.from(mergedMap.values())
+          .sort((a, b) => (Number(b.started_at) || 0) - (Number(a.started_at) || 0))
+          .slice(0, 20);
+        try {
+          localStorage.setItem("caro_arena_battles", JSON.stringify(mergedList));
+        } catch {}
+
+        // Merge into chronological summaries as well
+        const summaries = this.getBattleSummaries();
+        const sumMap = new Map();
+        for (const s of summaries) {
+          if (s && s.battle_id) sumMap.set(s.battle_id, s);
+        }
+        for (const rb of remoteBattles) {
+          if (rb && rb.battle_id && !sumMap.has(rb.battle_id)) {
+            sumMap.set(rb.battle_id, {
+              battle_id: rb.battle_id,
+              started_at: rb.started_at,
+              placements: (rb.placements || []).map(p => ({ type: p.type, rank: p.rank }))
+            });
+          }
+        }
+        const mergedSummaries = Array.from(sumMap.values())
+          .sort((a, b) => (Number(a.started_at) || 0) - (Number(b.started_at) || 0));
+        try {
+          localStorage.setItem("caro_arena_battle_summaries", JSON.stringify(mergedSummaries));
+        } catch {}
+
+        this.updateLeaderboard();
+      } else if (this.getLeaderboard().length === 0) {
+        // Fallback: if no battles in local storage yet, check caro_arena_leaderboard table
+        const { data: remoteLb, error: lbErr } = await client
+          .from("caro_arena_leaderboard")
+          .select("*")
+          .order("total_points", { ascending: false });
+        if (!lbErr && Array.isArray(remoteLb) && remoteLb.length > 0) {
+          try {
+            localStorage.setItem("caro_arena_leaderboard", JSON.stringify(remoteLb));
+          } catch {}
+        }
+      }
+    } catch (e) {
+      console.warn("ClientStorage: Failed to pull from Supabase", e);
+    }
+    return { battles: this.getBattles(), leaderboard: this.getLeaderboard() };
+  }
+
+  static async fetchBattleByIdFromSupabase(battleId) {
+    if (!battleId) return null;
+    const client = this.getSupabaseClient();
+    if (!client) return null;
+    try {
+      const { data, error } = await client
+        .from("caro_arena_battles")
+        .select("*")
+        .eq("battle_id", battleId)
+        .maybeSingle();
+      if (!error && data) {
+        return this.sanitizeBattle(data);
+      }
+    } catch {}
+    return null;
   }
 
   static deleteBattle(battleId) {
@@ -616,6 +774,12 @@ class ClientStorage {
       const summaries = this.getBattleSummaries().filter(s => s.battle_id !== battleId);
       localStorage.setItem("caro_arena_battle_summaries", JSON.stringify(summaries));
       this.updateLeaderboard();
+      if (this.isCloudSyncEnabled()) {
+        const client = this.getSupabaseClient();
+        if (client) {
+          client.from("caro_arena_battles").delete().eq("battle_id", battleId).then(() => {}).catch(() => {});
+        }
+      }
     } catch {}
   }
 
@@ -696,6 +860,13 @@ class ClientStorage {
       localStorage.removeItem("caro_arena_battles");
       localStorage.removeItem("caro_arena_battle_summaries");
       localStorage.removeItem("caro_arena_leaderboard");
+      if (this.isCloudSyncEnabled()) {
+        const client = this.getSupabaseClient();
+        if (client) {
+          client.from("caro_arena_battles").delete().neq("battle_id", "").then(() => {}).catch(() => {});
+          client.from("caro_arena_leaderboard").delete().neq("player_type", "").then(() => {}).catch(() => {});
+        }
+      }
     } catch {}
   }
 }
@@ -738,7 +909,12 @@ class ClientGameManager {
       this.battleNumber += 1;
     }
     if (playerTypes) this.selectedPlayerTypes = playerTypes;
-    this.gameId = Math.random().toString(36).substring(2, 10);
+    const mpRoom = (playerConfigs && typeof window !== "undefined" && window.CaroMultiplayer?.inGame)
+      ? window.CaroMultiplayer.roomId
+      : null;
+    this.gameId = mpRoom
+      ? `mp_${mpRoom}_b${this.battleNumber || 1}`
+      : Math.random().toString(36).substring(2, 10);
     this.startedAt = Date.now();
     this.endedAt = null;
 
@@ -916,10 +1092,13 @@ class ClientGameManager {
         };
       });
 
+      const isMp = Boolean(typeof window !== "undefined" && window.CaroMultiplayer?.inGame);
       const battleRecord = {
         battle_id: this.gameId,
         started_at: this.startedAt / 1000,
         ended_at: (this.endedAt || Date.now()) / 1000,
+        is_multiplayer: isMp,
+        room_code: isMp ? (window.CaroMultiplayer?.roomId || null) : null,
         player_order: playerOrder,
         placements: placements,
         total_moves: this.board.moves.length,
