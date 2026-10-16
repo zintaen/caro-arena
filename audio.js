@@ -5,15 +5,28 @@
 (function () {
   if (typeof window === "undefined" || window.CaroAudio) return;
 
+  const SOUND_PACKS = {
+    wood: { id: "wood", name: "Kaya Wood", desc: "Warm resonant wooden clack" },
+    slate: { id: "slate", name: "Slate & Shell", desc: "Crisp mineral snap on stone" },
+    tactile: { id: "tactile", name: "Soft Tactile", desc: "Low, muted studio thud" },
+    synth: { id: "synth", name: "Clean Synth", desc: "Pure harmonic bell tone" }
+  };
+
   class CaroAudioSynthesizer {
     constructor() {
       this.ctx = null;
       this.enabled = true;
+      this.soundPack = "wood";
       try {
         this.enabled = localStorage.getItem("caro_sound_enabled") !== "false";
+        const savedPack = localStorage.getItem("caro_sound_pack");
+        if (savedPack && SOUND_PACKS[savedPack]) {
+          this.soundPack = savedPack;
+        }
       } catch {}
       this.masterGain = null;
       this._initialized = false;
+      this.SOUND_PACKS = SOUND_PACKS;
     }
 
     init() {
@@ -46,9 +59,24 @@
       return this.enabled;
     }
 
+    getSoundPack() {
+      return SOUND_PACKS[this.soundPack] ? this.soundPack : "wood";
+    }
+
+    setSoundPack(packId, playPreview = false) {
+      if (!SOUND_PACKS[packId]) return this.getSoundPack();
+      this.soundPack = packId;
+      try {
+        localStorage.setItem("caro_sound_pack", packId);
+      } catch {}
+      if (playPreview) {
+        this.playStoneClick("human");
+      }
+      return this.soundPack;
+    }
+
     /**
-     * Tactile wooden Go/Caro stone click sound.
-     * Sharp attack transient + short acoustic board resonance.
+     * Tactile Go/Caro stone click sound tailored to the active soundPack.
      */
     playStoneClick(playerType = "ai") {
       if (!this.enabled) return;
@@ -56,18 +84,78 @@
       if (!this.ctx) return;
 
       const t = this.ctx.currentTime;
-
-      // Base pitches for different models to give each an acoustic voice
       const pitchMap = {
-        laya: 480,   // Crisp high-mid
-        jev: 360,    // Solid wooden knock
-        von: 540,    // Bright metallic click
-        mojev: 420,  // Deep thud
-        human: 440   // Warm resonant clack
+        laya: 480,
+        jev: 360,
+        von: 540,
+        mojev: 420,
+        human: 440
       };
       const baseFreq = pitchMap[playerType] || 440;
+      const pack = this.getSoundPack();
 
-      // 1. Sharp attack burst (high-frequency transient)
+      if (pack === "slate") {
+        // Crisp mineral snap + tight high stone ring
+        const snapOsc = this.ctx.createOscillator();
+        const snapGain = this.ctx.createGain();
+        snapOsc.type = "sine";
+        snapOsc.frequency.setValueAtTime(baseFreq * 3.6, t);
+        snapOsc.frequency.exponentialRampToValueAtTime(baseFreq * 1.1, t + 0.018);
+        snapGain.gain.setValueAtTime(0.55, t);
+        snapGain.gain.exponentialRampToValueAtTime(0.001, t + 0.022);
+        snapOsc.connect(snapGain);
+        snapGain.connect(this.masterGain);
+        snapOsc.start(t);
+        snapOsc.stop(t + 0.025);
+
+        const ringOsc = this.ctx.createOscillator();
+        const ringGain = this.ctx.createGain();
+        ringOsc.type = "triangle";
+        ringOsc.frequency.setValueAtTime(baseFreq * 1.35, t);
+        ringOsc.frequency.exponentialRampToValueAtTime(baseFreq * 0.95, t + 0.05);
+        ringGain.gain.setValueAtTime(0.35, t);
+        ringGain.gain.exponentialRampToValueAtTime(0.001, t + 0.055);
+        ringOsc.connect(ringGain);
+        ringGain.connect(this.masterGain);
+        ringOsc.start(t);
+        ringOsc.stop(t + 0.06);
+        return;
+      }
+
+      if (pack === "tactile") {
+        // Low, muted studio thud
+        const thudOsc = this.ctx.createOscillator();
+        const thudGain = this.ctx.createGain();
+        thudOsc.type = "sine";
+        thudOsc.frequency.setValueAtTime(baseFreq * 0.68, t);
+        thudOsc.frequency.exponentialRampToValueAtTime(baseFreq * 0.28, t + 0.065);
+        thudGain.gain.setValueAtTime(0.28, t);
+        thudGain.gain.exponentialRampToValueAtTime(0.001, t + 0.07);
+        thudOsc.connect(thudGain);
+        thudGain.connect(this.masterGain);
+        thudOsc.start(t);
+        thudOsc.stop(t + 0.075);
+        return;
+      }
+
+      if (pack === "synth") {
+        // Clean harmonic bell fifth
+        [1, 1.5].forEach((mult, idx) => {
+          const osc = this.ctx.createOscillator();
+          const g = this.ctx.createGain();
+          osc.type = "sine";
+          osc.frequency.setValueAtTime(baseFreq * mult, t);
+          g.gain.setValueAtTime(idx === 0 ? 0.26 : 0.14, t);
+          g.gain.exponentialRampToValueAtTime(0.001, t + 0.11);
+          osc.connect(g);
+          g.connect(this.masterGain);
+          osc.start(t);
+          osc.stop(t + 0.12);
+        });
+        return;
+      }
+
+      // Default 'wood': sharp attack burst + warm decaying wood resonance
       const noiseGain = this.ctx.createGain();
       const oscAttack = this.ctx.createOscillator();
       oscAttack.type = "sine";
@@ -82,7 +170,6 @@
       oscAttack.start(t);
       oscAttack.stop(t + 0.03);
 
-      // 2. Body resonance (decaying wood resonance)
       const bodyOsc = this.ctx.createOscillator();
       const bodyGain = this.ctx.createGain();
       bodyOsc.type = "triangle";
@@ -96,6 +183,10 @@
       bodyGain.connect(this.masterGain);
       bodyOsc.start(t);
       bodyOsc.stop(t + 0.09);
+    }
+
+    playTurnReadyChime() {
+      this.playHumanTurnAlert();
     }
 
     /**

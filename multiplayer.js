@@ -24,6 +24,9 @@
   let turnTimeoutSec = 30;
   let currentBattleNumber = 1;
   let currentEntryFee = 0;
+  let currentRuleVariant = "freestyle";
+  let currentSeriesTargetWins = 1;
+  let rematchVotes = {}; // { [playerId]: { id, name, swapSeats } }
   let roomJoinedAt = 0;
   let sessionScores = {}; // { [symbol]: { symbol, name, wins } }
   let lastScoredBattleNumber = 0;
@@ -65,6 +68,7 @@
   let onGameStartCallback = null;
   let onRemoteMoveCallback = null;
   let onRemoteNextBattleCallback = null;
+  let onRematchVoteCallback = null;
   let onRoomLeaveCallback = null;
   let onStatusMessageCallback = null;
   let onStateSyncCallback = null;
@@ -362,6 +366,8 @@
       isPublic: Boolean(isRoomPublic),
       entryFee: currentEntryFee || 0,
       turnTimeoutSec,
+      ruleVariant: currentRuleVariant || "freestyle",
+      seriesTargetWins: currentSeriesTargetWins || 1,
       status: inGame ? "playing" : "waiting",
       battleNumber: currentBattleNumber || 1,
       playerCount: filledCount,
@@ -743,6 +749,17 @@
     if (opts.turnTimeoutSec !== undefined) {
       turnTimeoutSec = normalizeTurnTimeoutSec(opts.turnTimeoutSec);
     }
+    if (opts.ruleVariant) {
+      currentRuleVariant = String(opts.ruleVariant);
+    } else {
+      currentRuleVariant = "freestyle";
+    }
+    if (opts.seriesTargetWins !== undefined) {
+      currentSeriesTargetWins = Math.max(1, Math.min(5, Number(opts.seriesTargetWins) || 1));
+    } else {
+      currentSeriesTargetWins = 1;
+    }
+    rematchVotes = {};
     roomJoinedAt = Date.now();
     isRoomHost = true;
     hostPlayerId = myPlayerId;
@@ -810,6 +827,7 @@
     myAssignedSlot = -1;
     myRole = "spectator";
     sessionScores = {};
+    rematchVotes = {};
     lastScoredBattleNumber = 0;
     roomActivityLog = [];
     pendingRequests = [];
@@ -834,7 +852,10 @@
         roomName: currentRoomName,
         entryFee: currentEntryFee || 0,
         turnTimeoutSec,
+        ruleVariant: currentRuleVariant,
+        seriesTargetWins: currentSeriesTargetWins,
         sessionScores,
+        rematchVotes,
         hostId: hostPlayerId || myPlayerId,
         spectators,
         targetId: targetRequesterId || null
@@ -843,12 +864,12 @@
   }
 
   function recomputeMyRoleAndSlot() {
+    const idx = roomSlots.findIndex(s => s.type === "human" && s.id === myPlayerId);
     if (isRoomHost) {
       myRole = "host";
-      myAssignedSlot = 0;
+      myAssignedSlot = idx !== -1 ? idx : 0;
       return;
     }
-    const idx = roomSlots.findIndex(s => s.type === "human" && s.id === myPlayerId);
     if (idx !== -1) {
       myAssignedSlot = idx;
       myRole = "player";
@@ -1074,7 +1095,10 @@
       if (payload.roomName) currentRoomName = payload.roomName;
       if (payload.entryFee !== undefined) currentEntryFee = Math.max(0, Number(payload.entryFee) || 0);
       if (payload.turnTimeoutSec !== undefined) turnTimeoutSec = normalizeTurnTimeoutSec(payload.turnTimeoutSec);
+      if (payload.ruleVariant) currentRuleVariant = String(payload.ruleVariant);
+      if (payload.seriesTargetWins !== undefined) currentSeriesTargetWins = Math.max(1, Number(payload.seriesTargetWins) || 1);
       if (payload.sessionScores && typeof payload.sessionScores === "object") sessionScores = payload.sessionScores;
+      if (payload.rematchVotes && typeof payload.rematchVotes === "object") rematchVotes = payload.rematchVotes;
       if (Array.isArray(payload.spectators)) spectators = payload.spectators;
       inGame = true;
       recomputeMyRoleAndSlot();
@@ -1122,6 +1146,8 @@
       if (payload?.isPublic !== undefined) isRoomPublic = Boolean(payload.isPublic);
       if (payload?.entryFee !== undefined) currentEntryFee = Math.max(0, Number(payload.entryFee) || 0);
       if (payload?.turnTimeoutSec !== undefined) turnTimeoutSec = normalizeTurnTimeoutSec(payload.turnTimeoutSec);
+      if (payload?.ruleVariant) currentRuleVariant = String(payload.ruleVariant);
+      if (payload?.seriesTargetWins !== undefined) currentSeriesTargetWins = Math.max(1, Number(payload.seriesTargetWins) || 1);
       if (payload?.sessionScores && typeof payload.sessionScores === "object") sessionScores = payload.sessionScores;
       if (!isRoomHost) {
         if (Array.isArray(payload?.slots)) {
@@ -1137,11 +1163,14 @@
 
     currentChannel.on("broadcast", { event: "game_start" }, ({ payload }) => {
       inGame = true;
+      rematchVotes = {};
       currentBattleNumber = payload?.battleNumber || 1;
       if (payload?.hostId) hostPlayerId = payload.hostId;
       if (payload?.roomName) currentRoomName = payload.roomName;
       if (payload?.entryFee !== undefined) currentEntryFee = Math.max(0, Number(payload.entryFee) || 0);
       if (payload?.turnTimeoutSec !== undefined) turnTimeoutSec = normalizeTurnTimeoutSec(payload.turnTimeoutSec);
+      if (payload?.ruleVariant) currentRuleVariant = String(payload.ruleVariant);
+      if (payload?.seriesTargetWins !== undefined) currentSeriesTargetWins = Math.max(1, Number(payload.seriesTargetWins) || 1);
       if (payload?.sessionScores && typeof payload.sessionScores === "object") sessionScores = payload.sessionScores;
       if (Array.isArray(payload?.slots)) roomSlots = payload.slots;
       if (Array.isArray(payload?.spectators)) spectators = payload.spectators;
@@ -1161,8 +1190,27 @@
       if (onEmoteCallback && payload) onEmoteCallback(payload);
     });
 
+    currentChannel.on("broadcast", { event: "rematch_vote" }, ({ payload }) => {
+      if (!payload || !payload.voterId) return;
+      rematchVotes[payload.voterId] = {
+        id: payload.voterId,
+        name: payload.voterName || "Player",
+        swapSeats: Boolean(payload.swapSeats)
+      };
+      pushActivityLog(`${payload.voterName || "Player"} voted for a rematch${payload.swapSeats ? " (Swap Seats)" : ""}.`, "battle");
+      if (onRematchVoteCallback) onRematchVoteCallback({ votes: Object.assign({}, rematchVotes), latest: payload });
+      if (onLobbyChangeCallback) onLobbyChangeCallback(getLobbyState());
+    });
+
     currentChannel.on("broadcast", { event: "game_next" }, ({ payload }) => {
+      rematchVotes = {};
       currentBattleNumber = payload?.battleNumber || (currentBattleNumber + 1);
+      if (Array.isArray(payload?.slots)) {
+        roomSlots = payload.slots;
+        recomputeMyRoleAndSlot();
+      }
+      if (payload?.ruleVariant) currentRuleVariant = String(payload.ruleVariant);
+      if (payload?.seriesTargetWins !== undefined) currentSeriesTargetWins = Math.max(1, Number(payload.seriesTargetWins) || 1);
       pushActivityLog(`Battle #${currentBattleNumber} started.`, "battle");
       if (onRemoteNextBattleCallback) onRemoteNextBattleCallback(payload);
     });
@@ -1458,7 +1506,7 @@
   // ───────────────────────────────────────────────────────────────────────────
   // Dynamic Slot & Room Customization (Host)
   // ───────────────────────────────────────────────────────────────────────────
-  function setRoomMeta({ roomName, isPublic, entryFee, turnTimeoutSec: nextTimeout } = {}) {
+  function setRoomMeta({ roomName, isPublic, entryFee, turnTimeoutSec: nextTimeout, ruleVariant, seriesTargetWins } = {}) {
     if (!isRoomHost) return;
     if (roomName !== undefined && String(roomName).trim()) {
       currentRoomName = String(roomName).trim().substring(0, 32);
@@ -1471,6 +1519,12 @@
     }
     if (nextTimeout !== undefined && !inGame) {
       turnTimeoutSec = normalizeTurnTimeoutSec(nextTimeout);
+    }
+    if (ruleVariant !== undefined && !inGame) {
+      currentRuleVariant = String(ruleVariant);
+    }
+    if (seriesTargetWins !== undefined && !inGame) {
+      currentSeriesTargetWins = Math.max(1, Math.min(5, Number(seriesTargetWins) || 1));
     }
     broadcastLobbyUpdate();
     if (onLobbyChangeCallback) onLobbyChangeCallback(getLobbyState());
@@ -1824,6 +1878,8 @@
         isPublic: isRoomPublic,
         entryFee: currentEntryFee || 0,
         turnTimeoutSec,
+        ruleVariant: currentRuleVariant,
+        seriesTargetWins: currentSeriesTargetWins,
         sessionScores,
         slots: roomSlots,
         spectators,
@@ -1872,10 +1928,11 @@
       isLocalHuman: (s.type === "human" && s.id === myPlayerId),
       isAi: s.type === "ai",
       playerId: s.id,
-      isHost: idx === 0
+      isHost: s.id === myPlayerId
     }));
 
     inGame = true;
+    rematchVotes = {};
     currentBattleNumber = 1;
     hostPlayerId = myPlayerId;
     pushActivityLog("Battle #1 started.", "battle");
@@ -1885,6 +1942,8 @@
       roomName: currentRoomName,
       entryFee: currentEntryFee || 0,
       turnTimeoutSec,
+      ruleVariant: currentRuleVariant,
+      seriesTargetWins: currentSeriesTargetWins,
       sessionScores,
       hostId: myPlayerId,
       roster,
@@ -1944,18 +2003,69 @@
     }
   }
 
-  function sendNextBattle(battleNum) {
+  function voteRematch({ swapSeats = false } = {}) {
+    rematchVotes[myPlayerId] = {
+      id: myPlayerId,
+      name: myPlayerName,
+      swapSeats: Boolean(swapSeats)
+    };
+    pushActivityLog(`${myPlayerName} voted for a rematch${swapSeats ? " (Swap Seats)" : ""}.`, "battle");
+    if (currentChannel) {
+      try {
+        currentChannel.send({
+          type: "broadcast",
+          event: "rematch_vote",
+          payload: {
+            voterId: myPlayerId,
+            voterName: myPlayerName,
+            swapSeats: Boolean(swapSeats)
+          }
+        });
+      } catch {}
+    }
+    if (onRematchVoteCallback) {
+      onRematchVoteCallback({ votes: Object.assign({}, rematchVotes), latest: { voterId: myPlayerId, voterName: myPlayerName, swapSeats: Boolean(swapSeats) } });
+    }
+    if (onLobbyChangeCallback) onLobbyChangeCallback(getLobbyState());
+    return Object.assign({}, rematchVotes);
+  }
+
+  function sendNextBattle(battleNum, options = {}) {
     if (!currentChannel || !isRoomHost) return;
+    rematchVotes = {};
     currentBattleNumber = battleNum;
-    pushActivityLog(`Battle #${battleNum} started.`, "battle");
+    if (options.swapSeats && roomSlots.length >= 2) {
+      const first = roomSlots.shift();
+      roomSlots.push(first);
+      recomputeMyRoleAndSlot();
+    }
+    const symbols = ["A", "B", "C", "D"];
+    const activeSlots = roomSlots.filter(s => s.type === "human" || s.type === "ai");
+    const roster = activeSlots.map((s, idx) => ({
+      slotIndex: idx,
+      type: s.type === "human" ? "human" : s.model,
+      name: s.name,
+      symbol: symbols[idx],
+      isLocalHuman: (s.type === "human" && s.id === myPlayerId),
+      isAi: s.type === "ai",
+      playerId: s.id,
+      isHost: s.id === myPlayerId
+    }));
+    pushActivityLog(`Battle #${battleNum} started${options.swapSeats ? " (Seats Swapped)" : ""}.`, "battle");
     currentChannel.send({
       type: "broadcast",
       event: "game_next",
       payload: {
-        battleNumber: battleNum
+        battleNumber: battleNum,
+        swapSeats: Boolean(options.swapSeats),
+        slots: roomSlots,
+        roster,
+        ruleVariant: currentRuleVariant,
+        seriesTargetWins: currentSeriesTargetWins
       }
     });
     publishRoomToGlobalLobby();
+    return roster;
   }
 
   function leaveRoom(userInitiated = true) {
@@ -1995,6 +2105,7 @@
     currentRoomId = null;
     currentRoomName = "";
     currentEntryFee = 0;
+    rematchVotes = {};
     sessionScores = {};
     lastScoredBattleNumber = 0;
     roomActivityLog = [];
@@ -2018,6 +2129,9 @@
       isPublic: isRoomPublic,
       entryFee: currentEntryFee || 0,
       turnTimeoutSec,
+      ruleVariant: currentRuleVariant,
+      seriesTargetWins: currentSeriesTargetWins,
+      rematchVotes: Object.assign({}, rematchVotes),
       sessionScores: getSessionScores(),
       activityLog: roomActivityLog.slice(),
       isHost: isRoomHost,
@@ -2042,6 +2156,7 @@
     if (callbacks.onGameStart) onGameStartCallback = callbacks.onGameStart;
     if (callbacks.onRemoteMove) onRemoteMoveCallback = callbacks.onRemoteMove;
     if (callbacks.onRemoteNextBattle) onRemoteNextBattleCallback = callbacks.onRemoteNextBattle;
+    if (callbacks.onRematchVote) onRematchVoteCallback = callbacks.onRematchVote;
     if (callbacks.onRoomLeave) onRoomLeaveCallback = callbacks.onRoomLeave;
     if (callbacks.onStatusMessage) onStatusMessageCallback = callbacks.onStatusMessage;
     if (callbacks.onStateSync) onStateSyncCallback = callbacks.onStateSync;
@@ -2107,6 +2222,7 @@
     startGame,
     sendMove,
     sendEmote,
+    voteRematch,
     sendNextBattle,
     requestStateSync,
     broadcastGameStateIfActive,
@@ -2124,6 +2240,11 @@
     get roomName() { return currentRoomName; },
     get isPublic() { return isRoomPublic; },
     get entryFee() { return currentEntryFee; },
+    get ruleVariant() { return currentRuleVariant; },
+    set ruleVariant(v) { currentRuleVariant = String(v || "freestyle"); },
+    get seriesTargetWins() { return currentSeriesTargetWins; },
+    set seriesTargetWins(v) { currentSeriesTargetWins = Math.max(1, Math.min(5, Number(v) || 1)); },
+    get rematchVotes() { return Object.assign({}, rematchVotes); },
     get inGame() { return inGame; },
     get myId() { return myPlayerId; },
     get myAssignedSlot() { return myAssignedSlot; },

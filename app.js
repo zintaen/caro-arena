@@ -174,18 +174,26 @@ let lastWasHumanTurn = false;
 
 let clientEngine = null;
 let isServerAvailable = false;
+let useClientEngineOverride = false;
+let currentRuleVariant = "freestyle";
+let currentSeriesTarget = 1;
+let _seriesChampionRecordedForGameId = null;
+let _puzzleSolvedRecordedForGameId = null;
 let confettiEngine = null;
 
 function showArenaToast(message) {
   const container = document.getElementById("arena-toast-container");
   if (!container || !message) return;
+  while (container.children.length >= 1) {
+    container.firstElementChild.remove();
+  }
   const toast = document.createElement("div");
   toast.className = "arena-toast";
   toast.textContent = message;
   container.appendChild(toast);
   setTimeout(() => {
     toast.remove();
-  }, 3600);
+  }, 2400);
 }
 
 function showLobbyHomeScreen() {
@@ -196,7 +204,7 @@ function showLobbyHomeScreen() {
   if (!isMultiplayerActive && clientEngine?.isAutoPlaying) {
     clientEngine.toggleAutoPlay(false, 0.01);
   }
-  if (!isMultiplayerActive && useBackend() && gameState?.is_auto_playing) {
+  if (!isMultiplayerActive && isServerAvailable && gameState?.is_auto_playing) {
     apiFetch("/api/battle/auto-play", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -221,6 +229,12 @@ function showLobbyHomeScreen() {
   if (typeof renderLobbyHomeWalletAndThemes === "function") {
     renderLobbyHomeWalletAndThemes();
   }
+  if (typeof renderCareerStats === "function") {
+    renderCareerStats();
+  }
+  if (typeof renderDailyPuzzleBadge === "function") {
+    renderDailyPuzzleBadge();
+  }
 }
 
 function enterArenaBattleground() {
@@ -240,7 +254,7 @@ function enterArenaBattleground() {
 }
 
 function useBackend() {
-  return isServerAvailable && !isMultiplayerActive;
+  return isServerAvailable && !isMultiplayerActive && !useClientEngineOverride && currentRuleVariant === "freestyle" && currentSeriesTarget <= 1;
 }
 
 let backendSessionId = "";
@@ -308,6 +322,14 @@ window.CaroSandboxConfig = {
 // ─────────────────────────────────────────
 document.addEventListener("DOMContentLoaded", async () => {
   loadSandboxConfig();
+  if (window.CaroEngine && !clientEngine) {
+    clientEngine = new window.CaroEngine.ClientGameManager();
+    clientEngine.onStateChange = (state) => {
+      if (!useBackend()) handleStateUpdate(state);
+    };
+    gameState = clientEngine.getState();
+    rebuildSymbolMap();
+  }
   setupEventListeners();
   if (typeof initMultiplayerIntegration === "function") {
     initMultiplayerIntegration();
@@ -317,6 +339,16 @@ document.addEventListener("DOMContentLoaded", async () => {
 
   const confCanvas = document.getElementById("confetti-canvas");
   if (confCanvas) confettiEngine = new ConfettiEngine(confCanvas);
+
+  const urlParams = new URLSearchParams(window.location.search);
+  const hasSavedMpRoom = (() => {
+    try { return Boolean(sessionStorage.getItem("caro_active_room")); } catch { return false; }
+  })();
+
+  // Default Start Page is the Lobby Start Screen unless already in a multiplayer room or URL deep-link
+  if (!hasSavedMpRoom && !urlParams.get("room") && !urlParams.get("replay_data") && !urlParams.get("replay") && !urlParams.get("autoplay") && !isMultiplayerActive) {
+    showLobbyHomeScreen();
+  }
 
   // Check if backend API server is available (only probe on localhost / 127.0.0.1 to avoid 404 on static hosts like GitHub Pages)
   const isLocalHost = window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1";
@@ -336,18 +368,19 @@ document.addEventListener("DOMContentLoaded", async () => {
 
   if (isServerAvailable) {
     connectWebSocket();
-  } else if (window.CaroEngine) {
+  } else {
     console.log("Caro Arena: Running in standalone In-Browser Engine mode (GitHub Pages compatible)");
-    clientEngine = new window.CaroEngine.ClientGameManager();
-    clientEngine.onStateChange = (state) => handleStateUpdate(state);
   }
 
-  await fetchState();
   await fetchLeaderboard();
   await fetchBattleHistory();
   updateRosterCount();
 
-  const urlParams = new URLSearchParams(window.location.search);
+  // Only overwrite gameState from initial fetch if the user hasn't already started a match or left the lobby
+  if (isOnLobbyStartScreen || useBackend()) {
+    await fetchState();
+  }
+
   const replayDataParam = urlParams.get("replay_data");
   if (replayDataParam) {
     enterArenaBattleground();
@@ -366,22 +399,12 @@ document.addEventListener("DOMContentLoaded", async () => {
     return;
   }
 
-  // Ensure initial game matches checked roster (4 AI models, 0 Human)
-  const hasSavedMpRoom = (() => {
-    try { return Boolean(sessionStorage.getItem("caro_active_room")); } catch { return false; }
-  })();
+  // Ensure initial game matches checked roster (only if still on lobby or untouched initial state)
   const selected = getSelectedRoster();
   const currentTypes = (gameState?.players || []).map(p => p.type).sort();
   const selectedSorted = [...selected].sort();
-  if (!hasSavedMpRoom && !isMultiplayerActive && gameState && (gameState.board?.move_count === 0 || gameState.status === "ready") && JSON.stringify(currentTypes) !== JSON.stringify(selectedSorted)) {
+  if (isOnLobbyStartScreen && !hasSavedMpRoom && !isMultiplayerActive && gameState && (gameState.board?.move_count === 0 || gameState.status === "ready") && JSON.stringify(currentTypes) !== JSON.stringify(selectedSorted)) {
     await newBattle();
-  }
-
-  // Default Start Page is the Lobby Start Screen unless already in a multiplayer room
-  if (!hasSavedMpRoom && !urlParams.get("room") && !isMultiplayerActive) {
-    showLobbyHomeScreen();
-  } else {
-    enterArenaBattleground();
   }
 });
 
@@ -420,7 +443,7 @@ function connectWebSocket() {
     };
     socket.onmessage = (e) => {
       lastWsMessageAt = Date.now();
-      if (isMultiplayerActive) return;
+      if (!useBackend()) return;
       try { handleStateUpdate(JSON.parse(e.data)); } catch {}
     };
     socket.onclose = () => {
@@ -579,7 +602,7 @@ function handleStateUpdate(data) {
   }
   lastWasHumanTurn = isHumanTurn;
 
-  if (data.status === "finished" && !wasFinished) {
+  if (data.status === "finished" && (!wasFinished || isNewGame)) {
     fetchLeaderboard();
     fetchBattleHistory();
     try { window.CaroAudio?.playChampionshipFanfare?.(); } catch {}
@@ -597,8 +620,19 @@ function handleStateUpdate(data) {
       updateMultiplayerHudBadges();
     }
 
-    // Award Cranes for 1st-place victory when local human wins
-    if (!wasInitialFetch && window.CaroAuth?.adjustCranes && winSym) {
+    // Daily Puzzle completion reward
+    if (data.puzzle && data.puzzle_solved && _puzzleSolvedRecordedForGameId !== data.game_id) {
+      _puzzleSolvedRecordedForGameId = data.game_id;
+      const pStats = window.CaroEngine?.ClientStorage?.recordPuzzleSolved?.(data.puzzle.id);
+      if (window.CaroAuth?.adjustCranes) {
+        window.CaroAuth.adjustCranes(15, "daily_puzzle_solved").then(() => {
+          showArenaToast(`Puzzle solved: ${data.puzzle.title} — +15 Cranes (Streak: ${pStats?.streak || 1})`);
+          if (typeof renderLobbyHomeWalletAndThemes === "function") renderLobbyHomeWalletAndThemes();
+        }).catch(() => {});
+      }
+      if (typeof renderDailyPuzzleBadge === "function") renderDailyPuzzleBadge();
+    } else if (!wasInitialFetch && window.CaroAuth?.adjustCranes && winSym) {
+      // Award Cranes for 1st-place victory when local human wins
       if (isMultiplayerActive && myMultiplayerSymbol && winSym === myMultiplayerSymbol) {
         const potBonus = Number(currentMatchWagerPot) || 0;
         const totalReward = 25 + potBonus;
@@ -612,6 +646,25 @@ function handleStateUpdate(data) {
           if (typeof renderLobbyHomeWalletAndThemes === "function") renderLobbyHomeWalletAndThemes();
         }).catch(() => {});
       }
+    }
+
+    // Series Champion bonus reward
+    if (data.series?.series_champion && _seriesChampionRecordedForGameId !== data.game_id) {
+      _seriesChampionRecordedForGameId = data.game_id;
+      const champSym = data.series.series_champion;
+      const champMeta = getPlayerMeta(champSym);
+      if (symbolMap[champSym]?.type === "human" && window.CaroAuth?.adjustCranes) {
+        window.CaroAuth.adjustCranes(15, "series_champion_bonus").then(() => {
+          showArenaToast(`🏆 Series Champion: ${champMeta.name}! +15 bonus Cranes`);
+          if (typeof renderLobbyHomeWalletAndThemes === "function") renderLobbyHomeWalletAndThemes();
+        }).catch(() => {});
+      } else {
+        showArenaToast(`🏆 Series Champion: ${champMeta.name}!`);
+      }
+    }
+
+    if (typeof renderCareerStats === "function") {
+      renderCareerStats();
     }
   }
 }
@@ -821,6 +874,61 @@ function setupEventListeners() {
     });
   }
 
+  // Synthesized Sound Pack selector in board footer (Feature 8)
+  const soundPackSelect = document.getElementById("select-sound-pack");
+  if (soundPackSelect && window.CaroAudio) {
+    soundPackSelect.value = window.CaroAudio.getSoundPack?.() || "wood";
+    soundPackSelect.addEventListener("change", (e) => {
+      const pack = window.CaroAudio.setSoundPack?.(e.target.value) || e.target.value;
+      try {
+        window.CaroAudio.ensureContext?.();
+        window.CaroAudio.playStoneClick?.("human");
+      } catch {}
+      const label = window.CaroAudio.SOUND_PACKS?.[pack]?.name || pack;
+      showArenaToast(`Sound pack: ${label}`);
+    });
+  }
+
+  // Rule Variant & Best-of-N Series selectors in Arena sidebar (Features 2 & 3)
+  const ruleSelect = document.getElementById("select-rule-variant");
+  if (ruleSelect) {
+    ruleSelect.value = currentRuleVariant;
+    ruleSelect.addEventListener("change", (e) => {
+      setRuleVariantUI(e.target.value, true);
+    });
+  }
+
+  const seriesSelect = document.getElementById("select-series-target");
+  if (seriesSelect) {
+    seriesSelect.value = String(currentSeriesTarget);
+    seriesSelect.addEventListener("change", (e) => {
+      setSeriesTargetUI(Number(e.target.value) || 1, true);
+    });
+  }
+
+  // Keyboard Shortcuts Modal (Feature 10)
+  const shortcutsModal = document.getElementById("modal-shortcuts");
+  const openShortcutsBtn = document.getElementById("btn-open-shortcuts");
+  const closeShortcutsBtn = document.getElementById("btn-close-shortcuts-modal");
+  openShortcutsBtn?.addEventListener("click", () => {
+    if (shortcutsModal) shortcutsModal.style.display = "flex";
+  });
+  closeShortcutsBtn?.addEventListener("click", () => {
+    if (shortcutsModal) shortcutsModal.style.display = "none";
+  });
+  shortcutsModal?.addEventListener("click", (e) => {
+    if (e.target.id === "modal-shortcuts") shortcutsModal.style.display = "none";
+  });
+
+  // Copy Move Coordinates button (Feature 10)
+  document.getElementById("btn-copy-moves")?.addEventListener("click", copyMovesCoordinateNotation);
+
+  // Post-Match Rematch Vote & Next Puzzle buttons (Features 4 & 7)
+  document.getElementById("btn-rematch-vote")?.addEventListener("click", handleRematchAction);
+  document.getElementById("btn-next-puzzle")?.addEventListener("click", () => {
+    launchNextDailyPuzzle();
+  });
+
   document.getElementById("btn-zoom-in")?.addEventListener("click", () => zoomCamera(1.2));
   document.getElementById("btn-zoom-out")?.addEventListener("click", () => zoomCamera(0.833));
   document.getElementById("btn-recenter")?.addEventListener("click", recenterCamera);
@@ -905,12 +1013,30 @@ function setupEventListeners() {
     cb.addEventListener("change", onRosterChange);
   });
 
-  // Keyboard shortcuts (Replay & Accessible Board Navigation)
+  // Keyboard shortcuts (Replay, Shortcuts Modal, & Accessible Board Navigation)
   window.addEventListener("keydown", e => {
     const tag = (e.target?.tagName || "").toUpperCase();
     if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT" || e.target?.isContentEditable) {
       return;
     }
+
+    // ? key toggles Keyboard Shortcuts Modal anywhere outside inputs
+    if (e.key === "?") {
+      e.preventDefault();
+      if (shortcutsModal) {
+        const isVis = shortcutsModal.style.display === "flex";
+        shortcutsModal.style.display = isVis ? "none" : "flex";
+      }
+      return;
+    }
+
+    // Escape closes Shortcuts Modal if open
+    if (e.key === "Escape" && shortcutsModal && shortcutsModal.style.display === "flex") {
+      e.preventDefault();
+      shortcutsModal.style.display = "none";
+      return;
+    }
+
     // Ignore if any modal is open or on Lobby Start Screen
     const openModal = document.querySelector('.modal-backdrop[style*="display: flex"]');
     if (openModal || isOnLobbyStartScreen) return;
@@ -919,6 +1045,22 @@ function setupEventListeners() {
       if (e.key === "ArrowLeft") { e.preventDefault(); stepReplay(-1); }
       else if (e.key === "ArrowRight") { e.preventDefault(); stepReplay(1); }
       else if (e.key === "Escape") { e.preventDefault(); exitReplayMode(); }
+      return;
+    }
+
+    if (e.key === "z" || e.key === "Z" || e.key === "u" || e.key === "U") {
+      e.preventDefault();
+      undoHumanMove();
+      return;
+    }
+    if (e.key === "m" || e.key === "M") {
+      e.preventDefault();
+      document.getElementById("btn-sound")?.click();
+      return;
+    }
+    if (e.key === "f" || e.key === "F") {
+      e.preventDefault();
+      document.getElementById("btn-fullscreen")?.click();
       return;
     }
 
@@ -1174,16 +1316,19 @@ async function toggleAutoPlay() {
   }
 }
 
-async function newBattle() {
+async function newBattle(options = {}) {
   try { window.CaroAudio?.ensureContext?.(); } catch {}
   if (isReplayMode) exitReplayMode();
   if (isMultiplayerActive) {
     if (window.CaroMultiplayer?.isHost) {
-      startNextMultiplayerBattle();
+      startNextMultiplayerBattle(options);
     }
     return;
   }
-  const selected = getSelectedRoster();
+  useClientEngineOverride = Boolean(options.keepOverride);
+  const selected = Array.isArray(options.customPlayerOrder) && options.customPlayerOrder.length >= 2
+    ? options.customPlayerOrder
+    : getSelectedRoster();
   if (selected.length < 2) return;
 
   if (useBackend()) {
@@ -1201,7 +1346,17 @@ async function newBattle() {
       }
     } catch {}
   } else if (clientEngine) {
-    const nextState = clientEngine.newGame(selected);
+    if (isServerAvailable && gameState?.is_auto_playing) {
+      apiFetch("/api/battle/auto-play", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ enabled: false, delay_sec: 0.01, non_stop: false })
+      }).catch(() => {});
+    }
+    clientEngine.setRuleVariant(currentRuleVariant);
+    clientEngine.setSeriesTarget(currentSeriesTarget);
+    const shouldShuffle = !(Array.isArray(options.customPlayerOrder) && options.customPlayerOrder.length >= 2);
+    const nextState = clientEngine.newGame(selected, shouldShuffle);
     userInteractedWithCamera = false;
     autoScaleCamera(true);
     handleStateUpdate(nextState);
@@ -1217,6 +1372,7 @@ async function resetAll() {
     } else if (window.CaroEngine) {
       window.CaroEngine.ClientStorage.clearHistory();
       if (clientEngine) {
+        clientEngine.resetSeries();
         if (isMultiplayerActive && multiplayerRoster.length >= 2) {
           const playerTypes = multiplayerRoster.map(p => p.type);
           clientEngine.battleNumber = 1;
@@ -1302,11 +1458,49 @@ async function undoHumanMove() {
 // ─────────────────────────────────────────
 // UI Updates
 // ─────────────────────────────────────────
+function normalizeMovePattern(rawPat) {
+  if (!rawPat) return null;
+  if (typeof rawPat === "object" && rawPat.label) return rawPat;
+  const label = String(rawPat);
+  let tier = "info";
+  if (label === "5-in-a-Row") tier = "win";
+  else if (label === "4×3 Fork" || label === "Open-4" || label === "Double-3 Fork") tier = "critical";
+  else if (label === "Block-4") tier = "defense";
+  return { label, tier };
+}
+
+function ensureMovesHavePatterns(moves, players, ruleVariant = "freestyle") {
+  if (!Array.isArray(moves) || moves.length === 0) return;
+  if (!window.CaroEngine?.TacticalEvaluator?.detectMovePattern || !window.CaroEngine?.CaroBoard) return;
+  const needsCompute = moves.some(m => !m.metadata || m.metadata.pattern === undefined || typeof m.metadata.pattern === "string");
+  if (!needsCompute) return;
+  const symbols = (players || []).map(p => p.symbol);
+  const tempBoard = new window.CaroEngine.CaroBoard(symbols.length ? symbols : ["A", "B", "C", "D"], ruleVariant);
+  for (const m of moves) {
+    m.metadata = m.metadata || {};
+    if (m.metadata.pattern === undefined) {
+      const raw = window.CaroEngine.TacticalEvaluator.detectMovePattern(tempBoard, m.row, m.col, m.player);
+      m.metadata.pattern = normalizeMovePattern(raw);
+    } else if (typeof m.metadata.pattern === "string") {
+      m.metadata.pattern = normalizeMovePattern(m.metadata.pattern);
+    }
+    tempBoard.makeMove(m.row, m.col, m.player, m.metadata);
+  }
+}
+
 function updateUI() {
   if (!gameState) return;
+  const moves = isReplayMode ? replayMoves.slice(0, replayIndex) : (gameState?.board?.moves || []);
+  const players = isReplayMode ? replayPlayers : (gameState?.players || []);
+  const ruleVariant = gameState?.board?.rule_variant || currentRuleVariant || "freestyle";
+  ensureMovesHavePatterns(moves, players, ruleVariant);
+
   updateTurnBanner();
+  updateSeriesAndRuleBadge();
   updateAutoPlayButton();
   updateHumanTurnBar();
+  updateRematchBar();
+  renderEvalPressureBar();
   renderPlayerLegend();
   renderBattleRoster();
   renderBoard();
@@ -1412,9 +1606,13 @@ function updateHumanTurnBar() {
     undoBtn.disabled = humanMovesCount === 0;
   }
   if (promptText) {
-    promptText.textContent = canUndoAfterFinish
-      ? "Match finished — Undo your last move to continue playing"
-      : "Your Turn — Click any empty intersection to place your stone";
+    if (gameState?.puzzle && gameState?.status !== "finished") {
+      promptText.textContent = `Daily Puzzle: ${gameState.puzzle.title} — ${gameState.puzzle.objective}`;
+    } else {
+      promptText.textContent = canUndoAfterFinish
+        ? "Match finished — Undo your last move to continue playing"
+        : "Your Turn — Click any empty intersection to place your stone";
+    }
   }
 
   bar.classList.toggle("active", showBar);
@@ -1426,9 +1624,21 @@ function updateTurnBanner() {
   const text = document.getElementById("turn-text");
   if (!dot || !text) return;
 
+  const activeMoves = isReplayMode ? replayMoves.slice(0, replayIndex) : (gameState?.board?.moves || []);
+  const lastMove = activeMoves.length > 0 ? activeMoves[activeMoves.length - 1] : null;
+  const lastPat = normalizeMovePattern(lastMove?.metadata?.pattern);
+  const lastPatternLabel = lastPat?.label ? ` · ${lastPat.label}` : "";
+
   if (isReplayMode) {
     dot.style.background = "#94a3b8";
-    text.textContent = `Replay ${replayIndex} / ${replayMoves.length}`;
+    text.textContent = `Replay ${replayIndex} / ${replayMoves.length}${lastPatternLabel}`;
+    return;
+  }
+
+  if (gameState.puzzle && gameState.status !== "finished") {
+    const curr = getPlayerMeta(gameState.current_player?.symbol);
+    dot.style.background = curr.color || "#d97706";
+    text.textContent = `Puzzle: ${gameState.puzzle.title} · Your turn!`;
     return;
   }
 
@@ -1451,13 +1661,13 @@ function updateTurnBanner() {
     dot.style.background = curr.color;
     const moveNum = (gameState.board?.move_count || 0) + 1;
     if (myMultiplayerSymbol && currSymbol === myMultiplayerSymbol) {
-      text.textContent = `Battle #${bn} · Turn ${moveNum} · Your Turn!`;
+      text.textContent = `Battle #${bn} · Turn ${moveNum} · Your Turn!${lastPatternLabel}`;
       updateMultiplayerHudStatus(`Your turn! Click empty cell to place stone`);
     } else if (!myMultiplayerSymbol) {
-      text.textContent = `Battle #${bn} · Turn ${moveNum} · Spectating (${curr.name})`;
+      text.textContent = `Battle #${bn} · Turn ${moveNum} · Spectating (${curr.name})${lastPatternLabel}`;
       updateMultiplayerHudStatus(`Spectating · ${curr.name}'s turn`);
     } else if (curr.type === "human") {
-      text.textContent = `Battle #${bn} · Turn ${moveNum} · ${curr.name}'s turn`;
+      text.textContent = `Battle #${bn} · Turn ${moveNum} · ${curr.name}'s turn${lastPatternLabel}`;
       updateMultiplayerHudStatus(`Waiting for ${curr.name}...`);
     } else {
       text.textContent = `Battle #${bn} · Turn ${moveNum} · ${curr.name} (AI) thinking...`;
@@ -1466,7 +1676,7 @@ function updateTurnBanner() {
   } else if (gameState.is_human_turn) {
     const curr = getPlayerMeta(gameState.current_player?.symbol);
     dot.style.background = curr.color || "#d97706";
-    text.textContent = `Battle #${bn} · Your turn!`;
+    text.textContent = `Battle #${bn} · Your turn!${lastPatternLabel}`;
   } else if (gameState.is_thinking) {
     const curr = getPlayerMeta(gameState.current_player?.symbol);
     dot.style.background = curr.color;
@@ -1475,7 +1685,7 @@ function updateTurnBanner() {
     const curr = getPlayerMeta(gameState.current_player?.symbol);
     dot.style.background = curr.color;
     const moveNum = (gameState.board?.move_count || 0) + 1;
-    text.textContent = `Battle #${bn} · Turn ${moveNum} · ${curr.name}`;
+    text.textContent = `Battle #${bn} · Turn ${moveNum} · ${curr.name}${lastPatternLabel}`;
   }
 }
 
@@ -1683,6 +1893,9 @@ function renderLobbyHomeRecentBattles(battles) {
 function renderBattleHistory(battles) {
   cachedRecentBattles = Array.isArray(battles) ? battles : [];
   renderLobbyHomeRecentBattles(cachedRecentBattles);
+  if (typeof renderCareerStats === "function") {
+    renderCareerStats();
+  }
   const tbody = document.getElementById("battles-table-body");
   if (!tbody) return;
   if (!battles || battles.length === 0) {
@@ -1725,10 +1938,15 @@ function updateMoveHistory() {
     const meta = getPlayerMeta(m.player);
     const lat = m.metadata?.latency_ms ? `${m.metadata.latency_ms}ms` : "";
     const latestCls = idx === lastIdx ? " is-latest" : "";
+    const pat = normalizeMovePattern(m.metadata?.pattern);
+    const patHtml = (pat && pat.label)
+      ? `<span class="move-pattern-badge tier-${escapeHtml(pat.tier || "info")}">${escapeHtml(pat.label)}</span>`
+      : "";
     return `<li class="move-item${latestCls}" data-row="${escapeHtml(m.row)}" data-col="${escapeHtml(m.col)}" data-move="${escapeHtml(m.move_number)}" data-player="${escapeHtml(m.player)}" tabindex="0" role="button" title="Click to locate move #${escapeHtml(m.move_number)} at (${escapeHtml(m.row)}, ${escapeHtml(m.col)})">
       <span class="mono" style="color: ${escapeHtml(meta.color)}; font-weight: 600;">#${escapeHtml(m.move_number)}</span>
       <span style="font-weight: 600;">${escapeHtml(meta.name)}</span>
       <span class="mono">(${escapeHtml(m.row)}, ${escapeHtml(m.col)})</span>
+      ${patHtml}
       <span class="mono muted" style="margin-left: auto;">${escapeHtml(lat)}</span>
     </li>`;
   }).join("");
@@ -1970,11 +2188,16 @@ function onWheel(e) {
 // ─────────────────────────────────────────
 let _cachedEvalState = { key: null, boardObj: null, heatmap: null, threatLines: null };
 
-function reconstructBoardFromState(state) {
+function reconstructBoardFromState(state, movesOverride = null) {
   if (!window.CaroEngine?.CaroBoard || !state?.board) return null;
-  const symbols = (state.players || []).map(p => p.symbol);
-  const b = new window.CaroEngine.CaroBoard(symbols);
-  for (const m of (state.board.moves || [])) {
+  const srcPlayers = (isReplayMode && replayPlayers.length >= 2) ? replayPlayers : (state.players || []);
+  const symbols = srcPlayers.map(p => p.symbol);
+  const b = new window.CaroEngine.CaroBoard(
+    symbols.length ? symbols : ["A", "B"],
+    state.rule_variant || currentRuleVariant || "freestyle"
+  );
+  const moves = Array.isArray(movesOverride) ? movesOverride : (state.board.moves || []);
+  for (const m of moves) {
     b.makeMove(m.row, m.col, m.player, m.metadata);
   }
   return b;
@@ -1982,12 +2205,14 @@ function reconstructBoardFromState(state) {
 
 function getBoardEvalCache() {
   if (!window.CaroEngine?.TacticalEvaluator || !gameState?.board) return null;
-  const moves = gameState.board.moves || [];
+  const moves = isReplayMode ? replayMoves.slice(0, replayIndex) : (gameState.board.moves || []);
   const lastMove = moves.length ? moves[moves.length - 1] : null;
   const currentSymbol = gameState.board.current_player || "A";
-  const key = `${gameState.game_id || ""}:${moves.length}:${lastMove ? `${lastMove.row},${lastMove.col}` : ""}:${currentSymbol}`;
+  const key = `${gameState.game_id || ""}:${isReplayMode ? "R" + replayIndex : moves.length}:${lastMove ? `${lastMove.row},${lastMove.col}` : ""}:${currentSymbol}`;
   if (_cachedEvalState.key !== key) {
-    const boardObj = (!useBackend() && clientEngine) ? clientEngine.board : reconstructBoardFromState(gameState);
+    const boardObj = (!isReplayMode && !useBackend() && clientEngine)
+      ? clientEngine.board
+      : reconstructBoardFromState(gameState, moves);
     const heatmap = (boardObj && boardObj.stones.size > 0)
       ? window.CaroEngine.TacticalEvaluator.getThreatHeatmap(boardObj, currentSymbol)
       : [];
@@ -3467,12 +3692,409 @@ function downloadBoardSnapshot() {
   return dataUrl;
 }
 
+function playFromReplayState() {
+  const sourceMoves = isReplayMode ? replayMoves.slice(0, replayIndex) : (gameState?.board?.moves || []);
+  const sourcePlayers = (isReplayMode && replayPlayers.length >= 2) ? replayPlayers : (gameState?.players || []);
+  if (!sourcePlayers || sourcePlayers.length < 2) return null;
+
+  if (isServerAvailable && gameState?.is_auto_playing) {
+    apiFetch("/api/battle/auto-play", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ enabled: false, delay_sec: 0.01, non_stop: false })
+    }).catch(() => {});
+  }
+
+  if (!clientEngine && window.CaroEngine) {
+    clientEngine = new window.CaroEngine.ClientGameManager();
+    clientEngine.onStateChange = (state) => {
+      if (!useBackend()) handleStateUpdate(state);
+    };
+  }
+  if (!clientEngine) return null;
+
+  useClientEngineOverride = true;
+  isReplayMode = false;
+  replayMoves = [];
+  replayIndex = 0;
+  replayPlayers = [];
+  replayPlacements = [];
+  highlightedMoveCoord = null;
+
+  const pill = document.getElementById("replay-analysis-pill");
+  if (pill) pill.style.display = "none";
+  const bar = document.getElementById("replay-bar");
+  if (bar) bar.style.display = "none";
+  const autoBtn = document.getElementById("btn-auto");
+  if (autoBtn) autoBtn.disabled = false;
+
+  const branchedState = clientEngine.branchFromMoves(sourcePlayers, sourceMoves, currentRuleVariant);
+
+  // Sync sidebar checkboxes to match branched players
+  const activeTypes = new Set((branchedState.players || []).map(p => p.type));
+  document.querySelectorAll("#roster-config .roster-toggle").forEach(label => {
+    const cb = label.querySelector("input");
+    if (cb) cb.checked = activeTypes.has(label.dataset.model);
+  });
+  updateRosterCount();
+
+  userInteractedWithCamera = false;
+  autoScaleCamera(true);
+  handleStateUpdate(branchedState);
+  showArenaToast(`Branched at move ${sourceMoves.length} — your turn!`);
+  return branchedState;
+}
+
+function copyMovesCoordinateNotation() {
+  const moves = isReplayMode ? replayMoves.slice(0, replayIndex) : (gameState?.board?.moves || []);
+  if (!Array.isArray(moves) || moves.length === 0) {
+    showArenaToast("No moves to copy yet.");
+    window._lastCopiedMovesText = "";
+    return "";
+  }
+  const text = moves.map((m, idx) => `${m.move_number || (idx + 1)}. ${m.player}(${m.row},${m.col})`).join(" ");
+  window._lastCopiedMovesText = text;
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(text).catch(() => {});
+  }
+  const btn = document.getElementById("btn-copy-moves");
+  if (btn) {
+    const orig = btn.textContent;
+    btn.textContent = "Copied";
+    setTimeout(() => { btn.textContent = orig; }, 1800);
+  }
+  showArenaToast(`Copied ${moves.length} move coordinates`);
+  return text;
+}
+
+function setRuleVariantUI(variant, startFreshIfIdle = true) {
+  const valid = ["freestyle", "blocked_ends", "exact5"];
+  const v = valid.includes(variant) ? variant : "freestyle";
+  currentRuleVariant = v;
+
+  ["select-rule-variant", "lobby-home-rule-select", "mp-room-rule-select"].forEach(id => {
+    const el = document.getElementById(id);
+    if (el && el.value !== v) el.value = v;
+  });
+
+  if (clientEngine) {
+    clientEngine.setRuleVariant(v);
+  }
+  if (isMultiplayerActive && window.CaroMultiplayer?.isHost && window.CaroMultiplayer?.roomId) {
+    window.CaroMultiplayer.setRoomMeta({ ruleVariant: v });
+  }
+  updateSeriesAndRuleBadge();
+
+  if (!isMultiplayerActive && startFreshIfIdle) {
+    const label = v === "blocked_ends" ? "Caro (Blocked Ends)" : v === "exact5" ? "Exact-5" : "Freestyle (5+)";
+    showArenaToast(`Rule variant: ${label}`);
+    if (!gameState || gameState.board?.move_count === 0 || gameState.status === "finished" || gameState.status === "ready") {
+      newBattle();
+    }
+  }
+}
+
+function setSeriesTargetUI(targetWins, resetScores = true) {
+  const t = Math.max(1, Math.min(5, Number(targetWins) || 1));
+  currentSeriesTarget = t;
+
+  ["select-series-target", "lobby-home-series-select", "mp-room-series-select"].forEach(id => {
+    const el = document.getElementById(id);
+    if (el && el.value !== String(t)) el.value = String(t);
+  });
+
+  if (clientEngine) {
+    clientEngine.setSeriesTarget(t);
+    if (resetScores) clientEngine.resetSeries();
+  }
+  if (isMultiplayerActive && window.CaroMultiplayer?.isHost && window.CaroMultiplayer?.roomId) {
+    window.CaroMultiplayer.setRoomMeta({ seriesTargetWins: t });
+  }
+  updateSeriesAndRuleBadge();
+
+  if (!isMultiplayerActive && resetScores) {
+    const label = t === 2 ? "Best of 3 (First to 2)" : t === 3 ? "Best of 5 (First to 3)" : "Single Game";
+    showArenaToast(`Series format: ${label}`);
+    if (t > 1 && (!gameState || gameState.board?.move_count === 0 || gameState.status === "finished" || gameState.status === "ready")) {
+      newBattle();
+    }
+  }
+}
+
+function updateSeriesAndRuleBadge() {
+  const badge = document.getElementById("series-score-badge");
+  if (!badge) return;
+
+  const series = clientEngine?.getState()?.series || gameState?.series || {};
+  const target = Number(series.series_target_wins || series.target_wins || currentSeriesTarget) || 1;
+  const rule = currentRuleVariant || gameState?.board?.rule_variant || "freestyle";
+
+  const parts = [];
+  if (rule === "blocked_ends") parts.push("Blocked-Ends");
+  else if (rule === "exact5") parts.push("Exact-5");
+
+  if (target > 1) {
+    const boLabel = target === 2 ? "Bo3" : target === 3 ? "Bo5" : `First to ${target}`;
+    const scores = series.series_scores || series.scores || {};
+    const players = (isReplayMode ? replayPlayers : gameState?.players) || [];
+    const scoreItems = players.slice(0, 4).map(p => {
+      const shortName = getPlayerMeta(p.symbol).name.replace(/\s*\(AI\)$/i, "").split(" ")[0];
+      return `${shortName} ${scores[p.symbol] || 0}`;
+    });
+    const scoreText = scoreItems.length > 0 ? scoreItems.join("–") : "0–0";
+    const champ = series.series_champion || series.champion;
+    if (champ) {
+      const champMeta = getPlayerMeta(champ);
+      parts.push(`🏆 Champion: ${champMeta.name} (${boLabel} · ${scoreText})`);
+    } else {
+      parts.push(`${boLabel} · ${scoreText}`);
+    }
+  }
+
+  if (parts.length > 0) {
+    badge.style.display = "inline-flex";
+    badge.textContent = parts.join(" · ");
+  } else {
+    badge.style.display = "none";
+  }
+}
+
+function renderEvalPressureBar() {
+  const bar = document.getElementById("eval-pressure-bar");
+  const segContainer = document.getElementById("eval-pressure-track") || document.getElementById("eval-pressure-segments");
+  const leaderLabel = document.getElementById("eval-pressure-label") || document.getElementById("eval-pressure-leader");
+  if (!bar || !segContainer || !leaderLabel) return;
+
+  if (!gameState || !window.CaroEngine?.TacticalEvaluator?.computeBoardPressure) {
+    bar.style.display = "none";
+    return;
+  }
+
+  // Hide during an active human turn in live play so it never spoils tactical calculation
+  const isLiveHumanTurn = !isReplayMode && gameState.status !== "finished" && isLocalHumanAllowedToMove();
+  if (isLiveHumanTurn) {
+    bar.style.display = "none";
+    return;
+  }
+
+  const players = (isReplayMode ? replayPlayers : gameState.players) || [];
+  const moves = isReplayMode ? replayMoves.slice(0, replayIndex) : (gameState.board?.moves || []);
+  if (players.length < 2) {
+    bar.style.display = "none";
+    return;
+  }
+
+  const symbols = players.map(p => p.symbol);
+  const rule = gameState.board?.rule_variant || currentRuleVariant || "freestyle";
+  const tempBoard = new window.CaroEngine.CaroBoard(symbols, rule);
+  for (const m of moves) {
+    tempBoard.makeMove(m.row, m.col, m.player, m.metadata);
+  }
+  const pressure = window.CaroEngine.TacticalEvaluator.computeBoardPressure(tempBoard);
+  const pctMap = pressure.percentages || pressure.shares || {};
+
+  bar.style.display = "flex";
+  segContainer.innerHTML = players.map(p => {
+    const meta = getPlayerMeta(p.symbol);
+    const pct = Math.max(4, Number(pctMap[p.symbol]) || Math.round(100 / players.length));
+    return `<div class="eval-pressure-seg" style="width:${pct}%;background:${escapeHtml(meta.fill)}" title="${escapeHtml(meta.name)}: ${pct}%"></div>`;
+  }).join("");
+
+  if (moves.length === 0) {
+    leaderLabel.textContent = "Eval · Even";
+  } else {
+    const leaderSym = pressure.leader || symbols[0];
+    const leaderMeta = getPlayerMeta(leaderSym);
+    const leaderPct = pctMap[leaderSym] ?? Math.round(100 / players.length);
+    leaderLabel.textContent = `${leaderMeta.name} ${leaderPct}%`;
+  }
+}
+
+function updateRematchBar() {
+  const bar = document.getElementById("rematch-bar");
+  const statusText = document.getElementById("rematch-status-text");
+  const btnRematch = document.getElementById("btn-rematch-vote");
+  const btnNextPuzzle = document.getElementById("btn-next-puzzle");
+  if (!bar) return;
+
+  if (isReplayMode || !gameState || gameState.status !== "finished") {
+    bar.style.display = "none";
+    return;
+  }
+
+  bar.style.display = "flex";
+  if (gameState.puzzle) {
+    if (statusText) {
+      statusText.textContent = gameState.puzzle_solved
+        ? `Puzzle solved: ${gameState.puzzle.title} (+15 Cranes)`
+        : `Puzzle ended: ${gameState.puzzle.title}`;
+    }
+    if (btnRematch) btnRematch.textContent = "Retry puzzle";
+    if (btnNextPuzzle) btnNextPuzzle.style.display = "inline-flex";
+    return;
+  }
+
+  if (btnNextPuzzle) btnNextPuzzle.style.display = "none";
+
+  if (isMultiplayerActive && window.CaroMultiplayer) {
+    const lobby = window.CaroMultiplayer.getLobbyState();
+    const votes = lobby.rematchVotes || {};
+    const voteCount = Object.keys(votes).length;
+    const humanCount = Math.max(1, (lobby.slots || []).filter(s => s.type === "human" && s.id).length);
+    const myVoted = Boolean(window.CaroMultiplayer.myId && votes[window.CaroMultiplayer.myId]);
+    if (statusText) {
+      statusText.textContent = voteCount > 0
+        ? `Rematch votes: ${voteCount}/${humanCount} ready`
+        : "Match complete — ready for a rematch?";
+    }
+    if (btnRematch) {
+      btnRematch.textContent = lobby.isHost
+        ? (voteCount > 0 ? `Start Rematch (${voteCount}/${humanCount})` : "Rematch")
+        : (myVoted ? `Voted (${voteCount}/${humanCount})` : "Vote Rematch");
+    }
+  } else {
+    const placements = gameState.board?.placements || [];
+    const winnerName = placements[0] ? getPlayerMeta(placements[0].player).name : "Draw";
+    if (statusText) {
+      statusText.textContent = `Match complete · ${winnerName} wins`;
+    }
+    if (btnRematch) {
+      btnRematch.textContent = "Rematch";
+    }
+  }
+}
+
+async function handleRematchAction() {
+  const swapSeats = Boolean(document.getElementById("toggle-swap-seats")?.checked);
+  if (gameState?.puzzle) {
+    launchDailyPuzzle(gameState.puzzle.id);
+    return;
+  }
+  if (isMultiplayerActive && window.CaroMultiplayer) {
+    window.CaroMultiplayer.voteRematch({ swapSeats });
+    if (window.CaroMultiplayer.isHost) {
+      startNextMultiplayerBattle({ swapSeats });
+    } else {
+      updateRematchBar();
+      showArenaToast("Rematch vote sent to host");
+    }
+    return;
+  }
+  if (swapSeats && Array.isArray(gameState?.players) && gameState.players.length >= 2) {
+    const rotated = gameState.players.map(p => p.type);
+    rotated.push(rotated.shift());
+    await newBattle({ keepOverride: true, customPlayerOrder: rotated });
+    showArenaToast("Rematch started with swapped turn order");
+  } else {
+    await newBattle();
+  }
+}
+
+let _currentPuzzleOffset = 0;
+
+function launchDailyPuzzle(puzzleIdOrIndex = null) {
+  if (!window.CaroEngine) return null;
+  if (isReplayMode) exitReplayMode();
+  if (isServerAvailable && gameState?.is_auto_playing) {
+    apiFetch("/api/battle/auto-play", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ enabled: false, delay_sec: 0.01, non_stop: false })
+    }).catch(() => {});
+  }
+  if (!clientEngine) {
+    clientEngine = new window.CaroEngine.ClientGameManager();
+    clientEngine.onStateChange = (state) => {
+      if (!useBackend()) handleStateUpdate(state);
+    };
+  }
+  useClientEngineOverride = true;
+  enterArenaBattleground();
+  const state = clientEngine.startDailyPuzzle(puzzleIdOrIndex);
+  userInteractedWithCamera = false;
+  autoScaleCamera(true);
+  handleStateUpdate(state);
+  if (state?.puzzle) {
+    showArenaToast(`Daily Puzzle: ${state.puzzle.title} — ${state.puzzle.objective}`);
+  }
+  renderDailyPuzzleBadge();
+  return state;
+}
+
+function launchNextDailyPuzzle() {
+  const puzzles = window.CaroEngine?.DAILY_PUZZLES || [];
+  if (puzzles.length === 0) return null;
+  const curId = gameState?.puzzle?.id;
+  const curIdx = puzzles.findIndex(p => p.id === curId);
+  const nextIdx = curIdx >= 0 ? (curIdx + 1) % puzzles.length : (_currentPuzzleOffset++);
+  return launchDailyPuzzle(nextIdx);
+}
+
+function renderDailyPuzzleBadge() {
+  const badge = document.getElementById("daily-puzzle-streak-badge");
+  if (!badge || !window.CaroEngine?.ClientStorage?.getPuzzleStats) return;
+  const pStats = window.CaroEngine.ClientStorage.getPuzzleStats();
+  const daily = window.CaroEngine.getDailyPuzzle?.();
+  const solvedToday = daily && Array.isArray(pStats.solvedIds) && pStats.solvedIds.includes(daily.id);
+  if (pStats.streak > 0) {
+    badge.textContent = solvedToday ? `Solved · ${pStats.streak}🔥` : `${pStats.streak}🔥 streak`;
+  } else {
+    badge.textContent = "+15 Cranes";
+  }
+}
+
+function renderCareerStats() {
+  if (!window.CaroEngine?.ClientStorage?.getCareerStats) return;
+  const stats = window.CaroEngine.ClientStorage.getCareerStats();
+  const containers = [
+    document.getElementById("lobby-career-stats"),
+    document.getElementById("auth-career-stats")
+  ].filter(Boolean);
+  if (containers.length === 0) return;
+
+  const fastestText = stats.fastestWinMoves ? `${stats.fastestWinMoves} moves` : "—";
+  const h2hModels = ["von", "mojev", "laya", "jev"];
+  const h2hHtml = h2hModels.map(m => {
+    const rec = stats.vsAi?.[m] || { name: m, wins: 0, losses: 0 };
+    return `<span class="career-h2h-pill">vs <strong>${escapeHtml(rec.name)}</strong> ${rec.wins}W–${rec.losses}L</span>`;
+  }).join("");
+
+  const html = `
+    <div class="career-stats-grid">
+      <div class="career-stat-box">
+        <span class="career-stat-val">${stats.winRate}%</span>
+        <span class="career-stat-lbl">Win Rate (${stats.humanWins}/${stats.humanMatches})</span>
+      </div>
+      <div class="career-stat-box">
+        <span class="career-stat-val">${escapeHtml(fastestText)}</span>
+        <span class="career-stat-lbl">Fastest Win</span>
+      </div>
+      <div class="career-stat-box">
+        <span class="career-stat-val">${stats.puzzleStreak} 🔥</span>
+        <span class="career-stat-lbl">Puzzle Streak (${stats.puzzlesSolved})</span>
+      </div>
+      <div class="career-stat-box">
+        <span class="career-stat-val">${stats.totalBattles}</span>
+        <span class="career-stat-lbl">Total Battles</span>
+      </div>
+    </div>
+    <div class="career-h2h-row">${h2hHtml}</div>
+  `;
+
+  containers.forEach(el => {
+    el.innerHTML = html;
+  });
+}
+
 window.encodeReplayPayload = encodeReplayPayload;
 window.decodeReplayPayload = decodeReplayPayload;
 window.getShareReplayUrl = getShareReplayUrl;
 window.shareCurrentReplay = shareCurrentReplay;
 window.toggleReplayHints = toggleReplayHints;
+window.playFromReplayState = playFromReplayState;
+window.copyMovesCoordinateNotation = copyMovesCoordinateNotation;
 window.downloadBoardSnapshot = downloadBoardSnapshot;
+window.launchDailyPuzzle = launchDailyPuzzle;
 
 function exitReplayMode() {
   isReplayMode = false;
@@ -3621,6 +4243,7 @@ function initMultiplayerIntegration() {
     onEmote: handleMultiplayerEmote,
     onActivityLogChange: renderMultiplayerActivityLog,
     onSessionScoreChange: () => updateMultiplayerHudBadges(),
+    onRematchVote: () => updateRematchBar(),
     getHostState: getMultiplayerHostState,
     onStatusMessage: (msg) => {
       updateMultiplayerHudStatus(msg);
@@ -3632,6 +4255,8 @@ function initMultiplayerIntegration() {
   setupLobbyHomeScreenUI();
   renderActiveRoomsLobby(window.CaroMultiplayer?.getActiveRooms() || []);
   renderLobbyHomeWalletAndThemes();
+  renderCareerStats();
+  renderDailyPuzzleBadge();
   checkUrlForRoomInvite();
 }
 
@@ -3643,6 +4268,8 @@ function getMultiplayerHostState() {
     roomName: window.CaroMultiplayer?.roomName,
     entryFee: window.CaroMultiplayer?.entryFee || 0,
     turnTimeoutSec: window.CaroMultiplayer?.turnTimeoutSec ?? 30,
+    ruleVariant: window.CaroMultiplayer?.ruleVariant || currentRuleVariant || "freestyle",
+    seriesTargetWins: window.CaroMultiplayer?.seriesTargetWins || currentSeriesTarget || 1,
     sessionScores: window.CaroMultiplayer?.getSessionScores?.() || {},
     roster: multiplayerRoster,
     battleNumber: clientEngine.battleNumber || 1,
@@ -3862,6 +4489,9 @@ function setupLobbyHomeScreenUI() {
   document.getElementById("btn-preset-4ai-watch")?.addEventListener("click", () => {
     launchPresetBattle(["laya", "jev", "von", "mojev"], true);
   });
+  document.getElementById("btn-preset-daily-puzzle")?.addEventListener("click", () => {
+    launchDailyPuzzle();
+  });
 
   const handleDailyBonusClaim = async () => {
     if (!window.CaroAuth) return;
@@ -3915,6 +4545,8 @@ function setupLobbyHomeScreenUI() {
     const entryFee = Number(wagerEl?.value) || 0;
     const timerEl = document.getElementById("lobby-home-timer-select");
     const turnTimeoutSec = timerEl ? Number(timerEl.value) : 30;
+    const ruleVariant = document.getElementById("lobby-home-rule-select")?.value || "freestyle";
+    const seriesTargetWins = Number(document.getElementById("lobby-home-series-select")?.value) || 1;
     const isPublic = document.getElementById("lobby-home-public")?.checked ?? true;
 
     if (entryFee > 0 && (window.CaroAuth?.getCranesBalance() || 0) < entryFee) {
@@ -3925,18 +4557,24 @@ function setupLobbyHomeScreenUI() {
     const btn = document.getElementById("btn-lobby-home-create");
     try {
       if (btn) { btn.disabled = true; btn.textContent = "Creating..."; }
-      await window.CaroMultiplayer.createRoom(name, { roomName, roomSlug, isPublic, entryFee, turnTimeoutSec });
+      setRuleVariantUI(ruleVariant, false);
+      setSeriesTargetUI(seriesTargetWins, false);
+      await window.CaroMultiplayer.createRoom(name, { roomName, roomSlug, isPublic, entryFee, turnTimeoutSec, ruleVariant, seriesTargetWins });
       // Sync modal inputs as well
       const modalHostName = document.getElementById("mp-host-name-input");
       const modalRoomName = document.getElementById("mp-room-name-input");
       const modalSlug = document.getElementById("mp-room-slug-input");
       const modalWager = document.getElementById("mp-room-wager-select");
       const modalTimer = document.getElementById("mp-room-timer-select");
+      const modalRule = document.getElementById("mp-room-rule-select");
+      const modalSeries = document.getElementById("mp-room-series-select");
       if (modalHostName) modalHostName.value = name;
       if (modalRoomName) modalRoomName.value = window.CaroMultiplayer.roomName;
       if (modalSlug) modalSlug.value = window.CaroMultiplayer.roomId;
       if (modalWager) modalWager.value = String(entryFee);
       if (modalTimer) modalTimer.value = String(turnTimeoutSec);
+      if (modalRule) modalRule.value = ruleVariant;
+      if (modalSeries) modalSeries.value = String(seriesTargetWins);
 
       enterArenaBattleground();
       showMultiplayerHud(window.CaroMultiplayer.roomId);
@@ -4001,11 +4639,13 @@ function setupMultiplayerUI() {
 
   btnNewRoomFromLobby?.addEventListener("click", () => switchMpTab("create"));
 
-  // Sync live room name / public toggle / wager / timer changes when already hosting
+  // Sync live room name / public toggle / wager / timer / rule / series changes when already hosting
   const roomNameInput = document.getElementById("mp-room-name-input");
   const roomPublicToggle = document.getElementById("mp-room-public-toggle");
   const roomWagerSelect = document.getElementById("mp-room-wager-select");
   const roomTimerSelect = document.getElementById("mp-room-timer-select");
+  const roomRuleSelect = document.getElementById("mp-room-rule-select");
+  const roomSeriesSelect = document.getElementById("mp-room-series-select");
   const hostNameInput = document.getElementById("mp-host-name-input");
 
   roomNameInput?.addEventListener("change", () => {
@@ -4029,6 +4669,12 @@ function setupMultiplayerUI() {
       mpTurnTimerKey = null;
       syncMultiplayerTurnTimer();
     }
+  });
+  roomRuleSelect?.addEventListener("change", () => {
+    setRuleVariantUI(roomRuleSelect.value, false);
+  });
+  roomSeriesSelect?.addEventListener("change", () => {
+    setSeriesTargetUI(roomSeriesSelect.value, false);
   });
   hostNameInput?.addEventListener("change", () => {
     if (hostNameInput.value.trim() && window.CaroMultiplayer) {
@@ -4054,10 +4700,14 @@ function setupMultiplayerUI() {
     const entryFee = Number(document.getElementById("mp-room-wager-select")?.value) || 0;
     const timerEl = document.getElementById("mp-room-timer-select");
     const turnTimeoutSec = timerEl ? Number(timerEl.value) : 30;
+    const ruleVariant = document.getElementById("mp-room-rule-select")?.value || currentRuleVariant || "freestyle";
+    const seriesTargetWins = Number(document.getElementById("mp-room-series-select")?.value) || currentSeriesTarget || 1;
     try {
       btnCreateRoom.disabled = true;
       btnCreateRoom.textContent = "Creating...";
-      await window.CaroMultiplayer.createRoom(name, { roomName, roomSlug, isPublic, entryFee, turnTimeoutSec });
+      setRuleVariantUI(ruleVariant, false);
+      setSeriesTargetUI(seriesTargetWins, false);
+      await window.CaroMultiplayer.createRoom(name, { roomName, roomSlug, isPublic, entryFee, turnTimeoutSec, ruleVariant, seriesTargetWins });
       btnCreateRoom.disabled = false;
       btnCreateRoom.textContent = "Recreate room";
       if (btnStartMp) btnStartMp.style.display = "inline-flex";
@@ -4357,6 +5007,8 @@ function handleMultiplayerLobbyUpdate(lobbyState) {
   const roomNameInput = document.getElementById("mp-room-name-input");
   const wagerSelect = document.getElementById("mp-room-wager-select");
   const timerSelect = document.getElementById("mp-room-timer-select");
+  const ruleSelect = document.getElementById("mp-room-rule-select");
+  const seriesSelect = document.getElementById("mp-room-series-select");
 
   if (lobbyState.roomId) {
     if (shareBox) shareBox.style.display = "block";
@@ -4365,6 +5017,21 @@ function handleMultiplayerLobbyUpdate(lobbyState) {
     if (roomNameInput && !roomNameInput.value && lobbyState.roomName) roomNameInput.value = lobbyState.roomName;
     if (wagerSelect && lobbyState.entryFee !== undefined) wagerSelect.value = String(lobbyState.entryFee || 0);
     if (timerSelect && lobbyState.turnTimeoutSec !== undefined) timerSelect.value = String(lobbyState.turnTimeoutSec);
+    if (lobbyState.ruleVariant) {
+      if (ruleSelect) ruleSelect.value = lobbyState.ruleVariant;
+      currentRuleVariant = lobbyState.ruleVariant;
+      if (clientEngine?.setRuleVariant) clientEngine.setRuleVariant(lobbyState.ruleVariant);
+      const arenaRule = document.getElementById("select-rule-variant");
+      if (arenaRule) arenaRule.value = lobbyState.ruleVariant;
+    }
+    if (lobbyState.seriesTargetWins !== undefined) {
+      const st = Number(lobbyState.seriesTargetWins) || 1;
+      if (seriesSelect) seriesSelect.value = String(st);
+      currentSeriesTarget = st;
+      if (clientEngine?.setSeriesTarget) clientEngine.setSeriesTarget(st);
+      const arenaSeries = document.getElementById("select-series-target");
+      if (arenaSeries) arenaSeries.value = String(st);
+    }
     if (btnStartMp) {
       btnStartMp.style.display = lobbyState.isHost ? "inline-flex" : "none";
       btnStartMp.textContent = lobbyState.inGame ? "Restart match" : "Start match";
@@ -4403,11 +5070,11 @@ function renderSpectatorsAndRequests() {
     sec.style.display = "none";
     return;
   }
-  sec.style.display = "block";
 
+  sec.style.display = "block";
   const specs = lobby.spectators || [];
   if (specLabel) {
-    const names = specs.map(s => s.name).join(", ");
+    const names = specs.map(s => s.name || "Spectator").join(", ");
     specLabel.textContent = specs.length > 0
       ? `Spectators (${specs.length}): ${names}`
       : `Spectators (0): None`;
@@ -4693,6 +5360,7 @@ function handleMultiplayerGameStart(data) {
 
   enterArenaBattleground({ startFreshPractice: false });
   isMultiplayerActive = true;
+  useClientEngineOverride = false;
   setSidebarRosterDisabled(true);
   multiplayerRoster = data.roster || [];
   myMultiplayerSymbol = resolveMyMultiplayerSymbol(multiplayerRoster);
@@ -4701,6 +5369,14 @@ function handleMultiplayerGameStart(data) {
     clientEngine = new window.CaroEngine.ClientGameManager();
     clientEngine.onStateChange = (state) => handleStateUpdate(state);
   }
+
+  const ruleV = data.ruleVariant || window.CaroMultiplayer?.ruleVariant || currentRuleVariant || "freestyle";
+  const seriesT = Number(data.seriesTargetWins ?? window.CaroMultiplayer?.seriesTargetWins ?? currentSeriesTarget) || 1;
+  currentRuleVariant = ruleV;
+  currentSeriesTarget = seriesT;
+  clientEngine.setRuleVariant(ruleV);
+  clientEngine.setSeriesTarget(seriesT);
+  clientEngine.resetSeries();
 
   const playerTypes = multiplayerRoster.map(p => p.type);
   clientEngine.selectedPlayerTypes = playerTypes;
@@ -4785,6 +5461,7 @@ function handleMultiplayerStateSync(payload) {
 
   enterArenaBattleground({ startFreshPractice: false });
   isMultiplayerActive = true;
+  useClientEngineOverride = false;
   setSidebarRosterDisabled(true);
   multiplayerRoster = payload.roster.map(r => Object.assign({}, r, {
     isLocalHuman: r.type === "human" && r.playerId === window.CaroMultiplayer?.myId
@@ -4829,6 +5506,13 @@ function handleMultiplayerStateSync(payload) {
     clientEngine = new window.CaroEngine.ClientGameManager();
     clientEngine.onStateChange = (state) => handleStateUpdate(state);
   }
+
+  const ruleV = payload.ruleVariant || window.CaroMultiplayer?.ruleVariant || currentRuleVariant || "freestyle";
+  const seriesT = Number(payload.seriesTargetWins ?? window.CaroMultiplayer?.seriesTargetWins ?? currentSeriesTarget) || 1;
+  currentRuleVariant = ruleV;
+  currentSeriesTarget = seriesT;
+  clientEngine.setRuleVariant(ruleV);
+  clientEngine.setSeriesTarget(seriesT);
 
   const playerTypes = multiplayerRoster.map(p => p.type);
   clientEngine.selectedPlayerTypes = playerTypes;
@@ -4921,6 +5605,12 @@ function handleMultiplayerRemoteMove(data) {
 
 function handleMultiplayerRemoteNextBattle(data) {
   if (!isMultiplayerActive || !clientEngine) return;
+  if (Array.isArray(data.roster) && data.roster.length >= 2) {
+    multiplayerRoster = data.roster.map(r => Object.assign({}, r, {
+      isLocalHuman: r.type === "human" && r.playerId === window.CaroMultiplayer?.myId
+    }));
+    myMultiplayerSymbol = resolveMyMultiplayerSymbol(multiplayerRoster);
+  }
   clientEngine.status = "ready";
   clientEngine.battleNumber = data.battleNumber || (clientEngine.battleNumber + 1);
   const playerTypes = multiplayerRoster.map(p => p.type);
@@ -5195,9 +5885,15 @@ function scheduleHostAiMoveIfNeeded() {
   }, 220);
 }
 
-function startNextMultiplayerBattle() {
+function startNextMultiplayerBattle(options = {}) {
   if (!isMultiplayerActive || !clientEngine) return;
+  const swapSeats = Boolean(options.swapSeats);
   clientEngine.battleNumber += 1;
+  const updatedRoster = window.CaroMultiplayer.sendNextBattle(clientEngine.battleNumber, { swapSeats });
+  if (Array.isArray(updatedRoster) && updatedRoster.length >= 2) {
+    multiplayerRoster = updatedRoster;
+    myMultiplayerSymbol = resolveMyMultiplayerSymbol(multiplayerRoster);
+  }
   const playerTypes = multiplayerRoster.map(p => p.type);
   const nextState = clientEngine.newGame(playerTypes, false, multiplayerRoster);
   const fee = Number(window.CaroMultiplayer?.entryFee) || 0;
@@ -5205,7 +5901,6 @@ function startNextMultiplayerBattle() {
   userInteractedWithCamera = false;
   autoScaleCamera(true);
   handleStateUpdate(nextState);
-  window.CaroMultiplayer.sendNextBattle(clientEngine.battleNumber);
   scheduleHostAiMoveIfNeeded();
 }
 
@@ -5237,6 +5932,8 @@ function checkUrlForRoomInvite() {
 function formatCranesLedgerReason(reason) {
   const r = String(reason || "activity");
   if (r === "daily_bonus") return "Daily bonus claimed";
+  if (r === "daily_puzzle_solved") return "Daily tactical puzzle solved";
+  if (r === "series_champion_bonus") return "Series championship bonus";
   if (r === "multiplayer_win_1st") return "1st place multiplayer victory";
   if (r === "solo_practice_win_1st") return "1st place practice victory";
   if (r === "Match entry fee") return "Room entry wager staked";
@@ -5339,6 +6036,7 @@ function setupAuthUI() {
     }
     renderAuthCranesLedger();
     renderLobbyHomeWalletAndThemes();
+    renderCareerStats();
   };
 
   const showAuthMsg = (elId, text, isError = true) => {

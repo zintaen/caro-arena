@@ -205,7 +205,7 @@ html, body {
   padding: 4px;
   overflow: hidden;
 }
-.canvas-wrap canvas {
+#caro-canvas {
   width: 100%;
   aspect-ratio: 1;
   max-height: 100%;
@@ -251,14 +251,20 @@ html, body {
   display: flex;
   justify-content: space-between;
   align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
   padding: 6px 12px;
   border-top: 1px solid var(--border);
   font-size: 0.66rem;
   color: var(--text-muted);
 }
-.board-hints { display: flex; gap: 4px; }
-.board-hints .dot { color: var(--border-medium); }
-.board-toggles { display: flex; gap: 10px; }
+.board-toggles {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-left: auto;
+}
 .board-toggles label {
   display: flex;
   align-items: center;
@@ -1646,23 +1652,44 @@ html, body {
   line-height: 1.45;
 }
 
-/* Unlockable Board Themes Grid */
+/* Unlockable Board Themes & Stone Finishes Grid */
+.lobby-cosmetics-split {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.lobby-cosmetic-col {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+}
+
+.lobby-cosmetic-col + .lobby-cosmetic-col {
+  padding-top: 12px;
+  border-top: 1px solid var(--border);
+}
+
 .lobby-themes-grid {
   display: grid;
-  grid-template-columns: repeat(2, 1fr);
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 8px;
+  width: 100%;
 }
 
 .theme-cosmetic-card {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 10px;
-  padding: 9px 11px;
+  gap: 8px;
+  padding: 8px 10px;
   border-radius: var(--radius-sm);
   border: 1px solid var(--border);
   background: var(--bg-raised);
   cursor: pointer;
+  min-width: 0;
+  overflow: hidden;
   transition: border-color 0.12s ease, background 0.12s ease;
 }
 
@@ -1681,13 +1708,14 @@ html, body {
 .theme-cosmetic-top {
   display: flex;
   align-items: center;
-  gap: 9px;
+  gap: 8px;
   min-width: 0;
+  flex: 1;
 }
 
 .theme-cosmetic-swatch {
-  width: 24px;
-  height: 24px;
+  width: 22px;
+  height: 22px;
   border-radius: 5px;
   border: 1px solid rgba(0, 0, 0, 0.15);
   flex-shrink: 0;
@@ -1698,10 +1726,11 @@ html, body {
   display: flex;
   flex-direction: column;
   min-width: 0;
+  flex: 1;
 }
 
 .theme-cosmetic-name {
-  font-size: 0.78rem;
+  font-size: 0.76rem;
   font-weight: 600;
   color: var(--text-primary);
   white-space: nowrap;
@@ -1710,7 +1739,7 @@ html, body {
 }
 
 .theme-cosmetic-desc {
-  font-size: 0.68rem;
+  font-size: 0.66rem;
   color: var(--text-tertiary);
   white-space: nowrap;
   overflow: hidden;
@@ -1718,9 +1747,9 @@ html, body {
 }
 
 .theme-cosmetic-status {
-  font: 600 0.68rem/1 var(--font-mono);
+  font: 600 0.66rem/1 var(--font-mono);
   font-variant-numeric: tabular-nums;
-  padding: 3px 7px;
+  padding: 3px 6px;
   border-radius: 4px;
   background: var(--bg-surface);
   border: 1px solid var(--border);
@@ -2002,7 +2031,7 @@ html, body {
 
 .lobby-preset-row {
   display: grid;
-  grid-template-columns: repeat(3, 1fr);
+  grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 6px;
 }
 
@@ -2015,11 +2044,37 @@ html, body {
   border: 1px solid var(--border);
   color: var(--text-primary);
   white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.lobby-preset-btn.btn-primary {
+  background: var(--text-primary);
+  color: var(--bg-surface);
+  border-color: var(--text-primary);
 }
 
 .lobby-preset-btn:hover {
   background: var(--bg-surface);
   border-color: var(--text-primary);
+  color: var(--text-primary);
+}
+
+.lobby-puzzle-btn {
+  border-color: #fde68a;
+  background: #fffbeb;
+  color: #92400e;
+}
+
+.lobby-form-row-3col {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.lobby-form-row-3col .mp-field-row {
+  margin-bottom: 0;
+  min-width: 0;
 }
 
 .lobby-recent-list {
@@ -2067,15 +2122,19 @@ html, body {
 }
 
 /* Corner Radar Minimap & Off-Screen Move Pill */
+#board-minimap,
 .board-minimap {
   position: absolute;
   left: 12px;
   bottom: 12px;
-  width: 96px;
-  height: 96px;
+  width: 96px !important;
+  height: 96px !important;
+  max-width: 96px !important;
+  max-height: 96px !important;
+  aspect-ratio: 1;
   border-radius: var(--radius-sm);
   border: 1px solid var(--border-medium);
-  background: rgba(250, 250, 249, 0.92);
+  background: rgba(250, 250, 249, 0.94);
   box-shadow: var(--shadow-md);
   cursor: crosshair;
   z-index: 22;
@@ -2130,7 +2189,8 @@ html, body {
 
 /* Room Activity Log & Cranes Activity Ledger */
 .mp-activity-log-section,
-.auth-cranes-ledger-section {
+.auth-cranes-ledger-section,
+.auth-career-section {
   margin-top: 12px;
   padding-top: 10px;
   border-top: 1px solid var(--border);
@@ -2184,6 +2244,296 @@ html, body {
 }
 
 /* ==========================================================================
+   New Features: Eval Bar, Rematch Bar, Tactical Badges, Career & Shortcuts
+   ========================================================================== */
+.eval-pressure-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 170px;
+  max-width: 240px;
+  flex: 1;
+}
+
+.eval-pressure-label {
+  font: 600 0.66rem/1 var(--font-mono);
+  color: var(--text-secondary);
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+
+.eval-pressure-track {
+  flex: 1;
+  height: 7px;
+  border-radius: 999px;
+  background: var(--bg-raised);
+  border: 1px solid var(--border);
+  overflow: hidden;
+  display: flex;
+}
+
+.eval-pressure-seg {
+  height: 100%;
+  transition: width 0.22s ease;
+}
+
+/* Post-Match Rematch & Series Bar */
+.rematch-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 7px 14px;
+  background: #f0fdf4;
+  border-bottom: 1px solid #bbf7d0;
+  font-size: 0.75rem;
+}
+
+.rematch-bar-left {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.rematch-status-text {
+  font-weight: 700;
+  color: #166534;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.rematch-votes-pill {
+  font: 600 0.66rem/1 var(--font-mono);
+  padding: 2px 6px;
+  border-radius: 999px;
+  background: #dcfce7;
+  color: #15803d;
+  border: 1px solid #86efac;
+}
+
+.rematch-bar-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+.rematch-swap-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 0.7rem;
+  font-weight: 600;
+  color: #166534;
+  cursor: pointer;
+  user-select: none;
+}
+
+.rematch-swap-label input {
+  width: 13px;
+  height: 13px;
+  accent-color: #15803d;
+  margin: 0;
+}
+
+/* Roster Ruleset & Series Selects */
+.arena-rules-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 6px;
+  margin-top: 8px;
+}
+
+.arena-rule-select {
+  width: 100%;
+  padding: 4px 7px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border);
+  background: var(--bg-raised);
+  color: var(--text-primary);
+  font: 600 0.68rem/1.2 var(--font-sans);
+  cursor: pointer;
+}
+
+.panel-header-badges {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.series-badge {
+  background: #fef3c7;
+  color: #92400e;
+  border: 1px solid #fde68a;
+  font-family: var(--font-mono);
+  font-weight: 600;
+}
+
+/* Tactical Pattern Callout Badges in Move Stream */
+.move-pattern-badge {
+  margin-left: auto;
+  font: 600 0.62rem/1 var(--font-mono);
+  padding: 2px 5px;
+  border-radius: 4px;
+  background: var(--bg-raised);
+  color: var(--text-secondary);
+  border: 1px solid var(--border);
+  white-space: nowrap;
+}
+
+.move-pattern-badge.tier-win,
+.move-pattern-badge.tier-critical {
+  background: #fef3c7;
+  color: #92400e;
+  border-color: #fde68a;
+}
+
+.move-pattern-badge.tier-fork {
+  background: #ede9fe;
+  color: #5b21b6;
+  border-color: #ddd6fe;
+}
+
+.move-pattern-badge.tier-defense {
+  background: #e0f2fe;
+  color: #0369a1;
+  border-color: #bae6fd;
+}
+
+/* History Tabs Copy Moves & Shortcuts Help Button */
+.history-tabs-right {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding-bottom: 4px;
+}
+
+.btn-copy-moves {
+  padding: 2px 7px;
+  border-radius: 4px;
+  border: 1px solid var(--border);
+  background: var(--bg-raised);
+  color: var(--text-secondary);
+  font: 600 0.64rem/1.2 var(--font-sans);
+  cursor: pointer;
+}
+
+.btn-copy-moves:hover {
+  border-color: var(--text-primary);
+  color: var(--text-primary);
+  background: var(--bg-surface);
+}
+
+.btn-shortcuts-help {
+  width: 22px;
+  height: 22px;
+  border-radius: 5px;
+  border: 1px solid var(--border-medium);
+  background: var(--bg-raised);
+  color: var(--text-primary);
+  font: 700 0.72rem/1 var(--font-mono);
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.btn-shortcuts-help:hover {
+  background: var(--text-primary);
+  color: var(--bg-surface);
+}
+
+.shortcuts-grid-view {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.shortcut-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 6px 10px;
+  border-radius: var(--radius-sm);
+  background: var(--bg-raised);
+  border: 1px solid var(--border);
+  font-size: 0.76rem;
+  color: var(--text-secondary);
+}
+
+.shortcut-row kbd {
+  font: 600 0.7rem/1 var(--font-mono);
+  padding: 3px 6px;
+  border-radius: 4px;
+  background: var(--bg-surface);
+  border: 1px solid var(--border-medium);
+  color: var(--text-primary);
+  box-shadow: 0 1px 0 var(--border);
+}
+
+/* Personal Career Card (Lobby & Auth Modal) */
+.lobby-career-stats,
+.auth-career-stats {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px 12px;
+  border-radius: var(--radius-sm);
+  background: var(--bg-raised);
+  border: 1px solid var(--border);
+}
+
+.career-kpi-row,
+.career-stats-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.career-kpi,
+.career-stat-box {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.career-kpi-val,
+.career-stat-val {
+  font: 700 0.86rem/1.1 var(--font-mono);
+  color: var(--text-primary);
+  font-variant-numeric: tabular-nums;
+}
+
+.career-kpi-lbl,
+.career-stat-lbl {
+  font-size: 0.64rem;
+  color: var(--text-tertiary);
+}
+
+.career-h2h-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding-top: 6px;
+  border-top: 1px solid var(--border);
+}
+
+.career-h2h-chip,
+.career-h2h-pill {
+  font: 600 0.66rem/1.2 var(--font-mono);
+  padding: 2px 6px;
+  border-radius: 4px;
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  color: var(--text-secondary);
+  font-variant-numeric: tabular-nums;
+}
+
+/* ==========================================================================
    Responsive & Reduced Motion
    ========================================================================== */
 @media (max-width: 860px) {
@@ -2191,11 +2541,12 @@ html, body {
   .sidebar { border-left: none; border-top: 1px solid var(--border); max-height: 50vh; }
   .model-status-row { display: none; }
   .mp-grid-fields,
-  .lobby-form-row-2col { grid-template-columns: 1fr; }
+  .lobby-form-row-2col,
+  .lobby-form-row-3col { grid-template-columns: 1fr; }
   .lobby-home-hero { flex-direction: column; align-items: stretch; }
   .lobby-home-grid { grid-template-columns: 1fr; }
   .lobby-themes-grid { grid-template-columns: 1fr; }
-  .lobby-preset-row { grid-template-columns: 1fr; }
+  .lobby-preset-row { grid-template-columns: repeat(2, 1fr); }
 }
 
 @media (prefers-reduced-motion: reduce) {

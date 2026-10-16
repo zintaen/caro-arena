@@ -218,8 +218,24 @@
       </div>
 
       <div class="lobby-home-grid">
-        <!-- Left Column: Active Rooms Directory + Board & Stone Workshop -->
+        <!-- Left Column: Play Now + Active Rooms + Compact Surface & Stone Customization -->
         <div class="lobby-home-col-main">
+          <div class="lobby-card lobby-practice-card">
+            <div class="lobby-card-header">
+              <div class="lobby-card-title-wrap">
+                <h2 class="lobby-card-title">Quick play &amp; daily puzzle</h2>
+              </div>
+              <button class="btn btn-secondary btn-xs" id="btn-enter-practice-arena">Open board →</button>
+            </div>
+            <p class="lobby-practice-desc">Jump straight into a local match against Laya, Jev, Von, and MoJev, or solve today's tactical puzzle.</p>
+            <div class="lobby-preset-row" role="group" aria-label="Quick start presets">
+              <button class="btn btn-primary btn-xs lobby-preset-btn" id="btn-preset-1v1-von" type="button" title="Start 1v1 human vs Von (AI)">1v1 vs Von</button>
+              <button class="btn btn-ghost btn-xs lobby-preset-btn" id="btn-preset-human-3ai" type="button" title="Start 4-player battle with you against 3 AI engines">Human vs 3 AI</button>
+              <button class="btn btn-ghost btn-xs lobby-preset-btn" id="btn-preset-4ai-watch" type="button" title="Watch all 4 AI engines battle each other">4-AI showcase</button>
+              <button class="btn btn-ghost btn-xs lobby-preset-btn lobby-puzzle-btn" id="btn-preset-daily-puzzle" type="button" title="Solve today's tactical Caro puzzle for +15 Cranes">Daily puzzle (+15)</button>
+            </div>
+          </div>
+
           <div class="lobby-card lobby-rooms-card">
             <div class="lobby-card-header">
               <div class="lobby-card-title-wrap">
@@ -233,7 +249,7 @@
             </div>
 
             <div id="lobby-home-rooms-list" class="lobby-home-rooms-list">
-              <div class="mp-empty-rooms">No public rooms are open right now. Create a room on the right or open the practice board.</div>
+              <div class="mp-empty-rooms">No public rooms are open right now. Create a room on the right or start a quick match above.</div>
             </div>
 
             <div class="lobby-quick-join-bar">
@@ -245,36 +261,34 @@
             </div>
           </div>
 
-          <!-- Unlockable Board Themes & Stone Finishes -->
+          <!-- Compact Side-by-Side Board Themes & Stone Finishes -->
           <div class="lobby-card lobby-themes-card">
-            <div class="lobby-card-header">
-              <div class="lobby-card-title-wrap">
-                <h2 class="lobby-card-title">Board themes</h2>
-                <span class="panel-badge">4 surfaces</span>
+            <div class="lobby-cosmetics-split">
+              <div class="lobby-cosmetic-col">
+                <div class="lobby-card-header">
+                  <h2 class="lobby-card-title">Board themes</h2>
+                </div>
+                <div class="lobby-themes-grid" id="lobby-home-themes-grid">
+                  <!-- Populated by app.js -->
+                </div>
               </div>
-            </div>
-            <div class="lobby-themes-grid" id="lobby-home-themes-grid">
-              <!-- Populated by app.js -->
-            </div>
-
-            <div class="lobby-card-header lobby-subcard-header">
-              <div class="lobby-card-title-wrap">
-                <h2 class="lobby-card-title">Stone finishes</h2>
-                <span class="panel-badge">4 styles</span>
+              <div class="lobby-cosmetic-col">
+                <div class="lobby-card-header">
+                  <h2 class="lobby-card-title">Stone finishes</h2>
+                </div>
+                <div class="lobby-themes-grid" id="lobby-home-stones-grid">
+                  <!-- Populated by app.js -->
+                </div>
               </div>
-            </div>
-            <div class="lobby-themes-grid" id="lobby-home-stones-grid">
-              <!-- Populated by app.js -->
             </div>
           </div>
         </div>
 
-        <!-- Right Column: Host Room + Practice Board + Recent Matches -->
+        <!-- Right Column: Host Room + Career & Recent Matches -->
         <div class="lobby-home-col-side">
           <div class="lobby-card lobby-host-card">
             <div class="lobby-card-header">
               <h2 class="lobby-card-title">Host a room</h2>
-              <span class="panel-badge">2–4 players</span>
             </div>
             <div class="lobby-host-form">
               <div class="lobby-form-row-2col">
@@ -302,14 +316,32 @@
                   </select>
                 </div>
               </div>
-              <div class="mp-field-row">
-                <label for="lobby-home-timer-select">Turn timer</label>
-                <select id="lobby-home-timer-select" class="mp-slot-select">
-                  <option value="30" selected>30s Standard</option>
-                  <option value="15">15s Blitz</option>
-                  <option value="60">60s Classical</option>
-                  <option value="0">No timer</option>
-                </select>
+              <div class="lobby-form-row-3col">
+                <div class="mp-field-row">
+                  <label for="lobby-home-timer-select">Turn timer</label>
+                  <select id="lobby-home-timer-select" class="mp-slot-select">
+                    <option value="30" selected>30s Standard</option>
+                    <option value="15">15s Blitz</option>
+                    <option value="60">60s Classical</option>
+                    <option value="0">No timer</option>
+                  </select>
+                </div>
+                <div class="mp-field-row">
+                  <label for="lobby-home-rule-select">Ruleset</label>
+                  <select id="lobby-home-rule-select" class="mp-slot-select">
+                    <option value="freestyle" selected>Freestyle (5+)</option>
+                    <option value="blocked_ends">Blocked-Ends</option>
+                    <option value="exact5">Exact-5</option>
+                  </select>
+                </div>
+                <div class="mp-field-row">
+                  <label for="lobby-home-series-select">Series</label>
+                  <select id="lobby-home-series-select" class="mp-slot-select">
+                    <option value="1" selected>Single game</option>
+                    <option value="2">Best of 3</option>
+                    <option value="3">Best of 5</option>
+                  </select>
+                </div>
               </div>
             </div>
             <div class="lobby-host-buttons">
@@ -317,25 +349,12 @@
             </div>
           </div>
 
-          <div class="lobby-card lobby-practice-card">
-            <div class="lobby-card-header">
-              <h2 class="lobby-card-title">Practice &amp; AI arena</h2>
-              <span class="panel-badge">+10 Cranes / win</span>
-            </div>
-            <p class="lobby-practice-desc">Play locally against Laya, Jev, Von, and MoJev, or let the AI engines play each other.</p>
-            <div class="lobby-preset-row" role="group" aria-label="Quick start presets">
-              <button class="btn btn-ghost btn-xs lobby-preset-btn" id="btn-preset-1v1-von" type="button" title="Start 1v1 human vs Von (AI)">1v1 vs Von</button>
-              <button class="btn btn-ghost btn-xs lobby-preset-btn" id="btn-preset-human-3ai" type="button" title="Start 4-player battle with you against 3 AI engines">Human vs 3 AI</button>
-              <button class="btn btn-ghost btn-xs lobby-preset-btn" id="btn-preset-4ai-watch" type="button" title="Watch all 4 AI engines battle each other">4-AI showcase</button>
-            </div>
-            <button class="btn btn-secondary lobby-btn-block" id="btn-enter-practice-arena">Open practice board</button>
-          </div>
-
           <div class="lobby-card lobby-recent-card" id="lobby-home-recent-card">
             <div class="lobby-card-header">
-              <h2 class="lobby-card-title">Recent matches</h2>
+              <h2 class="lobby-card-title">Career &amp; recent matches</h2>
               <span class="panel-badge" id="lobby-home-recent-count">0 saved</span>
             </div>
+            <div id="lobby-career-stats" class="lobby-career-stats"></div>
             <div id="lobby-home-recent-battles" class="lobby-recent-list">
               <div class="mp-empty-rooms">Finish a battle to review or share its replay here.</div>
             </div>
@@ -357,6 +376,7 @@
           <div class="replay-controls">
             <button class="btn btn-xs" onclick="stepReplay(-1)">Prev</button>
             <button class="btn btn-xs" onclick="stepReplay(1)">Next</button>
+            <button class="btn btn-xs btn-primary" id="btn-replay-branch" onclick="playFromReplayState()" title="Branch from this turn and play against AI">Play from here</button>
             <button class="btn btn-xs" id="btn-replay-hints" onclick="toggleReplayHints()" title="Toggle top 3 engine candidate overlays and missed-defense check">Hints</button>
             <button class="btn btn-xs" id="btn-replay-snapshot" onclick="downloadBoardSnapshot()" title="Save board snapshot as PNG">Save PNG</button>
             <button class="btn btn-xs" id="btn-share-replay" onclick="shareCurrentReplay()" title="Copy shareable replay link">Share</button>
@@ -371,6 +391,22 @@
             <canvas id="tactical-sparkline-canvas" width="260" height="32" title="Click any turn on the sparkline to inspect that move"></canvas>
           </div>
           <div id="tactical-turning-points" class="tactical-turning-points"></div>
+        </div>
+
+        <!-- Post-Match Rematch & Seat-Swap Bar -->
+        <div id="rematch-bar" class="rematch-bar" style="display: none;" role="region" aria-label="Post-match actions">
+          <div class="rematch-bar-left">
+            <span class="rematch-status-text" id="rematch-status-text">Battle finished</span>
+            <span class="rematch-votes-pill" id="rematch-votes-pill" style="display: none;">0 votes</span>
+          </div>
+          <div class="rematch-bar-actions">
+            <label class="rematch-swap-label" title="Rotate turn order for the next game">
+              <input type="checkbox" id="toggle-swap-seats">
+              <span>Swap seats</span>
+            </label>
+            <button class="btn btn-primary btn-xs" id="btn-rematch-vote" type="button">Rematch</button>
+            <button class="btn btn-secondary btn-xs" id="btn-next-puzzle" type="button" style="display: none;">Next puzzle</button>
+          </div>
         </div>
 
         <!-- Human turn indicator with Undo -->
@@ -404,11 +440,9 @@
         <div class="player-legend" id="player-legend"></div>
 
         <footer class="board-footer">
-          <div class="board-hints">
-            <span>Drag to pan</span><span class="dot">·</span>
-            <span>Scroll/pinch to zoom</span><span class="dot">·</span>
-            <span>Arrows + Enter to play</span><span class="dot">·</span>
-            <span>5-in-a-row wins</span>
+          <div class="eval-pressure-bar" id="eval-pressure-bar" title="Tactical board pressure by player">
+            <span class="eval-pressure-label" id="eval-pressure-label">Eval · Even</span>
+            <div class="eval-pressure-track" id="eval-pressure-track"></div>
           </div>
           <div class="board-toggles">
             <label><input type="checkbox" id="toggle-numbers" checked><span>Numbers</span></label>
@@ -429,16 +463,23 @@
               <option value="shell">Shell &amp; Slate (60)</option>
               <option value="mono">High-Contrast Rings (50)</option>
             </select>
+            <select id="select-sound-pack" class="board-theme-select" title="Synthesized stone sound pack">
+              <option value="wood">Wood Clack</option>
+              <option value="slate">Slate &amp; Shell</option>
+              <option value="tactile">Tactile Switch</option>
+              <option value="synth">Soft Synth</option>
+            </select>
+            <button type="button" class="btn-shortcuts-help" id="btn-open-shortcuts" title="Keyboard shortcuts (?)" aria-label="Keyboard shortcuts">?</button>
           </div>
         </footer>
       </div>
     </section>
 
     <aside class="sidebar">
-      <!-- Roster Configuration -->
+      <!-- Roster Configuration & Match Rules -->
       <section class="panel" id="panel-roster">
         <div class="panel-header">
-          <h2 class="panel-title">Roster</h2>
+          <h2 class="panel-title">Roster &amp; rules</h2>
           <span class="panel-badge" id="roster-count">4 players</span>
         </div>
         <div class="roster-config" id="roster-config">
@@ -463,6 +504,18 @@
             <span class="roster-chip" style="--rc: #d97706">Human</span>
           </label>
         </div>
+        <div class="arena-rules-row">
+          <select id="select-rule-variant" class="arena-rule-select" title="Win condition ruleset">
+            <option value="freestyle">Freestyle (5+)</option>
+            <option value="blocked_ends">Blocked-Ends Caro</option>
+            <option value="exact5">Exact-5 Only</option>
+          </select>
+          <select id="select-series-target" class="arena-rule-select" title="Series match format">
+            <option value="1">Single Game</option>
+            <option value="2">Best of 3 (First to 2)</option>
+            <option value="3">Best of 5 (First to 3)</option>
+          </select>
+        </div>
       </section>
 
       <!-- Leaderboard -->
@@ -483,7 +536,10 @@
       <section class="panel" id="panel-battle-status">
         <div class="panel-header">
           <h2 class="panel-title">Current battle</h2>
-          <span class="panel-badge" id="battle-number-badge">Battle #1</span>
+          <div class="panel-header-badges">
+            <span class="panel-badge series-badge" id="series-score-badge" style="display: none;">Bo3 · 0–0</span>
+            <span class="panel-badge" id="battle-number-badge">Battle #1</span>
+          </div>
         </div>
         <div class="battle-roster" id="battle-roster"></div>
       </section>
@@ -493,7 +549,10 @@
         <div class="history-tabs">
           <button class="tab-btn active" id="btn-tab-moves">Moves</button>
           <button class="tab-btn" id="btn-tab-battles">History</button>
-          <span class="tab-counter" id="history-counter">0 turns</span>
+          <div class="history-tabs-right">
+            <button class="btn-copy-moves" id="btn-copy-moves" type="button" title="Copy coordinate move log to clipboard">Copy moves</button>
+            <span class="tab-counter" id="history-counter">0 turns</span>
+          </div>
         </div>
         <div class="tab-view active" id="view-moves">
           <ul class="move-list" id="move-list">
@@ -590,6 +649,22 @@
                 <option value="15">15s Blitz</option>
                 <option value="60">60s Classical</option>
                 <option value="0">No timer</option>
+              </select>
+            </div>
+            <div class="mp-field-row">
+              <label for="mp-room-rule-select">Ruleset</label>
+              <select id="mp-room-rule-select" class="mp-slot-select">
+                <option value="freestyle" selected>Freestyle (5+)</option>
+                <option value="blocked_ends">Blocked-Ends Caro</option>
+                <option value="exact5">Exact-5 Only</option>
+              </select>
+            </div>
+            <div class="mp-field-row">
+              <label for="mp-room-series-select">Series format</label>
+              <select id="mp-room-series-select" class="mp-slot-select">
+                <option value="1" selected>Single game</option>
+                <option value="2">Best of 3</option>
+                <option value="3">Best of 5</option>
               </select>
             </div>
             <div class="mp-field-row mp-checkbox-row">
@@ -758,6 +833,12 @@
           </div>
         </div>
 
+        <!-- Personal Career Record -->
+        <div class="auth-career-section" id="auth-career-section">
+          <div class="mp-slots-title">Personal career record</div>
+          <div id="auth-career-stats" class="auth-career-stats"></div>
+        </div>
+
         <!-- Recent Cranes Activity Ledger -->
         <div class="auth-cranes-ledger-section" id="auth-cranes-ledger-section">
           <div class="mp-slots-title">Recent Cranes activity</div>
@@ -767,14 +848,37 @@
     </div>
   </div>
 
+  <!-- Keyboard Shortcuts Cheat-Sheet Modal -->
+  <div id="modal-shortcuts" class="modal-backdrop" style="display: none;" role="dialog" aria-modal="true" aria-labelledby="modal-shortcuts-title">
+    <div class="modal-card modal-mp">
+      <div class="modal-mp-header">
+        <div class="modal-mp-title-wrap">
+          <h2 class="modal-mp-title" id="modal-shortcuts-title">Keyboard shortcuts &amp; controls</h2>
+        </div>
+        <button class="btn btn-icon modal-close" id="btn-close-shortcuts-modal" aria-label="Close shortcuts modal">✕</button>
+      </div>
+      <div class="mp-view shortcuts-grid-view">
+        <div class="shortcut-row"><kbd>↑</kbd> <kbd>↓</kbd> <kbd>←</kbd> <kbd>→</kbd><span>Move board target reticle</span></div>
+        <div class="shortcut-row"><kbd>Enter</kbd> / <kbd>Space</kbd><span>Place stone at target cell</span></div>
+        <div class="shortcut-row"><kbd>Z</kbd> / <kbd>U</kbd><span>Undo last human move (local matches)</span></div>
+        <div class="shortcut-row"><kbd>+</kbd> / <kbd>-</kbd><span>Zoom board in or out</span></div>
+        <div class="shortcut-row"><kbd>C</kbd><span>Recenter board on active cluster</span></div>
+        <div class="shortcut-row"><kbd>M</kbd><span>Mute or unmute synthesized audio</span></div>
+        <div class="shortcut-row"><kbd>F</kbd><span>Toggle fullscreen view</span></div>
+        <div class="shortcut-row"><kbd>?</kbd><span>Open or close this shortcuts guide</span></div>
+        <div class="shortcut-row"><kbd>Esc</kbd><span>Close modal or exit replay mode</span></div>
+      </div>
+    </div>
+  </div>
+
   <!-- Toast notifications for Cranes rewards, daily bonus & room events -->
   <div id="arena-toast-container" class="arena-toast-container" aria-live="polite"></div>
 
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
-  <script src="supabase-config.js?v=2.9.0"></script>
-  <script src="audio.js?v=2.9.0"></script>
-  <script src="multiplayer.js?v=2.9.0"></script>
-  <script src="engine.js?v=2.9.0"></script>
-  <script src="app.js?v=2.9.0"></script>
+  <script src="supabase-config.js?v=3.0.0"></script>
+  <script src="audio.js?v=3.0.0"></script>
+  <script src="multiplayer.js?v=3.0.0"></script>
+  <script src="engine.js?v=3.0.0"></script>
+  <script src="app.js?v=3.0.0"></script>
 </body>
 </html>

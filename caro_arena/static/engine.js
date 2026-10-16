@@ -13,17 +13,32 @@ const DIRECTIONS = [
 const PLAYERS = ["A", "B", "C", "D", "E"];
 
 class CaroBoard {
-  constructor(playerSymbolsOrSize, rule, maybeSymbols) {
+  static normalizeRuleVariant(variant) {
+    const v = String(variant || "freestyle").trim().toLowerCase();
+    if (v === "blocked_ends" || v === "exact5") return v;
+    return "freestyle";
+  }
+
+  constructor(playerSymbolsOrSize, rule = "freestyle", maybeSymbols) {
     const symbols = Array.isArray(playerSymbolsOrSize)
       ? playerSymbolsOrSize
       : (Array.isArray(maybeSymbols) ? maybeSymbols : PLAYERS.slice(0, 4));
     this.playerSymbols = symbols.length >= 2 ? symbols.slice(0, PLAYERS.length) : PLAYERS.slice(0, 4);
+    this.rule = CaroBoard.normalizeRuleVariant(rule);
     this.stones = new Map(); // "r,c" -> playerSymbol
     this.moves = [];
     this.eliminatedPlayers = [];
     this.placements = [];
     this.isDraw = false;
     this.currentPlayerIdx = 0;
+  }
+
+  get ruleVariant() {
+    return this.rule;
+  }
+
+  set ruleVariant(v) {
+    this.rule = CaroBoard.normalizeRuleVariant(v);
   }
 
   get currentPlayer() {
@@ -73,17 +88,26 @@ class CaroBoard {
     const current = player || this.currentPlayer;
     this.stones.set(`${r},${c}`, current);
 
+    const pattern = TacticalEvaluator.detectMovePattern(this, r, c, current);
+    const metaObj = Object.assign({}, metadata || {});
+    if (pattern && !metaObj.pattern) {
+      metaObj.pattern = pattern;
+    }
+
     const moveRecord = {
       move_number: this.moves.length + 1,
       player: current,
       row: r,
       col: c,
-      metadata: metadata || {}
+      pattern: pattern || null,
+      metadata: metaObj
     };
     this.moves.push(moveRecord);
 
     const winResult = this.checkWin(r, c, current);
     if (winResult.win) {
+      moveRecord.pattern = "5-in-a-Row";
+      moveRecord.metadata.pattern = "5-in-a-Row";
       const rank = this.placements.length + 1;
       this.placements.push({
         player: current,
@@ -126,6 +150,7 @@ class CaroBoard {
           break;
         }
       }
+      const posEndCell = this.getCell(r + dr * step, c + dc * step);
 
       step = 1;
       while (true) {
@@ -137,8 +162,19 @@ class CaroBoard {
           break;
         }
       }
+      const negEndCell = this.getCell(r - dr * step, c - dc * step);
 
-      if (line.length >= 5) {
+      if (this.rule === "blocked_ends") {
+        // Vietnamese Caro (Chặn hai đầu): 5+ in a row wins only if NOT blocked at both ends by opponent stones
+        const blockedBothEnds = posEndCell !== "." && negEndCell !== ".";
+        if (line.length >= 5 && !blockedBothEnds) {
+          return { win: true, line: line };
+        }
+      } else if (this.rule === "exact5") {
+        if (line.length === 5) {
+          return { win: true, line: line };
+        }
+      } else if (line.length >= 5) {
         return { win: true, line: line };
       }
     }
@@ -183,7 +219,8 @@ class CaroBoard {
     }
     return {
       size: 0,
-      rule: "standard",
+      rule: this.rule || "freestyle",
+      rule_variant: this.rule || "freestyle",
       is_unlimited: true,
       bounds: this.getBounds(),
       moves: this.moves,
@@ -223,8 +260,99 @@ class TacticalEvaluator {
       else break;
     }
 
-    const openEnds = (posOpen ? 1 : 0) + (negOpen ? 1 : 0);
+    const openEnds = (posOpen ? 1 : 0) + (negOpen ? 0 : 0) + (negOpen ? 1 : 0);
+    if (board.rule === "blocked_ends" && consecutive >= 5 && openEnds === 0) {
+      return { count: 4, open_ends: 0 };
+    }
     return { count: consecutive, open_ends: openEnds };
+  }
+
+  static detectMovePattern(board, r, c, player) {
+    if (!board || !board.stones) return null;
+    const wasSet = board.stones.get(`${r},${c}`);
+    board.stones.set(`${r},${c}`, player);
+    const patterns = DIRECTIONS.map(([dr, dc]) => this.evaluateLinePattern(board, r, c, dr, dc, player));
+
+    let win5 = 0;
+    let open4 = 0;
+    let half4 = 0;
+    let open3 = 0;
+
+    for (const p of patterns) {
+      if (p.count >= 5) win5++;
+      else if (p.count === 4 && p.open_ends === 2) open4++;
+      else if (p.count === 4 && p.open_ends === 1) half4++;
+      else if (p.count === 3 && p.open_ends === 2) open3++;
+    }
+
+    // Check if this move blocked an opponent's lethal line
+    let blockedWin = false;
+    let blockedOpen3 = false;
+    const opponents = board.getOpponents(player);
+    for (const opp of opponents) {
+      board.stones.set(`${r},${c}`, opp);
+      for (const [dr, dc] of DIRECTIONS) {
+        const dp = this.evaluateLinePattern(board, r, c, dr, dc, opp);
+        if (dp.count >= 5) blockedWin = true;
+        else if (dp.count === 4 && dp.open_ends === 2) blockedOpen3 = true;
+      }
+    }
+
+    if (wasSet !== undefined) board.stones.set(`${r},${c}`, wasSet);
+    else board.stones.delete(`${r},${c}`);
+
+    if (win5 > 0) return "5-in-a-Row";
+    if (open4 > 0 && (open4 + half4 >= 2)) return "Double-4";
+    if ((open4 + half4 >= 1) && open3 >= 1) return "4×3 Fork";
+    if (open4 > 0) return "Open-4";
+    if (open3 >= 2) return "Double-3 Fork";
+    if (half4 > 0) return "Blocked-4";
+    if (blockedWin) return "Block-4";
+    if (open3 === 1) return "Open-3";
+    if (blockedOpen3) return "Block-3";
+    return null;
+  }
+
+  static computeBoardPressure(board) {
+    const symbols = board?.playerSymbols || ["A", "B"];
+    const raw = {};
+    symbols.forEach(s => { raw[s] = 100; });
+    if (!board || !board.stones || board.stones.size === 0) {
+      const eq = Math.round(100 / symbols.length);
+      const shares = {};
+      symbols.forEach(s => { shares[s] = eq; });
+      return { shares, raw, leader: symbols[0] || "A" };
+    }
+
+    const firstWin = (board.placements || []).find(p => p.rank === 1);
+    if (firstWin && firstWin.player) {
+      const shares = {};
+      symbols.forEach(s => {
+        shares[s] = s === firstWin.player ? 88 : Math.round(12 / Math.max(1, symbols.length - 1));
+      });
+      return { shares, raw, leader: firstWin.player };
+    }
+
+    const threats = this.findThreatLines(board);
+    for (const t of threats) {
+      if (!raw[t.player]) continue;
+      if (t.severity === "critical") raw[t.player] += t.openEnds >= 2 ? 1200 : 550;
+      else if (t.severity === "warning") raw[t.player] += 240;
+      else if (t.severity === "minor") raw[t.player] += 70;
+      else raw[t.player] += 25;
+    }
+
+    let total = 0;
+    for (const s of symbols) total += raw[s] || 100;
+    const shares = {};
+    let leader = symbols[0];
+    let bestVal = -1;
+    for (const s of symbols) {
+      const val = raw[s] || 100;
+      if (val > bestVal) { bestVal = val; leader = s; }
+      shares[s] = Math.max(8, Math.round((val / Math.max(1, total)) * 100));
+    }
+    return { shares, raw, leader };
   }
 
   static evaluateMove(board, r, c, player, centroid = null) {
@@ -867,6 +995,113 @@ class ClientStorage {
     }
   }
 
+  static getPuzzleStats() {
+    try {
+      const raw = localStorage.getItem("caro_arena_puzzle_stats");
+      if (!raw) return { streak: 0, totalSolved: 0, lastSolvedDate: null, solvedIds: [] };
+      const parsed = JSON.parse(raw);
+      return {
+        streak: Number(parsed.streak) || 0,
+        totalSolved: Number(parsed.totalSolved) || 0,
+        lastSolvedDate: parsed.lastSolvedDate || null,
+        solvedIds: Array.isArray(parsed.solvedIds) ? parsed.solvedIds : []
+      };
+    } catch {
+      return { streak: 0, totalSolved: 0, lastSolvedDate: null, solvedIds: [] };
+    }
+  }
+
+  static recordPuzzleSolved(puzzleId) {
+    try {
+      const stats = this.getPuzzleStats();
+      const today = new Date().toISOString().slice(0, 10);
+      let isNewSolve = false;
+      if (!stats.solvedIds.includes(puzzleId)) {
+        stats.solvedIds.push(puzzleId);
+        stats.totalSolved += 1;
+        isNewSolve = true;
+      }
+      if (stats.lastSolvedDate !== today) {
+        stats.streak += 1;
+        stats.lastSolvedDate = today;
+        isNewSolve = true;
+      } else if (stats.streak === 0) {
+        stats.streak = 1;
+      }
+      localStorage.setItem("caro_arena_puzzle_stats", JSON.stringify(stats));
+      return { stats, isNewSolve, rewardCranes: 15 };
+    } catch {
+      return { stats: { streak: 1, totalSolved: 1, lastSolvedDate: null, solvedIds: [puzzleId] }, isNewSolve: true, rewardCranes: 15 };
+    }
+  }
+
+  static getCareerStats() {
+    const vsAi = {
+      laya: { label: "Laya", wins: 0, losses: 0, played: 0 },
+      jev: { label: "Jev", wins: 0, losses: 0, played: 0 },
+      von: { label: "Von", wins: 0, losses: 0, played: 0 },
+      mojev: { label: "MoJev", wins: 0, losses: 0, played: 0 }
+    };
+    let humanBattles = 0;
+    let humanWins = 0;
+    let fastestWinMoves = null;
+
+    const battles = this.getBattles();
+    const seenIds = new Set();
+
+    const processBattle = (b) => {
+      if (!b || !b.battle_id || seenIds.has(b.battle_id)) return;
+      seenIds.add(b.battle_id);
+      const placements = Array.isArray(b.placements) ? b.placements : [];
+      const humanPl = placements.find(p => p && p.type === "human");
+      if (!humanPl) return;
+      humanBattles += 1;
+      const humanRank = Number(humanPl.rank) || 99;
+      if (humanRank === 1) {
+        humanWins += 1;
+        const mNum = Number(humanPl.move_number) || Number(b.total_moves) || 0;
+        if (mNum > 0 && (fastestWinMoves === null || mNum < fastestWinMoves)) {
+          fastestWinMoves = mNum;
+        }
+      }
+      const seenAiInMatch = new Set();
+      for (const pl of placements) {
+        if (!pl || !vsAi[pl.type] || seenAiInMatch.has(pl.type)) continue;
+        seenAiInMatch.add(pl.type);
+        vsAi[pl.type].played += 1;
+        const aiRank = Number(pl.rank) || 99;
+        if (humanRank < aiRank) {
+          vsAi[pl.type].wins += 1;
+        } else if (aiRank < humanRank) {
+          vsAi[pl.type].losses += 1;
+        }
+      }
+    };
+
+    for (const b of battles) processBattle(b);
+    for (const s of this.getBattleSummaries()) processBattle(s);
+
+    const puzzleStats = this.getPuzzleStats();
+    const winRatePct = humanBattles > 0 ? Math.round((humanWins / humanBattles) * 100) : 0;
+    const totalBattles = this.getTotalBattlesCount ? this.getTotalBattlesCount() : battles.length;
+    const modelNames = { von: "Von", mojev: "MoJev", laya: "Laya", jev: "Jev" };
+    for (const k of Object.keys(vsAi)) {
+      vsAi[k].name = modelNames[k] || k;
+    }
+    return {
+      totalBattles,
+      humanBattles,
+      humanMatches: humanBattles,
+      humanWins,
+      winRatePct,
+      winRate: winRatePct,
+      fastestWinMoves,
+      vsAi,
+      puzzleStreak: puzzleStats.streak,
+      puzzlesSolved: puzzleStats.totalSolved
+    };
+  }
+
   static clearHistory() {
     try {
       localStorage.removeItem("caro_arena_battles");
@@ -881,6 +1116,77 @@ class ClientStorage {
       }
     } catch {}
   }
+}
+
+// ─────────────────────────────────────────
+// Curated Daily Tactical Puzzles
+// ─────────────────────────────────────────
+const DAILY_PUZZLES = [
+  {
+    id: "puzzle_double4_fork_01",
+    title: "The Crossroads Fork",
+    subtitle: "Play as A (Blue) — complete the 5-in-a-row or unstoppable 4×3 fork in 1 move.",
+    objective: "Play as A — complete the 5-in-a-row in 1 move.",
+    ruleVariant: "freestyle",
+    presetMoves: [
+      { row: 0, col: 0, player: "A" },
+      { row: -1, col: 0, player: "B" },
+      { row: 0, col: 1, player: "A" },
+      { row: -1, col: 1, player: "B" },
+      { row: 0, col: 2, player: "A" },
+      { row: -1, col: 2, player: "B" },
+      { row: 0, col: 3, player: "A" },
+      { row: 2, col: -1, player: "B" }
+    ],
+    solutions: [[0, 4], [0, -1]]
+  },
+  {
+    id: "puzzle_diag_strike_02",
+    title: "Diagonal Spear",
+    subtitle: "Play as A (Blue) — seize the open diagonal to win on the spot.",
+    objective: "Play as A — seize the open diagonal to win on the spot.",
+    ruleVariant: "freestyle",
+    presetMoves: [
+      { row: -2, col: -2, player: "A" },
+      { row: -2, col: 0, player: "B" },
+      { row: -1, col: -1, player: "A" },
+      { row: -1, col: 1, player: "B" },
+      { row: 0, col: 0, player: "A" },
+      { row: 1, col: -1, player: "B" },
+      { row: 1, col: 1, player: "A" },
+      { row: 2, col: 0, player: "B" }
+    ],
+    solutions: [[2, 2], [-3, -3]]
+  },
+  {
+    id: "puzzle_4x3_nexus_03",
+    title: "Twin Axis Fork",
+    subtitle: "Play as A (Blue) — place the pivot stone that creates an unstoppable Open-4.",
+    objective: "Play as A — place the pivot stone that creates an unstoppable Open-4.",
+    ruleVariant: "freestyle",
+    presetMoves: [
+      { row: 0, col: -1, player: "A" },
+      { row: -2, col: -1, player: "B" },
+      { row: 0, col: 1, player: "A" },
+      { row: -2, col: 0, player: "B" },
+      { row: 0, col: 2, player: "A" },
+      { row: -2, col: 2, player: "B" },
+      { row: 1, col: 0, player: "A" },
+      { row: 2, col: -2, player: "B" }
+    ],
+    solutions: [[0, 0], [0, 3]]
+  }
+];
+
+function getDailyPuzzle(overrideIndex = null) {
+  let idx = 0;
+  if (typeof overrideIndex === "number" && overrideIndex >= 0) {
+    idx = overrideIndex % DAILY_PUZZLES.length;
+  } else {
+    const dayNumber = Math.floor(Date.now() / 86400000);
+    idx = dayNumber % DAILY_PUZZLES.length;
+  }
+  return DAILY_PUZZLES[idx];
 }
 
 // ─────────────────────────────────────────
@@ -899,6 +1205,13 @@ class ClientGameManager {
     this.autoDelaySec = 0.02;
     this.battleNumber = 1;
     this.selectedPlayerTypes = ["laya", "jev", "von", "mojev"];
+    this.ruleVariant = "freestyle";
+    this.seriesTargetWins = 1;
+    this.seriesScores = {};
+    this.seriesChampion = null;
+    this.activePuzzle = null;
+    this.puzzleSolved = false;
+    this.isBranchedReplay = false;
     this.isThinking = false;
     this.thinkingPlayer = null;
     this.lastMoveDetails = null;
@@ -906,6 +1219,30 @@ class ClientGameManager {
     this.autoPlayTimer = null;
 
     this.newGame();
+  }
+
+  setRuleVariant(variant) {
+    this.ruleVariant = CaroBoard.normalizeRuleVariant(variant);
+    if (this.board && this.board.moves.length === 0) {
+      this.board.ruleVariant = this.ruleVariant;
+    }
+    if (this.onStateChange) this.onStateChange(this.getState());
+  }
+
+  setSeriesTarget(targetWins) {
+    const t = Math.max(1, Math.min(5, Number(targetWins) || 1));
+    if (t !== this.seriesTargetWins) {
+      this.seriesTargetWins = t;
+      this.seriesScores = {};
+      this.seriesChampion = null;
+    }
+    if (this.onStateChange) this.onStateChange(this.getState());
+  }
+
+  resetSeries() {
+    this.seriesScores = {};
+    this.seriesChampion = null;
+    this.battleNumber = 1;
   }
 
   createAgent(ptype, colorName) {
@@ -916,7 +1253,7 @@ class ClientGameManager {
     return null;
   }
 
-  newGame(playerTypes, shouldShuffle = true, playerConfigs = null) {
+  newGame(playerTypes, shouldShuffle = true, playerConfigs = null, options = {}) {
     if (playerConfigs) {
       this.isAutoPlaying = false;
       if (this.autoPlayTimer) {
@@ -924,8 +1261,25 @@ class ClientGameManager {
         this.autoPlayTimer = null;
       }
     }
-    if (this.status === "finished" && !playerConfigs) {
+    if (options.ruleVariant) {
+      this.ruleVariant = CaroBoard.normalizeRuleVariant(options.ruleVariant);
+    }
+    if (options.seriesTargetWins !== undefined) {
+      const nextTarget = Math.max(1, Math.min(5, Number(options.seriesTargetWins) || 1));
+      if (nextTarget !== this.seriesTargetWins || options.resetSeries) {
+        this.seriesTargetWins = nextTarget;
+        this.seriesScores = {};
+        this.seriesChampion = null;
+      }
+    } else if (options.resetSeries || this.seriesChampion) {
+      this.seriesScores = {};
+      this.seriesChampion = null;
+    }
+
+    if (this.status === "finished" && !playerConfigs && !options.resetSeries) {
       this.battleNumber += 1;
+    } else if (options.resetSeries) {
+      this.battleNumber = 1;
     }
     if (playerTypes) this.selectedPlayerTypes = playerTypes;
     const mpRoom = (playerConfigs && typeof window !== "undefined" && window.CaroMultiplayer?.inGame)
@@ -936,6 +1290,9 @@ class ClientGameManager {
       : Math.random().toString(36).substring(2, 10);
     this.startedAt = Date.now();
     this.endedAt = null;
+    this.activePuzzle = null;
+    this.puzzleSolved = false;
+    this.isBranchedReplay = false;
 
     const types = [...this.selectedPlayerTypes];
     if (shouldShuffle) {
@@ -959,10 +1316,99 @@ class ClientGameManager {
       };
     });
 
-    this.board = new CaroBoard(symbols);
+    this.board = new CaroBoard(symbols, this.ruleVariant);
     this.status = "ready";
     this.isThinking = false;
     this.thinkingPlayer = null;
+    this.lastMoveDetails = null;
+
+    if (this.onStateChange) this.onStateChange(this.getState());
+    return this.getState();
+  }
+
+  branchFromMoves(sourcePlayers, movesSlice, ruleVariant = null) {
+    if (this.autoPlayTimer) {
+      clearTimeout(this.autoPlayTimer);
+      this.autoPlayTimer = null;
+    }
+    this.isAutoPlaying = false;
+    this.activePuzzle = null;
+    this.puzzleSolved = false;
+    this.isBranchedReplay = true;
+    if (ruleVariant) {
+      this.ruleVariant = CaroBoard.normalizeRuleVariant(ruleVariant);
+    }
+
+    const rawPlayers = Array.isArray(sourcePlayers) && sourcePlayers.length >= 2
+      ? sourcePlayers
+      : [{ type: "human", symbol: "A", name: "Human" }, { type: "mojev", symbol: "B", name: "MoJev (B)" }];
+
+    const symbols = rawPlayers.map((p, idx) => p.symbol || PLAYERS[idx]);
+    const tempBoard = new CaroBoard(symbols, this.ruleVariant);
+    for (const m of (movesSlice || [])) {
+      tempBoard.makeMove(Number(m.row), Number(m.col), m.player, m.metadata || m.meta || {});
+    }
+
+    const nextTurnSymbol = tempBoard.currentPlayer;
+    const hasHumanAlready = rawPlayers.some(p => p.type === "human");
+
+    this.players = rawPlayers.map((p, idx) => {
+      const symbol = symbols[idx];
+      // Ensure the player whose turn it is at the branch point (or A) is human so user can immediately play
+      const makeHuman = (!hasHumanAlready && symbol === nextTurnSymbol) || p.type === "human";
+      const ptype = makeHuman ? "human" : (p.type || "jev");
+      const agent = ptype === "human" ? null : this.createAgent(ptype, symbol);
+      const name = makeHuman ? (p.type === "human" && p.name ? p.name : `You (${symbol})`) : (p.name || agent?.name || symbol);
+      return { type: ptype, name, agent, symbol };
+    });
+    this.selectedPlayerTypes = this.players.map(p => p.type);
+    this.board = tempBoard;
+    this.gameId = `branch_${Math.random().toString(36).substring(2, 9)}`;
+    this.startedAt = Date.now();
+    this.endedAt = this.board.isGameOver() ? Date.now() : null;
+    this.status = this.board.isGameOver() ? "finished" : (this.board.moves.length > 0 ? "playing" : "ready");
+
+    if (this.board.moves.length > 0) {
+      const last = this.board.moves[this.board.moves.length - 1];
+      this.lastMoveDetails = {
+        player: last.player,
+        player_name: this.players.find(p => p.symbol === last.player)?.name || last.player,
+        row: last.row,
+        col: last.col,
+        meta: last.metadata || {}
+      };
+    } else {
+      this.lastMoveDetails = null;
+    }
+
+    if (this.onStateChange) this.onStateChange(this.getState());
+    return this.getState();
+  }
+
+  startDailyPuzzle(overrideIndex = null) {
+    if (this.autoPlayTimer) {
+      clearTimeout(this.autoPlayTimer);
+      this.autoPlayTimer = null;
+    }
+    this.isAutoPlaying = false;
+    this.isBranchedReplay = false;
+    const puzzle = getDailyPuzzle(overrideIndex);
+    this.activePuzzle = puzzle;
+    this.puzzleSolved = false;
+    this.ruleVariant = CaroBoard.normalizeRuleVariant(puzzle.ruleVariant || "freestyle");
+    this.selectedPlayerTypes = ["human", "mojev"];
+    this.players = [
+      { type: "human", name: "You (A)", agent: null, symbol: "A" },
+      { type: "mojev", name: "MoJev (B)", agent: this.createAgent("mojev", "B"), symbol: "B" }
+    ];
+    this.board = new CaroBoard(["A", "B"], this.ruleVariant);
+    for (const m of (puzzle.presetMoves || [])) {
+      this.board.makeMove(m.row, m.col, m.player, { reasoning: "Puzzle setup", pattern: null });
+    }
+    this.gameId = `puzzle_${puzzle.id}_${Date.now().toString(36)}`;
+    this.startedAt = Date.now();
+    this.endedAt = null;
+    this.status = "playing";
     this.lastMoveDetails = null;
 
     if (this.onStateChange) this.onStateChange(this.getState());
@@ -986,14 +1432,34 @@ class ClientGameManager {
 
   playMove(r, c, meta) {
     const curr = this.board.currentPlayer;
-    const success = this.board.makeMove(r, c, curr, meta);
+    const moveMeta = meta ? { ...meta } : {};
+    const success = this.board.makeMove(r, c, curr, moveMeta);
     if (success) {
+      const latestMove = this.board.moves[this.board.moves.length - 1];
+      const pattern = latestMove?.metadata?.pattern || null;
       this.lastMoveDetails = {
         player: curr,
         player_name: this.players.find(p => p.symbol === curr)?.name || curr,
         row: r, col: c,
-        meta: meta || {}
+        pattern: pattern,
+        meta: latestMove?.metadata || moveMeta
       };
+
+      // Check Daily Puzzle completion if active
+      if (this.activePuzzle && curr === "A") {
+        const isListedSol = (this.activePuzzle.solutions || []).some(([sr, sc]) => sr === r && sc === c);
+        const patLabel = typeof pattern === "string" ? pattern : pattern?.label;
+        const isWinningOrFork = Boolean(patLabel && ["5-in-a-Row", "Open-4", "4×3 Fork", "Double-3 Fork"].includes(patLabel));
+        if (isListedSol || isWinningOrFork || this.board.isGameOver()) {
+          this.puzzleSolved = true;
+          this.status = "finished";
+          this.endedAt = Date.now();
+          if (typeof window !== "undefined" && window.CaroAudio) {
+            window.CaroAudio.playWinChime(1);
+          }
+          return true;
+        }
+      }
 
       // Audio feedback
       const pInfo = this.players.find(p => p.symbol === curr);
@@ -1009,12 +1475,26 @@ class ClientGameManager {
       if (this.board.isGameOver()) {
         this.status = "finished";
         this.endedAt = Date.now();
+        this.recordSeriesResult();
         this.persistGame();
       } else {
         this.status = "playing";
       }
     }
     return success;
+  }
+
+  recordSeriesResult(placementsOverride = null) {
+    const placements = Array.isArray(placementsOverride) ? placementsOverride : (this.board?.placements || []);
+    if (!Array.isArray(placements)) return;
+    const firstPlace = placements.find(p => p.rank === 1);
+    if (!firstPlace) return;
+    const sym = firstPlace.player || firstPlace.symbol;
+    if (!sym) return;
+    this.seriesScores[sym] = (this.seriesScores[sym] || 0) + 1;
+    if (this.seriesTargetWins > 1 && this.seriesScores[sym] >= this.seriesTargetWins) {
+      this.seriesChampion = sym;
+    }
   }
 
   undoHumanMove(targetSymbol = null) {
@@ -1036,12 +1516,13 @@ class ClientGameManager {
 
     const keepMoves = this.board.moves.slice(0, lastHumanIdx);
     const symbols = this.players.map(p => p.symbol);
-    this.board = new CaroBoard(symbols);
+    this.board = new CaroBoard(symbols, this.ruleVariant);
     for (const m of keepMoves) {
       this.board.makeMove(m.row, m.col, m.player, m.metadata);
     }
     this.status = keepMoves.length ? "playing" : "ready";
     this.endedAt = null;
+    this.puzzleSolved = false;
     if (keepMoves.length) {
       const last = keepMoves[keepMoves.length - 1];
       this.lastMoveDetails = {
@@ -1049,6 +1530,7 @@ class ClientGameManager {
         player_name: this.players.find(p => p.symbol === last.player)?.name || last.player,
         row: last.row,
         col: last.col,
+        pattern: last.metadata?.pattern || null,
         meta: last.metadata || {}
       };
     } else {
@@ -1098,6 +1580,7 @@ class ClientGameManager {
   }
 
   persistGame() {
+    if (this.activePuzzle) return; // Puzzles are tracked via recordPuzzleSolved
     try {
       const playerOrder = this.players.map(p => ({ type: p.type, symbol: p.symbol, name: p.name }));
       const placements = this.board.placements.map(pl => {
@@ -1120,6 +1603,7 @@ class ClientGameManager {
         ended_at: (this.endedAt || Date.now()) / 1000,
         is_multiplayer: isMp,
         room_code: isMp ? (window.CaroMultiplayer?.roomId || null) : null,
+        rule_variant: this.ruleVariant,
         player_order: playerOrder,
         placements: placements,
         total_moves: this.board.moves.length,
@@ -1180,6 +1664,7 @@ class ClientGameManager {
     return {
       game_id: this.gameId,
       status: this.status,
+      rule_variant: this.ruleVariant,
       is_auto_playing: this.isAutoPlaying,
       non_stop: this.nonStop,
       auto_delay_sec: this.autoDelaySec,
@@ -1195,8 +1680,18 @@ class ClientGameManager {
       last_move_details: this.lastMoveDetails,
       is_human_turn: this.isHumanTurn(),
       has_human: this.hasHumanPlayer(),
+      puzzle: this.activePuzzle,
+      active_puzzle: this.activePuzzle,
+      puzzle_solved: this.puzzleSolved,
+      is_branched_replay: this.isBranchedReplay,
       series: {
-        battle_number: this.battleNumber
+        battle_number: this.battleNumber,
+        target_wins: this.seriesTargetWins,
+        series_target_wins: this.seriesTargetWins,
+        scores: { ...this.seriesScores },
+        series_scores: { ...this.seriesScores },
+        champion: this.seriesChampion,
+        series_champion: this.seriesChampion
       }
     };
   }
@@ -1206,6 +1701,9 @@ window.CaroEngine = {
   CaroBoard,
   TacticalEvaluator,
   ClientStorage,
-  ClientGameManager
+  ClientGameManager,
+  DAILY_PUZZLES,
+  getDailyPuzzle
 };
+
 
