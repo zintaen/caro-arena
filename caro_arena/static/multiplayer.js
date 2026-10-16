@@ -23,6 +23,8 @@
   let myRole = "spectator"; // "host" | "player" | "spectator"
   let turnTimeoutSec = 30;
   let currentBattleNumber = 1;
+  let currentEntryFee = 0;
+  let roomJoinedAt = 0;
 
   const AI_MODELS = ["von", "mojev", "laya", "jev"];
   const AI_NAMES = {
@@ -60,6 +62,7 @@
   let onHostMigratedCallback = null;
   let onRequestsChangeCallback = null;
   let onSlotTakeoverCallback = null;
+  let onEmoteCallback = null;
   let getHostStateCallback = null;
 
   // ───────────────────────────────────────────────────────────────────────────
@@ -283,6 +286,7 @@
       hostId: myPlayerId,
       hostName: myPlayerName,
       isPublic: Boolean(isRoomPublic),
+      entryFee: currentEntryFee || 0,
       status: inGame ? "playing" : "waiting",
       battleNumber: currentBattleNumber || 1,
       playerCount: filledCount,
@@ -660,6 +664,8 @@
 
     currentRoomName = (opts.roomName || "").trim() || `${myPlayerName}'s Arena`;
     isRoomPublic = opts.isPublic !== undefined ? Boolean(opts.isPublic) : true;
+    currentEntryFee = Math.max(0, Number(opts.entryFee) || 0);
+    roomJoinedAt = Date.now();
     isRoomHost = true;
     hostPlayerId = myPlayerId;
     myAssignedSlot = 0;
@@ -716,6 +722,7 @@
     updateBrowserUrlRoom(currentRoomId);
 
     isRoomHost = false;
+    roomJoinedAt = Date.now();
     // Everyone joining an existing room starts as a Spectator until approved into a slot
     myAssignedSlot = -1;
     myRole = "spectator";
@@ -737,6 +744,7 @@
       payload: Object.assign({}, hostState, {
         roomId: currentRoomId,
         roomName: currentRoomName,
+        entryFee: currentEntryFee || 0,
         hostId: hostPlayerId || myPlayerId,
         spectators,
         targetId: targetRequesterId || null
@@ -963,6 +971,7 @@
       if (!payload || !payload.roster) return;
       if (payload.hostId) hostPlayerId = payload.hostId;
       if (payload.roomName) currentRoomName = payload.roomName;
+      if (payload.entryFee !== undefined) currentEntryFee = Math.max(0, Number(payload.entryFee) || 0);
       if (Array.isArray(payload.spectators)) spectators = payload.spectators;
       inGame = true;
       recomputeMyRoleAndSlot();
@@ -999,6 +1008,7 @@
       if (payload?.hostId) hostPlayerId = payload.hostId;
       if (payload?.roomName) currentRoomName = payload.roomName;
       if (payload?.isPublic !== undefined) isRoomPublic = Boolean(payload.isPublic);
+      if (payload?.entryFee !== undefined) currentEntryFee = Math.max(0, Number(payload.entryFee) || 0);
       if (!isRoomHost) {
         if (Array.isArray(payload?.slots)) {
           roomSlots = payload.slots;
@@ -1016,6 +1026,7 @@
       currentBattleNumber = payload?.battleNumber || 1;
       if (payload?.hostId) hostPlayerId = payload.hostId;
       if (payload?.roomName) currentRoomName = payload.roomName;
+      if (payload?.entryFee !== undefined) currentEntryFee = Math.max(0, Number(payload.entryFee) || 0);
       if (Array.isArray(payload?.slots)) roomSlots = payload.slots;
       if (Array.isArray(payload?.spectators)) spectators = payload.spectators;
       recomputeMyRoleAndSlot();
@@ -1024,6 +1035,10 @@
 
     currentChannel.on("broadcast", { event: "game_move" }, ({ payload }) => {
       if (onRemoteMoveCallback) onRemoteMoveCallback(payload);
+    });
+
+    currentChannel.on("broadcast", { event: "game_emote" }, ({ payload }) => {
+      if (onEmoteCallback && payload) onEmoteCallback(payload);
     });
 
     currentChannel.on("broadcast", { event: "game_next" }, ({ payload }) => {
@@ -1318,13 +1333,16 @@
   // ───────────────────────────────────────────────────────────────────────────
   // Dynamic Slot & Room Customization (Host)
   // ───────────────────────────────────────────────────────────────────────────
-  function setRoomMeta({ roomName, isPublic } = {}) {
+  function setRoomMeta({ roomName, isPublic, entryFee } = {}) {
     if (!isRoomHost) return;
     if (roomName !== undefined && String(roomName).trim()) {
       currentRoomName = String(roomName).trim().substring(0, 32);
     }
     if (isPublic !== undefined) {
       isRoomPublic = Boolean(isPublic);
+    }
+    if (entryFee !== undefined && !inGame) {
+      currentEntryFee = Math.max(0, Number(entryFee) || 0);
     }
     broadcastLobbyUpdate();
     if (onLobbyChangeCallback) onLobbyChangeCallback(getLobbyState());
@@ -1587,9 +1605,28 @@
       }
     }
 
+    let seenHostInPresence = false;
     for (const u of presentUsers) {
       if (u && u.isHost && u.id) {
         hostPlayerId = u.id;
+        seenHostInPresence = true;
+      }
+    }
+
+    // Self-healing Host Migration: if host disconnected ungracefully without sending host_leave
+    if (
+      !isRoomHost &&
+      hostPlayerId &&
+      presentUsers.length > 0 &&
+      !seenHostInPresence &&
+      Date.now() - roomJoinedAt > 2500
+    ) {
+      const hostStillPresent = presentUsers.some(u => u && u.id === hostPlayerId);
+      if (!hostStillPresent) {
+        const missingHostId = hostPlayerId;
+        handleParticipantLeft(missingHostId);
+        handleHostDisconnected(missingHostId);
+        return;
       }
     }
 
@@ -1656,6 +1693,7 @@
         roomId: currentRoomId,
         roomName: currentRoomName,
         isPublic: isRoomPublic,
+        entryFee: currentEntryFee || 0,
         slots: roomSlots,
         spectators,
         hostName: myPlayerName,
@@ -1713,6 +1751,7 @@
     const startPayload = {
       roomId: currentRoomId,
       roomName: currentRoomName,
+      entryFee: currentEntryFee || 0,
       hostId: myPlayerId,
       roster,
       slots: roomSlots,
@@ -1746,6 +1785,28 @@
         senderId: myPlayerId
       }
     });
+  }
+
+  function sendEmote(emoji) {
+    const cleanEmoji = String(emoji || "👏").trim().substring(0, 8);
+    const payload = {
+      emoji: cleanEmoji,
+      senderId: myPlayerId,
+      senderName: myPlayerName,
+      role: myRole,
+      slotIndex: myAssignedSlot,
+      timestamp: Date.now()
+    };
+    if (currentChannel) {
+      currentChannel.send({
+        type: "broadcast",
+        event: "game_emote",
+        payload
+      });
+    }
+    if (onEmoteCallback) {
+      onEmoteCallback(payload);
+    }
   }
 
   function sendNextBattle(battleNum) {
@@ -1797,6 +1858,7 @@
     myPendingRequest = null;
     currentRoomId = null;
     currentRoomName = "";
+    currentEntryFee = 0;
     isRoomHost = false;
     hostPlayerId = null;
     myAssignedSlot = -1;
@@ -1815,6 +1877,7 @@
       roomId: currentRoomId,
       roomName: currentRoomName || (currentRoomId ? `Room ${currentRoomId}` : ""),
       isPublic: isRoomPublic,
+      entryFee: currentEntryFee || 0,
       isHost: isRoomHost,
       hostId: hostPlayerId,
       isOnline: Boolean(getClient()),
@@ -1843,6 +1906,7 @@
     if (callbacks.onHostMigrated) onHostMigratedCallback = callbacks.onHostMigrated;
     if (callbacks.onRequestsChange) onRequestsChangeCallback = callbacks.onRequestsChange;
     if (callbacks.onSlotTakeover) onSlotTakeoverCallback = callbacks.onSlotTakeover;
+    if (callbacks.onEmote) onEmoteCallback = callbacks.onEmote;
     if (callbacks.getHostState) getHostStateCallback = callbacks.getHostState;
   }
 
@@ -1899,8 +1963,11 @@
     getActiveRooms,
     startGame,
     sendMove,
+    sendEmote,
     sendNextBattle,
     requestStateSync,
+    broadcastGameStateIfActive,
+    broadcastAuthoritativeState: broadcastGameStateIfActive,
     getLobbyState,
     setCallbacks,
     get isHost() { return isRoomHost; },
@@ -1909,6 +1976,7 @@
     get roomId() { return currentRoomId; },
     get roomName() { return currentRoomName; },
     get isPublic() { return isRoomPublic; },
+    get entryFee() { return currentEntryFee; },
     get inGame() { return inGame; },
     get myId() { return myPlayerId; },
     get myAssignedSlot() { return myAssignedSlot; },
@@ -1922,10 +1990,25 @@
   };
 
   // ───────────────────────────────────────────────────────────────────────────
-  // Simple Account Auth (`window.CaroAuth`) — Display Name, Email, 6-Digit PIN & 🦢 Cranes
+  // Simple Account Auth (`window.CaroAuth`) — Display Name, Email, 6-Digit PIN,
+  // 5-Attempt Lockout, 🦢 Cranes Economy & Unlockable Board Themes
   // ───────────────────────────────────────────────────────────────────────────
   const AUTH_SESSION_KEY = "caro_arena_auth_session";
   const AUTH_LOCAL_USERS_KEY = "caro_arena_local_users";
+  const AUTH_LOCKOUTS_KEY = "caro_arena_auth_lockouts";
+  const GUEST_CRANES_KEY = "caro_arena_guest_cranes";
+  const BOARD_THEME_KEY = "caro_arena_board_theme";
+  const UNLOCKED_THEMES_KEY = "caro_arena_unlocked_themes";
+  const MAX_PIN_ATTEMPTS = 5;
+  const LOCKOUT_DURATION_MS = 5 * 60 * 1000; // 5 minutes
+
+  const BOARD_THEMES_CATALOG = {
+    classic: { id: "classic", name: "Classic Kaya", cost: 0, icon: "🪵", desc: "Warm traditional Kaya wood grain" },
+    obsidian: { id: "obsidian", name: "Obsidian Slate", cost: 50, icon: "🌑", desc: "Deep volcanic slate with silver grid" },
+    jade: { id: "jade", name: "Jade Pavilion", cost: 75, icon: "🐉", desc: "Imperial celadon jade with gold lines" },
+    cyber: { id: "cyber", name: "Cyber Grid", cost: 100, icon: "⚡", desc: "High-contrast neon tactical matrix" }
+  };
+
   let authChangeCallbacks = [];
 
   async function hashPin(pin) {
@@ -1962,6 +2045,70 @@
     try {
       localStorage.setItem(AUTH_LOCAL_USERS_KEY, JSON.stringify(map));
     } catch {}
+  }
+
+  function getLockoutsMap() {
+    try {
+      const raw = localStorage.getItem(AUTH_LOCKOUTS_KEY);
+      return raw ? JSON.parse(raw) : {};
+    } catch {
+      return {};
+    }
+  }
+
+  function saveLockoutsMap(map) {
+    try {
+      localStorage.setItem(AUTH_LOCKOUTS_KEY, JSON.stringify(map));
+    } catch {}
+  }
+
+  function getLockoutStatus(email) {
+    const cleanEmail = String(email || "").trim().toLowerCase();
+    if (!cleanEmail) return { failedAttempts: 0, lockedUntil: 0, isLocked: false, remainingSec: 0 };
+    const map = getLockoutsMap();
+    const entry = map[cleanEmail] || { failed_attempts: 0, locked_until: 0 };
+    const now = Date.now();
+    if (entry.locked_until && now >= entry.locked_until) {
+      // Lockout expired — reset counter
+      delete map[cleanEmail];
+      saveLockoutsMap(map);
+      return { failedAttempts: 0, lockedUntil: 0, isLocked: false, remainingSec: 0 };
+    }
+    const isLocked = Boolean(entry.locked_until && now < entry.locked_until);
+    const remainingSec = isLocked ? Math.ceil((entry.locked_until - now) / 1000) : 0;
+    return {
+      failedAttempts: entry.failed_attempts || 0,
+      lockedUntil: entry.locked_until || 0,
+      isLocked,
+      remainingSec
+    };
+  }
+
+  function recordFailedPinAttempt(email) {
+    const cleanEmail = String(email || "").trim().toLowerCase();
+    if (!cleanEmail) return;
+    const map = getLockoutsMap();
+    const prev = map[cleanEmail] || { failed_attempts: 0, locked_until: 0 };
+    const now = Date.now();
+    const baseAttempts = (prev.locked_until && now >= prev.locked_until) ? 0 : (prev.failed_attempts || 0);
+    const nextAttempts = baseAttempts + 1;
+    const lockedUntil = nextAttempts >= MAX_PIN_ATTEMPTS ? now + LOCKOUT_DURATION_MS : 0;
+    map[cleanEmail] = {
+      failed_attempts: nextAttempts,
+      locked_until: lockedUntil
+    };
+    saveLockoutsMap(map);
+    return { failedAttempts: nextAttempts, lockedUntil };
+  }
+
+  function clearLockoutForEmail(email) {
+    const cleanEmail = String(email || "").trim().toLowerCase();
+    if (!cleanEmail) return;
+    const map = getLockoutsMap();
+    if (map[cleanEmail]) {
+      delete map[cleanEmail];
+      saveLockoutsMap(map);
+    }
   }
 
   function getCurrentUser() {
@@ -2006,6 +2153,7 @@
         p_pin_hash: pinHash
       });
       if (!error && data) {
+        clearLockoutForEmail(cleanEmail);
         const users = getLocalUsersMap();
         users[cleanEmail] = Object.assign({}, data, { pin_hash: pinHash });
         saveLocalUsersMap(users);
@@ -2029,6 +2177,7 @@
       cranes: 100,
       updated_at: new Date().toISOString()
     };
+    clearLockoutForEmail(cleanEmail);
     users[cleanEmail] = Object.assign({}, newUser, { pin_hash: pinHash });
     saveLocalUsersMap(users);
     setSessionUser(newUser);
@@ -2038,6 +2187,13 @@
   async function login({ email, pin }) {
     const cleanEmail = String(email || "").trim().toLowerCase();
     if (!cleanEmail || !cleanEmail.includes("@")) throw new Error("Please enter a valid email address.");
+
+    // Check client-side 5-attempt lockout before hashing or calling RPC
+    const lockStatus = getLockoutStatus(cleanEmail);
+    if (lockStatus.isLocked) {
+      throw new Error(`Too many failed PIN attempts. Account locked for ${lockStatus.remainingSec}s.`);
+    }
+
     const pinHash = await hashPin(pin);
 
     const client = getClient();
@@ -2047,6 +2203,7 @@
         p_pin_hash: pinHash
       });
       if (!error && data) {
+        clearLockoutForEmail(cleanEmail);
         const users = getLocalUsersMap();
         users[cleanEmail] = Object.assign({}, data, { pin_hash: pinHash });
         saveLocalUsersMap(users);
@@ -2054,15 +2211,24 @@
         return data;
       }
       if (error && !String(error.message || "").includes("Could not find the function")) {
-        throw new Error(error.message || "Invalid email or 6-digit PIN.");
+        const lockAfter = recordFailedPinAttempt(cleanEmail);
+        if (lockAfter && lockAfter.lockedUntil) {
+          throw new Error("Too many failed PIN attempts (5/5). Account locked for 5 minutes.");
+        }
+        throw new Error(error.message || `Invalid email or 6-digit PIN (${MAX_PIN_ATTEMPTS - (lockAfter?.failedAttempts || 1)} attempts left).`);
       }
     }
 
     const users = getLocalUsersMap();
     const record = users[cleanEmail];
     if (!record || record.pin_hash !== pinHash) {
-      throw new Error("Invalid email or 6-digit PIN.");
+      const lockAfter = recordFailedPinAttempt(cleanEmail);
+      if (lockAfter && lockAfter.lockedUntil) {
+        throw new Error("Too many failed PIN attempts (5/5). Account locked for 5 minutes.");
+      }
+      throw new Error(`Invalid email or 6-digit PIN (${MAX_PIN_ATTEMPTS - (lockAfter?.failedAttempts || 1)} attempts left).`);
     }
+    clearLockoutForEmail(cleanEmail);
     const sessionUser = {
       user_id: record.user_id,
       email: record.email,
@@ -2133,6 +2299,166 @@
     return updatedUser;
   }
 
+  function getCranesBalance() {
+    const current = getCurrentUser();
+    if (current && typeof current.cranes === "number") {
+      return current.cranes;
+    }
+    try {
+      const guestVal = localStorage.getItem(GUEST_CRANES_KEY);
+      return guestVal !== null ? Math.max(0, Number(guestVal) || 0) : 100;
+    } catch {
+      return 100;
+    }
+  }
+
+  async function adjustCranes(delta, reason = "match_reward") {
+    const numDelta = Math.round(Number(delta) || 0);
+    if (numDelta === 0) return getCranesBalance();
+
+    const current = getCurrentUser();
+    if (current) {
+      const nextCranes = Math.max(0, (Number(current.cranes) || 0) + numDelta);
+      const updatedUser = Object.assign({}, current, {
+        cranes: nextCranes,
+        updated_at: new Date().toISOString()
+      });
+
+      const users = getLocalUsersMap();
+      if (current.email && users[current.email]) {
+        users[current.email].cranes = nextCranes;
+        users[current.email].updated_at = updatedUser.updated_at;
+        saveLocalUsersMap(users);
+      }
+      setSessionUser(updatedUser);
+
+      // Sync to Supabase RPC if deployed
+      const client = getClient();
+      if (client) {
+        try {
+          const { data, error } = await client.rpc("caro_arena_adjust_cranes", {
+            p_user_id: current.user_id,
+            p_delta: numDelta,
+            p_reason: String(reason || "match_reward")
+          });
+          if (!error && data && typeof data.cranes === "number") {
+            updatedUser.cranes = data.cranes;
+            if (current.email && users[current.email]) {
+              users[current.email].cranes = data.cranes;
+              saveLocalUsersMap(users);
+            }
+            setSessionUser(updatedUser);
+          }
+        } catch {}
+      }
+      return updatedUser.cranes;
+    }
+
+    // Guest wallet fallback
+    const curGuest = getCranesBalance();
+    const nextGuest = Math.max(0, curGuest + numDelta);
+    try {
+      localStorage.setItem(GUEST_CRANES_KEY, String(nextGuest));
+    } catch {}
+    for (const cb of authChangeCallbacks) {
+      try { cb(null); } catch {}
+    }
+    return nextGuest;
+  }
+
+  function getDailyBonusStorageKey() {
+    const current = getCurrentUser();
+    return `caro_arena_daily_bonus_${current?.user_id || "guest"}`;
+  }
+
+  function canClaimDailyBonus() {
+    try {
+      const lastRaw = localStorage.getItem(getDailyBonusStorageKey());
+      const lastTs = Number(lastRaw) || 0;
+      const cooldownMs = 24 * 60 * 60 * 1000;
+      const elapsed = Date.now() - lastTs;
+      if (!lastTs || elapsed >= cooldownMs) {
+        return { canClaim: true, nextClaimInMs: 0 };
+      }
+      return { canClaim: false, nextClaimInMs: cooldownMs - elapsed };
+    } catch {
+      return { canClaim: true, nextClaimInMs: 0 };
+    }
+  }
+
+  async function claimDailyBonus() {
+    const check = canClaimDailyBonus();
+    if (!check.canClaim) {
+      const hrs = Math.ceil(check.nextClaimInMs / (60 * 60 * 1000));
+      throw new Error(`Daily bonus already claimed! Next bonus in ~${hrs}h.`);
+    }
+    try {
+      localStorage.setItem(getDailyBonusStorageKey(), String(Date.now()));
+    } catch {}
+    const newBalance = await adjustCranes(25, "daily_login_bonus");
+    return { bonus: 25, cranes: newBalance };
+  }
+
+  function getUnlockedThemes() {
+    try {
+      const current = getCurrentUser();
+      const key = `${UNLOCKED_THEMES_KEY}_${current?.user_id || "guest"}`;
+      const raw = localStorage.getItem(key);
+      const parsed = raw ? JSON.parse(raw) : ["classic"];
+      if (!Array.isArray(parsed)) return ["classic"];
+      if (!parsed.includes("classic")) parsed.unshift("classic");
+      return parsed;
+    } catch {
+      return ["classic"];
+    }
+  }
+
+  function isThemeUnlocked(themeId) {
+    if (!themeId || themeId === "classic") return true;
+    return getUnlockedThemes().includes(themeId);
+  }
+
+  function getSelectedTheme() {
+    try {
+      const saved = localStorage.getItem(BOARD_THEME_KEY) || "classic";
+      return BOARD_THEMES_CATALOG[saved] && isThemeUnlocked(saved) ? saved : "classic";
+    } catch {
+      return "classic";
+    }
+  }
+
+  function setSelectedTheme(themeId) {
+    if (!BOARD_THEMES_CATALOG[themeId]) return "classic";
+    if (!isThemeUnlocked(themeId)) return getSelectedTheme();
+    try {
+      localStorage.setItem(BOARD_THEME_KEY, themeId);
+    } catch {}
+    return themeId;
+  }
+
+  async function unlockTheme(themeId) {
+    const entry = BOARD_THEMES_CATALOG[themeId];
+    if (!entry) throw new Error("Unknown board theme.");
+    if (isThemeUnlocked(themeId)) {
+      setSelectedTheme(themeId);
+      return { unlocked: true, themeId, cranes: getCranesBalance() };
+    }
+    const balance = getCranesBalance();
+    if (balance < entry.cost) {
+      throw new Error(`Need ${entry.cost} 🦢 Cranes to unlock ${entry.name} (you have ${balance} 🦢).`);
+    }
+    const newBalance = await adjustCranes(-entry.cost, `unlock_theme_${themeId}`);
+    try {
+      const current = getCurrentUser();
+      const key = `${UNLOCKED_THEMES_KEY}_${current?.user_id || "guest"}`;
+      const unlocked = getUnlockedThemes();
+      if (!unlocked.includes(themeId)) unlocked.push(themeId);
+      localStorage.setItem(key, JSON.stringify(unlocked));
+    } catch {}
+    setSelectedTheme(themeId);
+    return { unlocked: true, themeId, cranes: newBalance };
+  }
+
   function logout() {
     setSessionUser(null);
   }
@@ -2149,7 +2475,19 @@
     updateProfile,
     logout,
     onAuthChange,
-    hashPin
+    hashPin,
+    getLockoutStatus,
+    clearLockoutForEmail,
+    getCranesBalance,
+    adjustCranes,
+    canClaimDailyBonus,
+    claimDailyBonus,
+    BOARD_THEMES_CATALOG,
+    getUnlockedThemes,
+    isThemeUnlocked,
+    getSelectedTheme,
+    setSelectedTheme,
+    unlockTheme
   };
 
   init();
