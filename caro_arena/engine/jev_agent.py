@@ -48,7 +48,8 @@ class JevPlayer:
     def choose_move(self, board: CaroBoard, player: str, top_k: int = 8) -> Dict[str, Any]:
         """Evaluates tactical candidates using TypeSafe Jev and returns the chosen move with stats."""
         start_time = time.time()
-        opponent = WHITE if player == BLACK else BLACK
+        opponents_list = board.get_opponents(player) if hasattr(board, "get_opponents") else ([WHITE if player == BLACK else BLACK])
+        opponent = ", ".join(opponents_list) if opponents_list else "None"
 
         # If board is empty, standard center opening at origin (0, 0)
         if not board.moves:

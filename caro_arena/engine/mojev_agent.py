@@ -21,7 +21,8 @@ class MoJevPlayer:
 
     def choose_move(self, board: CaroBoard, player: str, top_k: int = 8) -> Dict[str, Any]:
         start_time = time.time()
-        opponent = WHITE if player == BLACK else BLACK
+        opponents_list = board.get_opponents(player) if hasattr(board, "get_opponents") else ([WHITE if player == BLACK else BLACK])
+        opponent = ", ".join(opponents_list) if opponents_list else "None"
 
         if not board.moves:
             latency = (time.time() - start_time) * 1000

@@ -147,7 +147,7 @@ Caro Arena supports **Dual-Mode Execution**:
 
 ### Option A: Deploy to GitHub Pages (Zero Backend)
 
-The static web build is pre-assembled in the [`docs/`](file:///Users/anhtrinh/Projects/Playground/docs/) folder.
+The static web build is pre-assembled in the [`docs/`](../docs/) folder.
 
 #### Method 1: Deploy from `/docs` folder (Recommended & Easiest)
 1. Commit and push the repository to GitHub.
@@ -159,7 +159,7 @@ The static web build is pre-assembled in the [`docs/`](file:///Users/anhtrinh/Pr
 5. Click **Save**. Your site will be published at `https://<username>.github.io/<repo>/` in under a minute!
 
 #### Method 2: Deploy via GitHub Actions
-An automated deployment workflow is preconfigured in [`.github/workflows/deploy-pages.yml`](file:///Users/anhtrinh/Projects/Playground/.github/workflows/deploy-pages.yml).
+An automated deployment workflow is preconfigured in [`.github/workflows/deploy-pages.yml`](../.github/workflows/deploy-pages.yml).
 1. Go to **Settings** > **Pages**.
 2. Under **Build and deployment** > **Source**, choose **GitHub Actions**.
 3. Every push to `main` or `master` will automatically publish the arena.
@@ -170,18 +170,11 @@ An automated deployment workflow is preconfigured in [`.github/workflows/deploy-
 
 #### 1. Prerequisites
 - Python 3.12+
-- Dependencies installed in `.venv` (`fastapi`, `uvicorn`, `pydantic`, `laya`, `typesafe-sdk`, `sqlite3`).
+- Dependencies installed in `.venv` (`fastapi`, `uvicorn`, `pydantic`, `sqlite3`).
 
 #### 2. Launch Local Server
-Ensure you are in the workspace root directory:
+Ensure you are in the repository root directory:
 ```bash
-cd /Users/anhtrinh/Projects/Playground
-.venv/bin/uvicorn caro_arena.main:app --port 8088 --host 127.0.0.1
-```
-
-*Alternatively, activate the virtual environment first:*
-```bash
-source .venv/bin/activate
 uvicorn caro_arena.main:app --port 8088 --host 127.0.0.1
 ```
 
@@ -196,18 +189,9 @@ http://localhost:8088
 
 ## 🧪 Verification & Testing
 
-An automated test suite validates the battle lifecycle, human move constraints, placement rankings, and tie-breaking:
+An automated test suite validates the battle lifecycle, human move constraints, placement rankings, undo mechanics, and tie-breaking:
 
 ```bash
 # Run comprehensive audit suite
-.venv/bin/python3 -m unittest caro_arena/tests/test_all_edge_cases.py
+python3 -m unittest caro_arena/tests/test_all_edge_cases.py
 ```
-
-All 7 test suites verify:
-1. Clean slate defaults (strictly 4 AI models, Human excluded).
-2. Illegal human moves rejected with HTTP 400.
-3. 2-player duels finish with unique $[1, 2]$ placements and winning 5-in-a-row lines.
-4. Human player turns and occupied cell checks.
-5. Leaderboard monotonic tie-breaking.
-6. Replay history and move datasets.
-7. Full database wipe and clean state recovery.

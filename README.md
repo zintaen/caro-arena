@@ -118,11 +118,12 @@ The frontend follows an anti-slop, clean editorial design system:
    - Toggleable live tactical heatmap (`🔥 Heatmap`) highlighting hot intersection zones where multiple players' threat lines cross.
    - Laser threat vectors (`⚡ Lasers`) connecting 5-in-a-row alignments.
 
-7. **AI Sandbox & Live Hyperparameter Tuning**:
-   - Open the **⚙️ Sandbox** modal to adjust AI Temperature (creativity vs determinism), Defense Weight (offensive aggro vs turtle defense), and Candidate Search Radius in real-time.
+7. **Real-Time Multiplayer Rooms (`👥 Rooms`)**:
+   - Create or join up to 4-player online rooms (powered by Supabase Realtime Broadcast & Presence) or local multi-tab rooms (powered by `BroadcastChannel` with zero configuration).
+   - Mix human friends and AI bots (`Von`, `MoJev`, `Laya`, `Jev`) in any 2–4 slot configuration and share instant invite links (`?room=CODE`).
 
-8. **Championship Series Tournament Mode**:
-   - Click **🏆 Series** to start a Best-of-3, Best-of-5, or Best-of-7 tournament with live ladder tracking, interactive podium celebration, and canvas confetti cannon.
+8. **Continuous Non-Stop Arena Mode & Confetti Celebrations**:
+   - Enable the **Non-stop** toggle to chain consecutive AI battles automatically with celebratory canvas confetti and cumulative leaderboard tracking.
 
 9. **Human Move Undo & Ghost HUD Preview**:
    - **↩ Undo**: One-click rewind of the last human move and any intermediate AI responses, letting humans learn and test tactical counterplays.

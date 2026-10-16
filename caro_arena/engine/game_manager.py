@@ -15,8 +15,8 @@ from caro_arena.engine.storage import GameStorage
 
 
 class GameManager:
-    def __init__(self):
-        self.storage = GameStorage()
+    def __init__(self, storage: Optional[GameStorage] = None):
+        self.storage = storage or GameStorage()
         self.game_id = str(uuid.uuid4())[:8]
         self.started_at = time.time()
         self.ended_at: Optional[float] = None
@@ -46,10 +46,17 @@ class GameManager:
             return MoJevPlayer(name=f"MoJev ({color_name})")
         return None  # human or unknown → no agent
 
+    VALID_PLAYER_TYPES = {"laya", "jev", "von", "mojev", "human"}
+
     def new_game(self, player_types: Optional[List[str]] = None) -> Dict[str, Any]:
         """Starts a fresh battle. Accepts optional player types list."""
         if player_types is not None:
-            self.selected_player_types = player_types
+            if not isinstance(player_types, list) or len(player_types) < 2 or len(player_types) > len(PLAYERS):
+                raise ValueError(f"Roster must contain between 2 and {len(PLAYERS)} players.")
+            for pt in player_types:
+                if not isinstance(pt, str) or pt not in self.VALID_PLAYER_TYPES:
+                    raise ValueError(f"Invalid player type: {pt}")
+            self.selected_player_types = list(player_types)
 
         self.game_id = str(uuid.uuid4())[:8]
         self.started_at = time.time()
@@ -138,13 +145,27 @@ class GameManager:
         if human_idx == -1:
             return False
 
+        if self.status == "finished":
+            self.storage.delete_battle(self.game_id)
+
         keep_moves = self.board.moves[:human_idx]
         symbols = [p["symbol"] for p in self.players]
         self.board = CaroBoard(size=0, rule="standard", player_symbols=symbols)
         for m in keep_moves:
             self.board.make_move(m["row"], m["col"], m["player"], metadata=m.get("metadata"))
-        self.status = "playing"
-        self.last_move_details = keep_moves[-1] if keep_moves else None
+        self.status = "playing" if keep_moves else "ready"
+        self.ended_at = None
+        if keep_moves:
+            last = keep_moves[-1]
+            self.last_move_details = {
+                "player": last["player"],
+                "player_name": self.get_player_name(last["player"]),
+                "row": last["row"],
+                "col": last["col"],
+                "meta": last.get("metadata") or {}
+            }
+        else:
+            self.last_move_details = None
         return True
 
     def human_move(self, r: int, c: int) -> Optional[Dict[str, Any]]:
@@ -159,7 +180,7 @@ class GameManager:
 
     def step(self) -> Dict[str, Any]:
         """Executes one turn for the current AI player. Skips human turns."""
-        if self.status == "finished":
+        if self.status == "finished" or self.board is None:
             return self.get_state()
 
         if self.is_human_turn():
@@ -171,16 +192,26 @@ class GameManager:
 
         agent = player_info["agent"]
         curr_symbol = player_info["symbol"]
+        expected_game_id = self.game_id
+        expected_move_count = len(self.board.moves)
         self.is_thinking = True
         self.thinking_player = player_info["name"]
 
         try:
             move_info = agent.choose_move(self.board, curr_symbol)
-            r, c = move_info["row"], move_info["col"]
-            self.play_move(r, c, meta=move_info)
+            if (
+                self.game_id == expected_game_id
+                and self.board is not None
+                and len(self.board.moves) == expected_move_count
+                and self.status != "finished"
+                and self.board.current_player == curr_symbol
+            ):
+                r, c = move_info["row"], move_info["col"]
+                self.play_move(r, c, meta=move_info)
         finally:
-            self.is_thinking = False
-            self.thinking_player = None
+            if self.game_id == expected_game_id:
+                self.is_thinking = False
+                self.thinking_player = None
 
         return self.get_state()
 

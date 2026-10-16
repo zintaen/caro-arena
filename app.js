@@ -12,6 +12,16 @@ let hasDragged = false, userInteractedWithCamera = false;
 let hoverCoord = null;
 let _lastAutoScaleMoveCount = -1;
 
+function escapeHtml(str) {
+  if (str === null || str === undefined) return "";
+  return String(str)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+
 const PLAYER_COLORS = {
   laya:  { fill: "#0891b2", light: "#e0f7fa", name: "Laya",  ring: "#0891b2" },
   jev:   { fill: "#7c3aed", light: "#ede9fe", name: "Jev",   ring: "#7c3aed" },
@@ -28,9 +38,18 @@ const STONE_STYLES = {
   human: { body: ["#b45309", "#d97706", "#f59e0b"], text: "#fff" },
 };
 
+// Distinct palettes when multiple human players are in a match (e.g. Multiplayer)
+const HUMAN_SLOT_PALETTES = [
+  { fill: "#d97706", light: "#fef3c7", ring: "#d97706", body: ["#b45309", "#d97706", "#f59e0b"], text: "#fff" },
+  { fill: "#2563eb", light: "#dbeafe", ring: "#2563eb", body: ["#1d4ed8", "#2563eb", "#3b82f6"], text: "#fff" },
+  { fill: "#c026d3", light: "#fae8ff", ring: "#c026d3", body: ["#a21caf", "#c026d3", "#d946ef"], text: "#fff" },
+  { fill: "#334155", light: "#f1f5f9", ring: "#334155", body: ["#0f172a", "#334155", "#475569"], text: "#fff" },
+];
+
 let symbolMap = {};
 let gameState = null;
 let cachedLeaderboard = null;
+let cachedBattlesCount = 0;
 let lastRenderedMoveCount = 0, lastRenderedGameId = null;
 let isReplayMode = false, replayMoves = [], replayIndex = 0, replayPlayers = [], replayPlacements = [];
 let showMoveNumbers = true, showCoords = false;
@@ -42,6 +61,27 @@ let lastWasHumanTurn = false;
 let clientEngine = null;
 let isServerAvailable = false;
 let confettiEngine = null;
+
+function useBackend() {
+  return isServerAvailable && !isMultiplayerActive;
+}
+
+let backendSessionId = "";
+try {
+  const urlSession = new URLSearchParams(window.location.search).get("session");
+  if (urlSession) {
+    backendSessionId = urlSession.trim();
+    sessionStorage.setItem("caro_backend_session", backendSessionId);
+  } else {
+    backendSessionId = sessionStorage.getItem("caro_backend_session") || "";
+  }
+} catch {}
+
+function apiFetch(url, options = {}) {
+  if (!backendSessionId) return fetch(url, options);
+  const headers = Object.assign({}, options.headers || {}, { "X-Caro-Session": backendSessionId });
+  return fetch(url, Object.assign({}, options, { headers }));
+}
 
 let isNonStop = false;
 try {
@@ -62,8 +102,8 @@ function setNonStop(val) {
   if (clientEngine) {
     clientEngine.nonStop = isNonStop;
   }
-  if (isServerAvailable && gameState?.is_auto_playing) {
-    fetch("/api/battle/auto-play", {
+  if (useBackend() && gameState?.is_auto_playing) {
+    apiFetch("/api/battle/auto-play", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ enabled: true, delay_sec: 0.01, non_stop: isNonStop })
@@ -107,7 +147,7 @@ document.addEventListener("DOMContentLoaded", async () => {
     try {
       const ctrl = new AbortController();
       const timeout = setTimeout(() => ctrl.abort(), 1200);
-      const r = await fetch("/api/health", { signal: ctrl.signal });
+      const r = await apiFetch("/api/health", { signal: ctrl.signal });
       clearTimeout(timeout);
       if (r.ok) isServerAvailable = true;
     } catch {
@@ -131,6 +171,11 @@ document.addEventListener("DOMContentLoaded", async () => {
   updateRosterCount();
 
   const urlParams = new URLSearchParams(window.location.search);
+  const replayDataParam = urlParams.get("replay_data");
+  if (replayDataParam) {
+    startReplayFromData(replayDataParam);
+    return;
+  }
   const replayParam = urlParams.get("replay");
   if (replayParam) {
     await startReplay(replayParam);
@@ -141,10 +186,13 @@ document.addEventListener("DOMContentLoaded", async () => {
   }
 
   // Ensure initial game matches checked roster (4 AI models, 0 Human)
+  const hasSavedMpRoom = (() => {
+    try { return Boolean(sessionStorage.getItem("caro_active_room")); } catch { return false; }
+  })();
   const selected = getSelectedRoster();
   const currentTypes = (gameState?.players || []).map(p => p.type).sort();
   const selectedSorted = [...selected].sort();
-  if (gameState && (gameState.board?.move_count === 0 || gameState.status === "ready") && JSON.stringify(currentTypes) !== JSON.stringify(selectedSorted)) {
+  if (!hasSavedMpRoom && !isMultiplayerActive && gameState && (gameState.board?.move_count === 0 || gameState.status === "ready") && JSON.stringify(currentTypes) !== JSON.stringify(selectedSorted)) {
     await newBattle();
   }
 });
@@ -169,35 +217,103 @@ function resizeCanvas() {
 // ─────────────────────────────────────────
 // WebSocket & Dual-Mode State Handler
 // ─────────────────────────────────────────
+let lastWsMessageAt = 0;
+let backendPollTimer = null;
+let isFetchingState = false;
+
 function connectWebSocket() {
   const protocol = location.protocol === "https:" ? "wss:" : "ws:";
+  const wsQuery = backendSessionId ? `?session=${encodeURIComponent(backendSessionId)}` : "";
   try {
-    socket = new WebSocket(`${protocol}//${location.host}/ws`);
-    socket.onopen = () => { if (wsReconnectTimer) { clearTimeout(wsReconnectTimer); wsReconnectTimer = null; } };
-    socket.onmessage = (e) => { try { handleStateUpdate(JSON.parse(e.data)); } catch {} };
-    socket.onclose = () => { if (!wsReconnectTimer) wsReconnectTimer = setTimeout(connectWebSocket, 2000); };
-    socket.onerror = () => {};
-  } catch {}
+    socket = new WebSocket(`${protocol}//${location.host}/ws${wsQuery}`);
+    socket.onopen = () => {
+      lastWsMessageAt = Date.now();
+      if (wsReconnectTimer) { clearTimeout(wsReconnectTimer); wsReconnectTimer = null; }
+    };
+    socket.onmessage = (e) => {
+      lastWsMessageAt = Date.now();
+      if (isMultiplayerActive) return;
+      try { handleStateUpdate(JSON.parse(e.data)); } catch {}
+    };
+    socket.onclose = () => {
+      if (!wsReconnectTimer) wsReconnectTimer = setTimeout(connectWebSocket, 2000);
+      ensureBackendSyncPolling();
+    };
+    socket.onerror = () => {
+      ensureBackendSyncPolling();
+    };
+  } catch {
+    ensureBackendSyncPolling();
+  }
+}
+
+function shouldPollBackendState() {
+  if (!useBackend() || isReplayMode || !gameState) return false;
+  if (gameState.is_auto_playing) return true;
+  if (gameState.has_human && !gameState.is_human_turn && gameState.status !== "finished") return true;
+  return false;
+}
+
+function ensureBackendSyncPolling() {
+  if (!shouldPollBackendState()) {
+    if (backendPollTimer) {
+      clearTimeout(backendPollTimer);
+      backendPollTimer = null;
+    }
+    return;
+  }
+  if (backendPollTimer) return;
+
+  const pollTick = async () => {
+    backendPollTimer = null;
+    if (!shouldPollBackendState()) return;
+    const wsOpen = socket && socket.readyState === WebSocket.OPEN;
+    const wsStale = !wsOpen || (Date.now() - lastWsMessageAt > 110);
+    if (wsStale) {
+      await fetchState();
+    }
+    if (shouldPollBackendState()) {
+      const nextDelay = (socket && socket.readyState === WebSocket.OPEN) ? 90 : 40;
+      backendPollTimer = setTimeout(pollTick, nextDelay);
+    }
+  };
+
+  const initialDelay = (socket && socket.readyState === WebSocket.OPEN) ? 90 : 40;
+  backendPollTimer = setTimeout(pollTick, initialDelay);
 }
 
 function handleStateUpdate(data) {
-  if (isReplayMode) return;
+  if (isReplayMode || !data) return;
   const wasFinished = gameState?.status === "finished";
-  const wasPlaying = gameState?.status === "playing";
   const isNewGame = gameState?.game_id && data.game_id !== gameState.game_id;
-  const prevMoveCount = gameState?.board?.moves?.length || 0;
+  const prevMoveCount = isNewGame ? 0 : (gameState?.board?.moves?.length || 0);
   const newMoveCount = data?.board?.moves?.length || 0;
+  const prevPlacementsCount = isNewGame ? 0 : (gameState?.board?.placements?.length || 0);
+  const newPlacements = data?.board?.placements || [];
 
   gameState = data;
   if (isNewGame) userInteractedWithCamera = false;
   rebuildSymbolMap();
   updateUI();
+  ensureBackendSyncPolling();
+  if (typeof syncMultiplayerTurnTimer === "function") {
+    syncMultiplayerTurnTimer();
+  }
 
-  // Audio feedback for remote server updates
-  if (isServerAvailable && window.CaroAudio && newMoveCount > prevMoveCount) {
+  // Audio feedback for remote server updates (clientEngine plays its own sounds in playMove)
+  if (useBackend() && window.CaroAudio && newMoveCount > prevMoveCount) {
     const lastM = data.board.moves[newMoveCount - 1];
     const pInfo = data.players?.find(p => p.symbol === lastM.player);
     try { window.CaroAudio?.playStoneClick?.(pInfo?.type || "ai"); } catch {}
+    if (newPlacements.length > prevPlacementsCount) {
+      const latestPlacement = newPlacements[newPlacements.length - 1];
+      if (latestPlacement?.winning_line) {
+        try {
+          window.CaroAudio?.playWinChime?.();
+          window.CaroAudio?.playLaserSweep?.();
+        } catch {}
+      }
+    }
   }
 
   // Human turn chime (only alert when it is the local player's turn)
@@ -369,11 +485,7 @@ function setupTouchListeners() {
 
   canvas.addEventListener("touchend", (e) => {
     if (isDragging && !hasDragged && e.changedTouches.length === 1) {
-      const isAllowedToMove = isMultiplayerActive
-        ? (gameState?.current_player?.symbol === myMultiplayerSymbol && gameState?.status !== "finished")
-        : (Boolean(gameState?.is_human_turn) && gameState?.status !== "finished");
-
-      if (isAllowedToMove) {
+      if (isLocalHumanAllowedToMove()) {
         const t = e.changedTouches[0];
         const rect = canvas.getBoundingClientRect();
         const scX = canvas.width / rect.width, scY = canvas.height / rect.height;
@@ -422,6 +534,7 @@ function updateRosterCount() {
 }
 
 function onRosterChange() {
+  if (isMultiplayerActive) return;
   const roster = getSelectedRoster();
   updateRosterCount();
   if (roster.length >= 2) {
@@ -435,17 +548,24 @@ function onRosterChange() {
 // API Calls (Dual-Mode: Backend or In-Browser Engine)
 // ─────────────────────────────────────────
 async function fetchState() {
-  if (isServerAvailable) {
-    try { const r = await fetch("/api/battle/current"); handleStateUpdate(await r.json()); } catch {}
+  if (useBackend()) {
+    if (isFetchingState) return;
+    isFetchingState = true;
+    try {
+      const r = await apiFetch("/api/battle/current");
+      if (r.ok) handleStateUpdate(await r.json());
+    } catch {} finally {
+      isFetchingState = false;
+    }
   } else if (clientEngine) {
     handleStateUpdate(clientEngine.getState());
   }
 }
 
 async function fetchLeaderboard() {
-  if (isServerAvailable) {
+  if (useBackend()) {
     try {
-      const r = await fetch("/api/leaderboard");
+      const r = await apiFetch("/api/leaderboard");
       cachedLeaderboard = await r.json();
       renderLeaderboard();
     } catch {}
@@ -456,17 +576,26 @@ async function fetchLeaderboard() {
 }
 
 async function fetchBattleHistory() {
-  if (isServerAvailable) {
+  if (useBackend()) {
     try {
-      const r = await fetch("/api/battles?limit=50");
-      renderBattleHistory(await r.json());
+      const r = await apiFetch("/api/battles?limit=50");
+      const battles = await r.json();
+      cachedBattlesCount = Array.isArray(battles) ? battles.length : 0;
+      renderBattleHistory(battles);
+      renderLeaderboard();
     } catch {}
   } else if (window.CaroEngine) {
-    renderBattleHistory(window.CaroEngine.ClientStorage.getBattles());
+    const battles = window.CaroEngine.ClientStorage.getBattles();
+    cachedBattlesCount = window.CaroEngine.ClientStorage.getTotalBattlesCount
+      ? window.CaroEngine.ClientStorage.getTotalBattlesCount()
+      : (Array.isArray(battles) ? battles.length : 0);
+    renderBattleHistory(battles);
+    renderLeaderboard();
   }
 }
 
 async function toggleAutoPlay() {
+  try { window.CaroAudio?.ensureContext?.(); } catch {}
   if (isReplayMode) exitReplayMode();
 
   // If in multiplayer and battle finished:
@@ -480,18 +609,19 @@ async function toggleAutoPlay() {
   // If battle is finished, this single button starts the next battle!
   if (gameState?.status === "finished") {
     await newBattle();
-    if (clientEngine) {
-      clientEngine.nonStop = isNonStop;
-      clientEngine.toggleAutoPlay(true, 0.01);
-    } else if (isServerAvailable) {
+    if (useBackend()) {
       try {
-        await fetch("/api/battle/auto-play", {
+        await apiFetch("/api/battle/auto-play", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ enabled: true, delay_sec: 0.01, non_stop: isNonStop })
         });
         await fetchState();
+        ensureBackendSyncPolling();
       } catch {}
+    } else if (clientEngine) {
+      clientEngine.nonStop = isNonStop;
+      clientEngine.toggleAutoPlay(true, 0.01);
     }
     return;
   }
@@ -500,14 +630,15 @@ async function toggleAutoPlay() {
   const targetState = !currentlyPlaying;
   const delaySec = 0.01;
 
-  if (isServerAvailable) {
+  if (useBackend()) {
     try {
-      await fetch("/api/battle/auto-play", {
+      await apiFetch("/api/battle/auto-play", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ enabled: targetState, delay_sec: delaySec, non_stop: isNonStop })
       });
       await fetchState();
+      ensureBackendSyncPolling();
     } catch {}
   } else if (clientEngine) {
     clientEngine.nonStop = isNonStop;
@@ -516,21 +647,30 @@ async function toggleAutoPlay() {
 }
 
 async function newBattle() {
+  try { window.CaroAudio?.ensureContext?.(); } catch {}
   if (isReplayMode) exitReplayMode();
+  if (isMultiplayerActive) {
+    if (window.CaroMultiplayer?.isHost) {
+      startNextMultiplayerBattle();
+    }
+    return;
+  }
   const selected = getSelectedRoster();
   if (selected.length < 2) return;
 
-  if (isServerAvailable) {
+  if (useBackend()) {
     try {
-      const res = await fetch("/api/battle/new", {
+      const res = await apiFetch("/api/battle/new", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ players: selected })
       });
-      handleStateUpdate(await res.json());
-      userInteractedWithCamera = false;
-      autoScaleCamera(true);
-      renderBoard();
+      if (res.ok) {
+        handleStateUpdate(await res.json());
+        userInteractedWithCamera = false;
+        autoScaleCamera(true);
+        renderBoard();
+      }
     } catch {}
   } else if (clientEngine) {
     const nextState = clientEngine.newGame(selected);
@@ -544,11 +684,19 @@ async function newBattle() {
 async function resetAll() {
   if (confirm("Reset arena history, leaderboards, and battle series to #1?")) {
     if (isReplayMode) exitReplayMode();
-    if (isServerAvailable) {
-      try { await fetch("/api/history/clear", { method: "POST" }); } catch {}
+    if (useBackend()) {
+      try { await apiFetch("/api/history/clear", { method: "POST" }); } catch {}
     } else if (window.CaroEngine) {
       window.CaroEngine.ClientStorage.clearHistory();
-      if (clientEngine) clientEngine.newGame(["laya", "jev", "von", "mojev"]);
+      if (clientEngine) {
+        if (isMultiplayerActive && multiplayerRoster.length >= 2) {
+          const playerTypes = multiplayerRoster.map(p => p.type);
+          clientEngine.battleNumber = 1;
+          clientEngine.newGame(playerTypes, false, multiplayerRoster);
+        } else {
+          clientEngine.newGame(getSelectedRoster());
+        }
+      }
     }
     userInteractedWithCamera = false;
     await fetchState();
@@ -560,6 +708,7 @@ async function resetAll() {
 }
 
 async function sendHumanMove(r, c) {
+  try { window.CaroAudio?.ensureContext?.(); } catch {}
   if (isMultiplayerActive) {
     if (!myMultiplayerSymbol) {
       myMultiplayerSymbol = resolveMyMultiplayerSymbol(multiplayerRoster);
@@ -568,12 +717,11 @@ async function sendHumanMove(r, c) {
 
     const currSymbol = gameState?.current_player?.symbol;
     if (currSymbol !== myMultiplayerSymbol) {
-      const p = symbolMap[currSymbol];
+      const p = getPlayerMeta(currSymbol);
       updateMultiplayerHudStatus(`Waiting for ${p?.name || "opponent"} to move...`);
       return;
     }
 
-    if (window.CaroAudio) window.CaroAudio.playStoneClick("human");
     if (clientEngine) {
       const nextState = clientEngine.humanMove(r, c);
       if (nextState) {
@@ -587,16 +735,17 @@ async function sendHumanMove(r, c) {
     return;
   }
 
-  if (window.CaroAudio) window.CaroAudio.playStoneClick("human");
-
-  if (isServerAvailable) {
+  if (useBackend()) {
     try {
-      const res = await fetch("/api/battle/human-move", {
+      const res = await apiFetch("/api/battle/human-move", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ row: r, col: c })
       });
-      if (res.ok) handleStateUpdate(await res.json());
+      if (res.ok) {
+        handleStateUpdate(await res.json());
+        ensureBackendSyncPolling();
+      }
     } catch {}
   } else if (clientEngine) {
     const nextState = clientEngine.humanMove(r, c);
@@ -605,14 +754,20 @@ async function sendHumanMove(r, c) {
 }
 
 async function undoHumanMove() {
-  if (isReplayMode) return;
-  if (isServerAvailable) {
+  if (isReplayMode || isMultiplayerActive) return;
+  if (useBackend()) {
     try {
-      const r = await fetch("/api/battle/undo", { method: "POST" });
-      if (r.ok) handleStateUpdate(await r.json());
+      const r = await apiFetch("/api/battle/undo", { method: "POST" });
+      if (r.ok) {
+        handleStateUpdate(await r.json());
+        await fetchLeaderboard();
+        await fetchBattleHistory();
+      }
     } catch {}
   } else if (clientEngine) {
     clientEngine.undoHumanMove();
+    await fetchLeaderboard();
+    await fetchBattleHistory();
   }
 }
 
@@ -632,28 +787,109 @@ function updateUI() {
 
 function getPlayerMeta(symbol) {
   const info = symbolMap[symbol];
-  if (!info) return { type: "unknown", name: symbol, color: "#94a3b8" };
-  const colors = PLAYER_COLORS[info.type] || { fill: "#94a3b8", name: info.type };
-  return { type: info.type, name: colors.name, color: colors.fill, light: colors.light };
+  if (!info) {
+    return {
+      type: "unknown",
+      name: symbol || "?",
+      color: "#94a3b8",
+      fill: "#94a3b8",
+      light: "#f1f5f9",
+      body: ["#64748b", "#94a3b8", "#cbd5e1"],
+      text: "#fff"
+    };
+  }
+  if (info.type === "human") {
+    const activePlayers = isReplayMode ? replayPlayers : (gameState?.players || []);
+    const humans = activePlayers.filter(p => p.type === "human");
+    if (humans.length > 1 || isMultiplayerActive) {
+      const hIdx = Math.max(0, humans.findIndex(p => p.symbol === symbol));
+      const pal = HUMAN_SLOT_PALETTES[hIdx % HUMAN_SLOT_PALETTES.length];
+      const displayName = (info.name && info.name !== "Human") ? info.name : `Human (${symbol})`;
+      return {
+        type: "human",
+        name: displayName,
+        color: pal.fill,
+        fill: pal.fill,
+        light: pal.light,
+        body: pal.body,
+        text: pal.text
+      };
+    }
+    const base = PLAYER_COLORS.human;
+    const style = STONE_STYLES.human;
+    return {
+      type: "human",
+      name: info.name || base.name,
+      color: base.fill,
+      fill: base.fill,
+      light: base.light,
+      body: style.body,
+      text: style.text
+    };
+  }
+  const colors = PLAYER_COLORS[info.type] || { fill: "#94a3b8", light: "#f1f5f9", name: info.type };
+  const style = STONE_STYLES[info.type] || STONE_STYLES.laya;
+  return {
+    type: info.type,
+    name: info.name || colors.name,
+    color: colors.fill,
+    fill: colors.fill,
+    light: colors.light,
+    body: style.body,
+    text: style.text
+  };
+}
+
+function isLocalHumanAllowedToMove() {
+  if (isReplayMode || !gameState || gameState.status === "finished") return false;
+  if (isMultiplayerActive) {
+    if (!myMultiplayerSymbol) myMultiplayerSymbol = resolveMyMultiplayerSymbol(multiplayerRoster);
+    return gameState.current_player?.symbol === myMultiplayerSymbol;
+  }
+  return Boolean(gameState.is_human_turn);
 }
 
 function updateHumanTurnBar() {
   const bar = document.getElementById("human-turn-bar");
   if (!bar) return;
-  let isMyTurn = false;
+  const undoBtn = document.getElementById("btn-undo-move");
+  const promptText = bar.querySelector(".human-prompt-text");
+
+  if (isReplayMode) {
+    bar.classList.remove("active");
+    bar.style.display = "none";
+    return;
+  }
+
   if (isMultiplayerActive) {
     if (!myMultiplayerSymbol) myMultiplayerSymbol = resolveMyMultiplayerSymbol(multiplayerRoster);
-    isMyTurn = (gameState?.current_player?.symbol === myMultiplayerSymbol) && gameState?.status !== "finished";
-  } else {
-    const hasHuman = Boolean(
-      gameState?.players?.some(p => p.type === "human") ||
-      gameState?.has_human ||
-      (clientEngine && clientEngine.hasHumanPlayer())
-    );
-    isMyTurn = hasHuman && Boolean(gameState?.is_human_turn) && gameState?.status !== "finished";
+    const isMyTurn = (gameState?.current_player?.symbol === myMultiplayerSymbol) && gameState?.status !== "finished";
+    if (undoBtn) undoBtn.style.display = "none";
+    if (promptText) promptText.textContent = "Your Turn — Click any empty intersection to place your stone";
+    bar.classList.toggle("active", isMyTurn);
+    bar.style.display = isMyTurn ? "flex" : "none";
+    return;
   }
-  bar.classList.toggle("active", isMyTurn);
-  bar.style.display = isMyTurn ? "flex" : "none";
+
+  const humanSymbols = new Set((gameState?.players || []).filter(p => p.type === "human").map(p => p.symbol));
+  const hasHuman = humanSymbols.size > 0 || Boolean(gameState?.has_human) || Boolean(clientEngine && clientEngine.hasHumanPlayer());
+  const humanMovesCount = (gameState?.board?.moves || []).filter(m => humanSymbols.has(m.player)).length;
+  const isMyTurn = hasHuman && Boolean(gameState?.is_human_turn) && gameState?.status !== "finished";
+  const canUndoAfterFinish = hasHuman && gameState?.status === "finished" && humanMovesCount > 0;
+  const showBar = isMyTurn || canUndoAfterFinish;
+
+  if (undoBtn) {
+    undoBtn.style.display = "inline-flex";
+    undoBtn.disabled = humanMovesCount === 0;
+  }
+  if (promptText) {
+    promptText.textContent = canUndoAfterFinish
+      ? "Match finished — Undo your last move to continue playing"
+      : "Your Turn — Click any empty intersection to place your stone";
+  }
+
+  bar.classList.toggle("active", showBar);
+  bar.style.display = showBar ? "flex" : "none";
 }
 
 function updateTurnBanner() {
@@ -696,7 +932,8 @@ function updateTurnBanner() {
       updateMultiplayerHudStatus(`${curr.name} (AI) thinking...`);
     }
   } else if (gameState.is_human_turn) {
-    dot.style.background = "#d97706";
+    const curr = getPlayerMeta(gameState.current_player?.symbol);
+    dot.style.background = curr.color || "#d97706";
     text.textContent = `Battle #${bn} · Your turn!`;
   } else if (gameState.is_thinking) {
     const curr = getPlayerMeta(gameState.current_player?.symbol);
@@ -713,8 +950,13 @@ function updateTurnBanner() {
 function updateAutoPlayButton() {
   const btn = document.getElementById("btn-auto");
   if (!btn) return;
-  const isPlaying = gameState?.is_auto_playing;
+  const isPlaying = Boolean(gameState?.is_auto_playing);
   const isFinished = gameState?.status === "finished";
+  const hasStarted = (gameState?.board?.move_count || 0) > 0;
+  const modeKey = isPlaying ? "pause" : isFinished ? "next" : hasStarted ? "resume" : "battle";
+
+  if (btn.dataset.btnMode === modeKey) return;
+  btn.dataset.btnMode = modeKey;
 
   if (isPlaying) {
     btn.innerHTML = `<svg viewBox="0 0 16 16" width="13" height="13" fill="currentColor"><path d="M4 3h3v10H4V3zm5 0h3v10H9V3z"/></svg><span>Pause</span>`;
@@ -723,7 +965,6 @@ function updateAutoPlayButton() {
     btn.innerHTML = `<svg viewBox="0 0 16 16" width="13" height="13" fill="currentColor"><path d="M4 2.5l9 5.5-9 5.5V2.5z"/></svg><span>Next battle</span>`;
     btn.classList.remove("btn-active");
   } else {
-    const hasStarted = (gameState?.board?.move_count || 0) > 0;
     btn.innerHTML = `<svg viewBox="0 0 16 16" width="13" height="13" fill="currentColor"><path d="M4 2.5l9 5.5-9 5.5V2.5z"/></svg><span>${hasStarted ? "Resume" : "Battle"}</span>`;
     btn.classList.remove("btn-active");
   }
@@ -735,7 +976,11 @@ function renderLeaderboard() {
   if (!tbody) return;
 
   const data = cachedLeaderboard || [];
-  const totalBattles = data.reduce((max, r) => Math.max(max, r.battles_played || 0), 0);
+  const maxPlayerBattles = data.reduce((max, r) => Math.max(max, r.battles_played || 0), 0);
+  const storageTotal = (!useBackend() && window.CaroEngine?.ClientStorage?.getTotalBattlesCount)
+    ? window.CaroEngine.ClientStorage.getTotalBattlesCount()
+    : 0;
+  const totalBattles = Math.max(maxPlayerBattles, cachedBattlesCount, storageTotal);
   if (badge) badge.textContent = `${totalBattles} battle${totalBattles !== 1 ? "s" : ""}`;
 
   if (data.length === 0) {
@@ -749,11 +994,11 @@ function renderLeaderboard() {
     const isLeader = i === 0 && totalBattles > 0;
     return `<tr class="${isLeader ? "leader" : ""}">
       <td class="rank-cell">${medal}</td>
-      <td><span class="model-dot" style="background:${meta.fill}"></span>${meta.name}</td>
-      <td class="mono"><strong>${r.total_points}</strong></td>
-      <td class="mono muted">${r.wins}</td>
-      <td class="mono muted">${r.avg_placement}</td>
-      <td class="mono muted">${r.battles_played}</td>
+      <td><span class="model-dot" style="background:${escapeHtml(meta.fill)}"></span>${escapeHtml(meta.name)}</td>
+      <td class="mono"><strong>${escapeHtml(r.total_points)}</strong></td>
+      <td class="mono muted">${escapeHtml(r.wins)}</td>
+      <td class="mono muted">${escapeHtml(r.avg_placement)}</td>
+      <td class="mono muted">${escapeHtml(r.battles_played)}</td>
     </tr>`;
   }).join("");
 }
@@ -766,18 +1011,23 @@ function renderBattleRoster() {
   const bn = gameState.series?.battle_number || 1;
   if (bnBadge) bnBadge.textContent = isReplayMode ? "Replay Mode" : `Battle #${bn}`;
 
-  const players = gameState.players || [];
-  const placements = gameState.board?.placements || [];
-  const eliminated = gameState.board?.eliminated_players || [];
-  const current = gameState.current_player?.symbol;
+  const players = isReplayMode ? replayPlayers : (gameState.players || []);
+  const placements = isReplayMode
+    ? (replayPlacements || []).filter(pl => !pl.move_number || pl.move_number <= replayIndex)
+    : (gameState.board?.placements || []);
+  const eliminated = isReplayMode
+    ? placements.map(pl => pl.player)
+    : (gameState.board?.eliminated_players || []);
+  const activeMoves = isReplayMode ? replayMoves.slice(0, replayIndex) : (gameState.board?.moves || []);
+  const current = isReplayMode ? null : gameState.current_player?.symbol;
 
   el.innerHTML = players.map(p => {
-    const meta = PLAYER_COLORS[p.type] || { fill: "#94a3b8", name: p.type };
+    const meta = getPlayerMeta(p.symbol);
     const placement = placements.find(pl => pl.player === p.symbol);
     const isElim = eliminated.includes(p.symbol);
-    const isCurrent = current === p.symbol && gameState.status !== "finished";
-    const isThinking = gameState.is_thinking && isCurrent;
-    const isHumanWaiting = p.type === "human" && isCurrent && gameState.is_human_turn;
+    const isCurrent = !isReplayMode && current === p.symbol && gameState.status !== "finished";
+    const isThinking = !isReplayMode && gameState.is_thinking && isCurrent;
+    const isHumanWaiting = !isReplayMode && p.type === "human" && isCurrent && (isMultiplayerActive ? p.symbol === myMultiplayerSymbol : gameState.is_human_turn);
 
     let statusText = "";
     let statusClass = "";
@@ -798,21 +1048,21 @@ function renderBattleRoster() {
       statusText = "Out";
       statusClass = "eliminated";
     } else {
-      statusText = "Waiting";
+      statusText = isReplayMode ? "Replay" : "Waiting";
       statusClass = "";
     }
 
-    const moveCount = (gameState.board?.moves || []).filter(m => m.player === p.symbol).length;
+    const moveCount = activeMoves.filter(m => m.player === p.symbol).length;
 
-    return `<div class="roster-slot ${statusClass}" style="--pc: ${meta.fill}">
+    return `<div class="roster-slot ${statusClass}" style="--pc: ${escapeHtml(meta.fill)}">
       <div class="roster-ident">
-        <span class="roster-dot" style="background: ${meta.fill}"></span>
-        <span class="roster-name">${meta.name}</span>
-        <span class="roster-symbol">${p.symbol}</span>
+        <span class="roster-dot" style="background: ${escapeHtml(meta.fill)}"></span>
+        <span class="roster-name">${escapeHtml(meta.name)}</span>
+        <span class="roster-symbol">${escapeHtml(p.symbol)}</span>
       </div>
       <div class="roster-stats">
         <span class="roster-moves">${moveCount} moves</span>
-        <span class="roster-status ${statusClass}">${statusText}</span>
+        <span class="roster-status ${statusClass}">${escapeHtml(statusText)}</span>
       </div>
     </div>`;
   }).join("");
@@ -820,10 +1070,11 @@ function renderBattleRoster() {
 
 function renderPlayerLegend() {
   const el = document.getElementById("player-legend");
-  if (!el || !gameState?.players) return;
-  el.innerHTML = gameState.players.map(p => {
-    const meta = PLAYER_COLORS[p.type] || { fill: "#94a3b8", name: p.type };
-    return `<div class="legend-item"><span class="legend-swatch" style="background:${meta.fill}"></span>${meta.name} (${p.symbol})</div>`;
+  const players = isReplayMode ? replayPlayers : gameState?.players;
+  if (!el || !players) return;
+  el.innerHTML = players.map(p => {
+    const meta = getPlayerMeta(p.symbol);
+    return `<div class="legend-item"><span class="legend-swatch" style="background:${escapeHtml(meta.fill)}"></span>${escapeHtml(meta.name)} (${escapeHtml(p.symbol)})</div>`;
   }).join("");
 }
 
@@ -850,12 +1101,13 @@ function renderBattleHistory(battles) {
     const p = b.placements || [];
     const winner = p.find(x => x.rank === 1);
     const winnerMeta = winner ? (PLAYER_COLORS[winner.type] || { fill: "#94a3b8", name: winner.type }) : null;
-    const winnerHtml = winnerMeta ? `<span class="model-dot" style="background:${winnerMeta.fill}"></span>${winnerMeta.name}` : "Draw";
+    const winnerHtml = winnerMeta ? `<span class="model-dot" style="background:${escapeHtml(winnerMeta.fill)}"></span>${escapeHtml(winnerMeta.name)}` : "Draw";
+    const safeBattleId = escapeHtml(b.battle_id);
     return `<tr>
-      <td class="mono">#${b.battle_id}</td>
+      <td class="mono">#${safeBattleId}</td>
       <td>${winnerHtml}</td>
-      <td class="mono muted">${b.total_moves}</td>
-      <td><button class="btn btn-xs" onclick="startReplay('${b.battle_id}')">Review</button></td>
+      <td class="mono muted">${escapeHtml(b.total_moves)}</td>
+      <td><button class="btn btn-xs" onclick="startReplay('${safeBattleId}')">Review</button></td>
     </tr>`;
   }).join("");
 }
@@ -880,10 +1132,10 @@ function updateMoveHistory() {
     const meta = getPlayerMeta(m.player);
     const lat = m.metadata?.latency_ms ? `${m.metadata.latency_ms}ms` : "";
     return `<li class="move-item">
-      <span class="mono" style="color: ${meta.color}; font-weight: 600;">#${m.move_number}</span>
-      <span style="font-weight: 600;">${meta.name}</span>
-      <span class="mono">(${m.row}, ${m.col})</span>
-      <span class="mono muted" style="margin-left: auto;">${lat}</span>
+      <span class="mono" style="color: ${escapeHtml(meta.color)}; font-weight: 600;">#${escapeHtml(m.move_number)}</span>
+      <span style="font-weight: 600;">${escapeHtml(meta.name)}</span>
+      <span class="mono">(${escapeHtml(m.row)}, ${escapeHtml(m.col)})</span>
+      <span class="mono muted" style="margin-left: auto;">${escapeHtml(lat)}</span>
     </li>`;
   }).join("");
 
@@ -950,7 +1202,7 @@ function autoScaleCamera(force = false) {
 }
 
 function boardToScreen(r, c) { const cs = camera.baseCellSize * camera.zoom; return { x: camera.x + c * cs, y: camera.y + r * cs }; }
-function screenToBoard(sx, sy) { const cs = camera.baseCellSize * camera.zoom; return { r: Math.round((sy - camera.y) / cs), c: Math.round((sx - camera.x) / cs) }; }
+function screenToBoard(sx, sy) { const cs = camera.baseCellSize * camera.zoom; return { r: Math.round((sy - camera.y) / cs) || 0, c: Math.round((sx - camera.x) / cs) || 0 }; }
 
 function onMouseDown(e) {
   if (e.button === 0) {
@@ -973,12 +1225,7 @@ function onMouseMove(e) {
   } else {
     if (sx >= 0 && sx <= canvas.width && sy >= 0 && sy <= canvas.height) {
       hoverCoord = screenToBoard(sx, sy);
-      if (isMultiplayerActive && !myMultiplayerSymbol) {
-        myMultiplayerSymbol = resolveMyMultiplayerSymbol(multiplayerRoster);
-      }
-      const isAllowedToMove = isMultiplayerActive
-        ? (gameState?.current_player?.symbol === myMultiplayerSymbol && gameState?.status !== "finished")
-        : (Boolean(gameState?.is_human_turn) && gameState?.status !== "finished");
+      const isAllowedToMove = isLocalHumanAllowedToMove();
 
       canvas.style.cursor = isAllowedToMove ? "pointer" : "crosshair";
 
@@ -988,7 +1235,7 @@ function onMouseMove(e) {
         const moves = gameState?.board?.moves || [];
         const occupied = moves.some(m => m.row === hoverCoord.r && m.col === hoverCoord.c);
         if (!occupied) {
-          const boardObj = clientEngine ? clientEngine.board : reconstructBoardFromState(gameState);
+          const boardObj = (!useBackend() && clientEngine) ? clientEngine.board : reconstructBoardFromState(gameState);
           if (boardObj) {
             const humanSymbol = isMultiplayerActive ? myMultiplayerSymbol : (gameState.players.find(p => p.type === "human")?.symbol || "E");
             let sumR = 0, sumC = 0;
@@ -1000,7 +1247,7 @@ function onMouseMove(e) {
             const evalRes = window.CaroEngine.TacticalEvaluator.evaluateMove(boardObj, hoverCoord.r, hoverCoord.c, humanSymbol, centroid);
 
             const scoreText = evalRes.total_score >= 20000 ? "🔥 WIN / BLOCK" : `Score: ${evalRes.total_score}`;
-            hud.innerHTML = `<span class="score-badge">${scoreText}</span> ${evalRes.summary}`;
+            hud.innerHTML = `<span class="score-badge">${escapeHtml(scoreText)}</span> ${escapeHtml(evalRes.summary)}`;
             hud.style.display = "block";
             hud.style.left = `${e.clientX - rect.left}px`;
             hud.style.top = `${e.clientY - rect.top}px`;
@@ -1021,12 +1268,7 @@ function onMouseMove(e) {
 function onMouseUp(e) {
   if (isDragging) {
     isDragging = false;
-    if (isMultiplayerActive && !myMultiplayerSymbol) {
-      myMultiplayerSymbol = resolveMyMultiplayerSymbol(multiplayerRoster);
-    }
-    const isAllowedToMove = isMultiplayerActive
-      ? (gameState?.current_player?.symbol === myMultiplayerSymbol && gameState?.status !== "finished")
-      : (Boolean(gameState?.is_human_turn) && gameState?.status !== "finished");
+    const isAllowedToMove = isLocalHumanAllowedToMove();
 
     canvas.style.cursor = isAllowedToMove ? "pointer" : "crosshair";
 
@@ -1062,23 +1304,40 @@ function onWheel(e) {
 // ─────────────────────────────────────────
 // Board Rendering & Threat Heatmap
 // ─────────────────────────────────────────
+let _cachedEvalState = { key: null, boardObj: null, heatmap: null, threatLines: null };
+
 function reconstructBoardFromState(state) {
   if (!window.CaroEngine?.CaroBoard || !state?.board) return null;
   const symbols = (state.players || []).map(p => p.symbol);
-  const b = new window.CaroEngine.CaroBoard(0, "standard", symbols);
+  const b = new window.CaroEngine.CaroBoard(symbols);
   for (const m of (state.board.moves || [])) {
     b.makeMove(m.row, m.col, m.player, m.metadata);
   }
   return b;
 }
 
-function drawThreatHeatmap(cs) {
-  if (!window.CaroEngine?.TacticalEvaluator) return;
-  const boardObj = clientEngine ? clientEngine.board : reconstructBoardFromState(gameState);
-  if (!boardObj || boardObj.stones.size === 0) return;
+function getBoardEvalCache() {
+  if (!window.CaroEngine?.TacticalEvaluator || !gameState?.board) return null;
+  const moves = gameState.board.moves || [];
+  const lastMove = moves.length ? moves[moves.length - 1] : null;
+  const currentSymbol = gameState.board.current_player || "A";
+  const key = `${gameState.game_id || ""}:${moves.length}:${lastMove ? `${lastMove.row},${lastMove.col}` : ""}:${currentSymbol}`;
+  if (_cachedEvalState.key !== key) {
+    const boardObj = (!useBackend() && clientEngine) ? clientEngine.board : reconstructBoardFromState(gameState);
+    const heatmap = (boardObj && boardObj.stones.size > 0)
+      ? window.CaroEngine.TacticalEvaluator.getThreatHeatmap(boardObj, currentSymbol)
+      : [];
+    const threatLines = (boardObj && boardObj.stones.size >= 2)
+      ? window.CaroEngine.TacticalEvaluator.findThreatLines(boardObj)
+      : [];
+    _cachedEvalState = { key, boardObj, heatmap, threatLines };
+  }
+  return _cachedEvalState;
+}
 
-  const currentSymbol = gameState?.board?.current_player || "A";
-  const heatmap = window.CaroEngine.TacticalEvaluator.getThreatHeatmap(boardObj, currentSymbol);
+function drawThreatHeatmap(cs) {
+  const evalCache = getBoardEvalCache();
+  const heatmap = evalCache?.heatmap;
   if (!heatmap || heatmap.length === 0) return;
 
   const now = Date.now();
@@ -1159,11 +1418,8 @@ function drawThreatHeatmap(cs) {
 }
 
 function drawActiveThreatLasers(cs) {
-  if (!window.CaroEngine?.TacticalEvaluator) return;
-  const boardObj = clientEngine ? clientEngine.board : reconstructBoardFromState(gameState);
-  if (!boardObj || boardObj.stones.size < 2) return;
-
-  const threatLines = window.CaroEngine.TacticalEvaluator.findThreatLines(boardObj);
+  const evalCache = getBoardEvalCache();
+  const threatLines = evalCache?.threatLines;
   if (!threatLines || threatLines.length === 0) return;
 
   const now = Date.now();
@@ -1278,7 +1534,7 @@ let fxAnimId = null;
 function startFxAnimation() {
   if (fxAnimId) return;
   function fxLoop() {
-    if (showHeatmap || showLasers || (hoverCoord && gameState?.is_human_turn)) {
+    if (showHeatmap || showLasers || (hoverCoord && isLocalHumanAllowedToMove())) {
       renderBoard();
       fxAnimId = requestAnimationFrame(fxLoop);
     } else {
@@ -1353,10 +1609,13 @@ function renderBoard() {
   }
 
   // Human hover ghost with alignment guide crosshair
-  if (hoverCoord && gameState?.is_human_turn && gameState?.status !== "finished") {
+  if (hoverCoord && isLocalHumanAllowedToMove()) {
     const occupied = moves.some(m => m.row === hoverCoord.r && m.col === hoverCoord.c);
     if (!occupied) {
       const pt = boardToScreen(hoverCoord.r, hoverCoord.c);
+      const ghostSymbol = isMultiplayerActive ? myMultiplayerSymbol : gameState?.current_player?.symbol;
+      const ghostMeta = getPlayerMeta(ghostSymbol);
+      const ghostColor = ghostMeta.color || "#d97706";
       ctx.save();
       // Thin alignment guides
       ctx.strokeStyle = "rgba(217, 119, 6, 0.4)";
@@ -1370,7 +1629,7 @@ function renderBoard() {
 
       // Ghost stone
       ctx.globalAlpha = 0.45;
-      ctx.fillStyle = "#d97706";
+      ctx.fillStyle = ghostColor;
       ctx.beginPath();
       ctx.arc(pt.x, pt.y, cs * 0.40, 0, Math.PI * 2);
       ctx.fill();
@@ -1378,7 +1637,7 @@ function renderBoard() {
       // Pulsing outer ring
       const pulseTime = Date.now() / 200;
       const ringRadius = cs * (0.42 + Math.sin(pulseTime) * 0.05);
-      ctx.strokeStyle = "#fbbf24";
+      ctx.strokeStyle = ghostColor;
       ctx.lineWidth = 2 * camera.zoom;
       ctx.globalAlpha = 0.75;
       ctx.beginPath();
@@ -1486,7 +1745,8 @@ function renderBoard() {
       const xOffsets = { 1: 0, 2: 8 * camera.zoom, 3: -12 * camera.zoom, 4: 14 * camera.zoom, 5: 0 };
       const badgeY = midPt.y + (yOffsets[rank] || -0.80) * cs;
       const badgeX = midPt.x + (xOffsets[rank] || 0);
-      const rankText = pl.rank === 1 ? `🥇 ${meta.name} · 5 in a row` : `#${pl.rank} ${meta.name} · 5 in a row`;
+      const lineLen = pl.winning_line.length;
+      const rankText = pl.rank === 1 ? `🥇 ${meta.name} · ${lineLen} in a row` : `#${pl.rank} ${meta.name} · ${lineLen} in a row`;
 
       ctx.save();
       ctx.font = `700 ${Math.max(10, Math.round(11 * camera.zoom))}px var(--font-sans, sans-serif)`;
@@ -1531,9 +1791,9 @@ function renderBoard() {
 function drawStone(r, c, symbol, cs, moveNumber) {
   const pt = boardToScreen(r, c);
   const radius = cs * 0.42;
-  const info = symbolMap[symbol];
-  const ptype = info?.type || "laya";
-  const style = STONE_STYLES[ptype] || STONE_STYLES.laya;
+  const meta = getPlayerMeta(symbol);
+  const body = meta.body || STONE_STYLES.laya.body;
+  const textCol = meta.text || "#fff";
 
   ctx.save();
   ctx.shadowColor = "rgba(60, 30, 10, 0.35)";
@@ -1545,9 +1805,9 @@ function drawStone(r, c, symbol, cs, moveNumber) {
     pt.x - radius * 0.35, pt.y - radius * 0.35, radius * 0.08,
     pt.x, pt.y, radius
   );
-  stoneGrad.addColorStop(0, style.body[2]);
-  stoneGrad.addColorStop(0.6, style.body[1]);
-  stoneGrad.addColorStop(1, style.body[0]);
+  stoneGrad.addColorStop(0, body[2]);
+  stoneGrad.addColorStop(0.6, body[1]);
+  stoneGrad.addColorStop(1, body[0]);
   ctx.fillStyle = stoneGrad;
   ctx.beginPath();
   ctx.arc(pt.x, pt.y, radius, 0, Math.PI * 2);
@@ -1565,7 +1825,7 @@ function drawStone(r, c, symbol, cs, moveNumber) {
   ctx.restore();
 
   if (showMoveNumbers && moveNumber !== null && camera.zoom > 0.38) {
-    ctx.fillStyle = style.text;
+    ctx.fillStyle = textCol;
     ctx.font = `600 ${Math.round(radius * 0.72)}px var(--font-sans, sans-serif)`;
     ctx.textAlign = "center"; ctx.textBaseline = "middle";
     ctx.fillText(moveNumber.toString(), pt.x, pt.y);
@@ -1573,39 +1833,133 @@ function drawStone(r, c, symbol, cs, moveNumber) {
 }
 
 // ─────────────────────────────────────────
-// Replay System
+// Replay System & Stateless Shareable Links
 // ─────────────────────────────────────────
+function encodeReplayPayload(players, moves, placements) {
+  const compact = {
+    p: (players || []).map(p => [p.symbol, p.type, p.name || p.type]),
+    m: (moves || []).map(m => [m.row, m.col, m.player, m.move_number]),
+    w: (placements || []).map(pl => [
+      pl.player || pl.symbol,
+      pl.rank,
+      pl.move_number || null,
+      pl.winning_line || null,
+      pl.type || "",
+      pl.name || ""
+    ])
+  };
+  const json = JSON.stringify(compact);
+  const bytes = new TextEncoder().encode(json);
+  let bin = "";
+  for (let i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i]);
+  return btoa(bin).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+}
+
+function decodeReplayPayload(encoded) {
+  const b64 = String(encoded || "").trim().replace(/-/g, "+").replace(/_/g, "/");
+  const pad = b64.length % 4 === 0 ? "" : "=".repeat(4 - (b64.length % 4));
+  const bin = atob(b64 + pad);
+  const bytes = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+  const compact = JSON.parse(new TextDecoder().decode(bytes));
+  return {
+    player_order: (compact.p || []).map(([symbol, type, name]) => ({ symbol, type, name })),
+    moves_data: (compact.m || []).map(([row, col, player, move_number], idx) => ({
+      row: Number(row) || 0,
+      col: Number(col) || 0,
+      player,
+      move_number: move_number || (idx + 1)
+    })),
+    placements: (compact.w || []).map(([player, rank, move_number, winning_line, type, name]) => ({
+      player,
+      symbol: player,
+      rank: Number(rank) || 1,
+      move_number: move_number || null,
+      winning_line: Array.isArray(winning_line) ? winning_line : null,
+      type: type || "unknown",
+      name: name || player
+    }))
+  };
+}
+
+function applyReplayBattleObject(b) {
+  if (!b) return false;
+  isReplayMode = true;
+  replayMoves = b.moves_data || [];
+  replayPlayers = b.player_order || [];
+  replayPlacements = b.placements || [];
+  replayIndex = replayMoves.length;
+
+  symbolMap = {};
+  for (const p of replayPlayers) {
+    symbolMap[p.symbol] = p;
+  }
+
+  const lbl = document.getElementById("replay-label");
+  if (lbl) lbl.textContent = `Move ${replayIndex} of ${replayMoves.length}`;
+  const bar = document.getElementById("replay-bar");
+  if (bar) bar.style.display = "flex";
+  const autoBtn = document.getElementById("btn-auto");
+  if (autoBtn) autoBtn.disabled = true;
+  userInteractedWithCamera = false;
+  autoScaleCamera(true);
+  updateUI();
+  return true;
+}
+
 async function startReplay(battleId) {
   try {
-    if (gameState?.is_auto_playing) await toggleAutoPlay();
+    if (gameState?.is_auto_playing && !isMultiplayerActive) await toggleAutoPlay();
     let b = null;
-    if (isServerAvailable) {
-      const r = await fetch(`/api/battles/${battleId}`);
-      b = await r.json();
+    if (useBackend()) {
+      const r = await apiFetch(`/api/battles/${encodeURIComponent(battleId)}`);
+      if (r.ok) b = await r.json();
     } else if (window.CaroEngine) {
       const battles = window.CaroEngine.ClientStorage.getBattles();
       b = battles.find(x => x.battle_id === battleId);
     }
     if (!b) return;
-
-    isReplayMode = true;
-    replayMoves = b.moves_data || [];
-    replayPlayers = b.player_order || [];
-    replayPlacements = b.placements || [];
-    replayIndex = replayMoves.length;
-
-    symbolMap = {};
-    for (const p of replayPlayers) {
-      symbolMap[p.symbol] = p;
-    }
-
-    document.getElementById("replay-bar").style.display = "flex";
-    document.getElementById("btn-auto").disabled = true;
-    userInteractedWithCamera = false;
-    autoScaleCamera(true);
-    updateUI();
+    applyReplayBattleObject(b);
   } catch {}
 }
+
+function startReplayFromData(encoded) {
+  try {
+    const b = decodeReplayPayload(encoded);
+    if (!b || !Array.isArray(b.moves_data)) return false;
+    return applyReplayBattleObject(b);
+  } catch (err) {
+    console.warn("Invalid replay_data parameter:", err);
+    return false;
+  }
+}
+
+function getShareReplayUrl() {
+  const players = isReplayMode ? replayPlayers : (gameState?.players || []);
+  const moves = isReplayMode ? replayMoves : (gameState?.board?.moves || []);
+  const placements = isReplayMode ? replayPlacements : (gameState?.board?.placements || []);
+  const encoded = encodeReplayPayload(players, moves, placements);
+  return `${window.location.origin}${window.location.pathname}?replay_data=${encoded}`;
+}
+
+function shareCurrentReplay() {
+  const url = getShareReplayUrl();
+  const btn = document.getElementById("btn-share-replay");
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(url).catch(() => {});
+  }
+  if (btn) {
+    const orig = btn.textContent;
+    btn.textContent = "✓ Copied!";
+    setTimeout(() => { btn.textContent = orig; }, 2000);
+  }
+  return url;
+}
+
+window.encodeReplayPayload = encodeReplayPayload;
+window.decodeReplayPayload = decodeReplayPayload;
+window.getShareReplayUrl = getShareReplayUrl;
+window.shareCurrentReplay = shareCurrentReplay;
 
 function exitReplayMode() {
   isReplayMode = false;
@@ -1626,8 +1980,7 @@ function stepReplay(delta) {
   replayIndex = Math.max(0, Math.min(replayMoves.length, replayIndex + delta));
   const lbl = document.getElementById("replay-label");
   if (lbl) lbl.textContent = `Move ${replayIndex} of ${replayMoves.length}`;
-  renderBoard();
-  updateMoveHistory();
+  updateUI();
 }
 
 // ─────────────────────────────────────────
@@ -1725,6 +2078,10 @@ class ConfettiEngine {
 let isMultiplayerActive = false;
 let myMultiplayerSymbol = null;
 let multiplayerRoster = [];
+let mpTurnTimerInterval = null;
+let mpTurnTimerKey = null;
+let mpTurnDeadline = 0;
+let mpTurnAutoPlayedKey = null;
 
 function initMultiplayerIntegration() {
   if (!window.CaroMultiplayer) return;
@@ -1735,6 +2092,9 @@ function initMultiplayerIntegration() {
     onRemoteMove: handleMultiplayerRemoteMove,
     onRemoteNextBattle: handleMultiplayerRemoteNextBattle,
     onRoomLeave: handleMultiplayerRoomLeave,
+    onStateSync: handleMultiplayerStateSync,
+    onHostMigrated: handleMultiplayerHostMigrated,
+    getHostState: getMultiplayerHostState,
     onStatusMessage: (msg) => {
       updateMultiplayerHudStatus(msg);
     }
@@ -1742,6 +2102,24 @@ function initMultiplayerIntegration() {
 
   setupMultiplayerUI();
   checkUrlForRoomInvite();
+}
+
+function getMultiplayerHostState() {
+  if (!isMultiplayerActive || !clientEngine) return null;
+  return {
+    inGame: true,
+    roomId: window.CaroMultiplayer?.roomId,
+    roster: multiplayerRoster,
+    battleNumber: clientEngine.battleNumber || 1,
+    status: clientEngine.status || "playing",
+    moves: (clientEngine.board?.moves || []).map(m => ({
+      row: m.row,
+      col: m.col,
+      player: m.player,
+      move_number: m.move_number,
+      metadata: m.metadata
+    }))
+  };
 }
 
 function setupMultiplayerUI() {
@@ -1948,6 +2326,7 @@ function renderMultiplayerSlots() {
 
     const isSlotHost = idx === 0;
     const avatar = isSlotHost ? "👑" : (s.type === "human" ? "👤" : (s.type === "ai" ? "🤖" : "⛔"));
+    const safeName = escapeHtml(s.name);
 
     let controlsHtml = "";
     if (isSlotHost) {
@@ -1965,14 +2344,14 @@ function renderMultiplayerSlots() {
         </select>
       `;
     } else {
-      controlsHtml = `<span class="mp-slot-badge ${s.ready ? 'ready' : ''}">${s.name}</span>`;
+      controlsHtml = `<span class="mp-slot-badge ${s.ready ? 'ready' : ''}">${safeName}</span>`;
     }
 
     item.innerHTML = `
       <div class="mp-slot-left">
         <span class="mp-slot-num">#${idx + 1}</span>
         <span class="mp-slot-avatar">${avatar}</span>
-        <span class="mp-slot-name">${s.name}</span>
+        <span class="mp-slot-name">${safeName}</span>
       </div>
       <div class="mp-slot-right">
         ${controlsHtml}
@@ -2005,21 +2384,21 @@ function resolveMyMultiplayerSymbol(roster) {
   const myName = window.CaroMultiplayer?.myName;
   const assignedSlot = window.CaroMultiplayer?.myAssignedSlot;
 
-  // 1. Host is always symbol of slot 0 (A)
-  if (isHost) {
-    return roster[0]?.symbol || "A";
-  }
-
-  // 2. Match by exact playerId
+  // 1. Match by exact playerId first (preserves symbol across reconnects and host migration)
   if (myId) {
     const slotById = roster.find(r => r.playerId && r.playerId === myId);
     if (slotById) return slotById.symbol;
   }
 
-  // 3. Match by player name
+  // 2. Match by player name
   if (myName) {
     const slotByName = roster.find(r => r.type === "human" && r.name && r.name.trim().toLowerCase() === myName.trim().toLowerCase());
     if (slotByName) return slotByName.symbol;
+  }
+
+  // 3. Original Host is symbol of slot 0 (A)
+  if (isHost) {
+    return roster[0]?.symbol || "A";
   }
 
   // 4. Match by assigned slot index
@@ -2036,8 +2415,23 @@ function resolveMyMultiplayerSymbol(roster) {
   return roster[1]?.symbol || "B";
 }
 
+function setSidebarRosterDisabled(disabled) {
+  document.querySelectorAll("#roster-config input[type=checkbox]").forEach(cb => {
+    cb.disabled = Boolean(disabled);
+  });
+}
+
 function handleMultiplayerGameStart(data) {
+  if (isServerAvailable && gameState?.is_auto_playing) {
+    apiFetch("/api/battle/auto-play", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ enabled: false, delay_sec: 0.01, non_stop: false })
+    }).catch(() => {});
+  }
+
   isMultiplayerActive = true;
+  setSidebarRosterDisabled(true);
   multiplayerRoster = data.roster || [];
   myMultiplayerSymbol = resolveMyMultiplayerSymbol(multiplayerRoster);
   console.log(`[Caro Arena] Match started. My symbol: ${myMultiplayerSymbol}, My ID: ${window.CaroMultiplayer?.myId}, IsHost: ${window.CaroMultiplayer?.isHost}`);
@@ -2049,6 +2443,7 @@ function handleMultiplayerGameStart(data) {
 
   const playerTypes = multiplayerRoster.map(p => p.type);
   clientEngine.selectedPlayerTypes = playerTypes;
+  clientEngine.status = "ready";
   clientEngine.battleNumber = data.battleNumber || 1;
   const nextState = clientEngine.newGame(playerTypes, false, multiplayerRoster);
 
@@ -2057,8 +2452,95 @@ function handleMultiplayerGameStart(data) {
   userInteractedWithCamera = false;
   autoScaleCamera(true);
   handleStateUpdate(nextState);
+  fetchLeaderboard();
+  fetchBattleHistory();
 
   if (window.CaroMultiplayer.isHost) {
+    scheduleHostAiMoveIfNeeded();
+  }
+}
+
+function handleMultiplayerStateSync(payload) {
+  if (!payload || !Array.isArray(payload.roster) || payload.roster.length < 2) return;
+  const incomingMoves = Array.isArray(payload.moves) ? payload.moves : [];
+  const incomingBattleNum = payload.battleNumber || 1;
+
+  if (
+    isMultiplayerActive &&
+    clientEngine &&
+    clientEngine.battleNumber === incomingBattleNum &&
+    (clientEngine.board?.moves?.length || 0) >= incomingMoves.length
+  ) {
+    return;
+  }
+
+  if (isServerAvailable && gameState?.is_auto_playing) {
+    apiFetch("/api/battle/auto-play", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ enabled: false, delay_sec: 0.01, non_stop: false })
+    }).catch(() => {});
+  }
+
+  isMultiplayerActive = true;
+  setSidebarRosterDisabled(true);
+  multiplayerRoster = payload.roster.map(r => Object.assign({}, r, {
+    isLocalHuman: r.type === "human" && r.playerId === window.CaroMultiplayer?.myId
+  }));
+  myMultiplayerSymbol = resolveMyMultiplayerSymbol(multiplayerRoster);
+
+  if (!clientEngine && window.CaroEngine) {
+    clientEngine = new window.CaroEngine.ClientGameManager();
+    clientEngine.onStateChange = (state) => handleStateUpdate(state);
+  }
+
+  const playerTypes = multiplayerRoster.map(p => p.type);
+  clientEngine.selectedPlayerTypes = playerTypes;
+  clientEngine.status = "ready";
+  clientEngine.battleNumber = incomingBattleNum;
+  clientEngine.newGame(playerTypes, false, multiplayerRoster);
+
+  for (const m of incomingMoves) {
+    const meta = m.metadata || { row: m.row, col: m.col, latency_ms: 0, reasoning: `Synced move (${m.player})` };
+    clientEngine.playMove(m.row, m.col, meta);
+  }
+
+  closeMultiplayerModal();
+  showMultiplayerHud(payload.roomId || window.CaroMultiplayer?.roomId || "");
+  userInteractedWithCamera = false;
+  autoScaleCamera(true);
+  handleStateUpdate(clientEngine.getState());
+  fetchLeaderboard();
+  fetchBattleHistory();
+
+  if (window.CaroMultiplayer?.isHost) {
+    scheduleHostAiMoveIfNeeded();
+  }
+}
+
+function handleMultiplayerHostMigrated(info) {
+  if (!isMultiplayerActive) return;
+  if (info?.leftHostId) {
+    for (const r of multiplayerRoster) {
+      if (r.playerId === info.leftHostId) {
+        r.disconnected = true;
+      }
+      r.isHost = (r.playerId === info.newHostId);
+    }
+    if (clientEngine?.players && typeof clientEngine.createAgent === "function") {
+      for (const r of multiplayerRoster) {
+        if (r.disconnected) {
+          const p = clientEngine.players.find(pl => pl.symbol === r.symbol);
+          if (p && !p.agent) {
+            p.agent = clientEngine.createAgent("von", r.symbol);
+          }
+        }
+      }
+    }
+  }
+  myMultiplayerSymbol = resolveMyMultiplayerSymbol(multiplayerRoster);
+  updateUI();
+  if (window.CaroMultiplayer?.isHost) {
     scheduleHostAiMoveIfNeeded();
   }
 }
@@ -2066,6 +2548,7 @@ function handleMultiplayerGameStart(data) {
 function handleMultiplayerRemoteMove(data) {
   if (!isMultiplayerActive || !clientEngine) return;
   if (data.senderId === window.CaroMultiplayer.myId) return;
+  if (data.symbol && clientEngine.board?.currentPlayer && data.symbol !== clientEngine.board.currentPlayer) return;
 
   const moves = clientEngine.board?.moves || [];
   const occupied = moves.some(m => m.row === data.row && m.col === data.col);
@@ -2083,6 +2566,7 @@ function handleMultiplayerRemoteMove(data) {
 
 function handleMultiplayerRemoteNextBattle(data) {
   if (!isMultiplayerActive || !clientEngine) return;
+  clientEngine.status = "ready";
   clientEngine.battleNumber = data.battleNumber || (clientEngine.battleNumber + 1);
   const playerTypes = multiplayerRoster.map(p => p.type);
   const nextState = clientEngine.newGame(playerTypes, false, multiplayerRoster);
@@ -2095,13 +2579,23 @@ function handleMultiplayerRoomLeave() {
   isMultiplayerActive = false;
   myMultiplayerSymbol = null;
   multiplayerRoster = [];
+  clearMultiplayerTurnTimer();
+  setSidebarRosterDisabled(false);
+  updateRosterCount();
 
   const hud = document.getElementById("multiplayer-hud");
   if (hud) hud.style.display = "none";
 
-  if (clientEngine) {
-    clientEngine.newGame(["laya", "jev", "von", "mojev"]);
+  if (useBackend()) {
     fetchState();
+    fetchLeaderboard();
+    fetchBattleHistory();
+  } else if (clientEngine) {
+    const selected = getSelectedRoster();
+    clientEngine.newGame(selected.length >= 2 ? selected : ["laya", "jev", "von", "mojev"]);
+    fetchState();
+    fetchLeaderboard();
+    fetchBattleHistory();
   }
 }
 
@@ -2120,18 +2614,122 @@ function updateMultiplayerHudStatus(text) {
   if (st) st.textContent = text;
 }
 
+function clearMultiplayerTurnTimer() {
+  if (mpTurnTimerInterval) {
+    clearInterval(mpTurnTimerInterval);
+    mpTurnTimerInterval = null;
+  }
+  mpTurnTimerKey = null;
+  mpTurnAutoPlayedKey = null;
+  const badge = document.getElementById("mp-hud-timer");
+  if (badge) badge.style.display = "none";
+}
+
+function chooseTacticalAutoMove(symbol) {
+  if (!clientEngine?.board || clientEngine.board.stones.size === 0) {
+    return { r: 0, c: 0 };
+  }
+  if (window.CaroEngine?.TacticalEvaluator) {
+    const ranked = window.CaroEngine.TacticalEvaluator.getRankedCandidates(clientEngine.board, symbol, 10, 2);
+    if (ranked && ranked.length > 0) {
+      return { r: ranked[0].row, c: ranked[0].col };
+    }
+  }
+  const cands = clientEngine.board.getCandidateMoves(2);
+  if (cands && cands.length > 0) {
+    return { r: cands[0][0], c: cands[0][1] };
+  }
+  return { r: 0, c: 0 };
+}
+
+function syncMultiplayerTurnTimer() {
+  if (!isMultiplayerActive || isReplayMode || !gameState || gameState.status === "finished") {
+    clearMultiplayerTurnTimer();
+    return;
+  }
+  const currSymbol = gameState.current_player?.symbol || "";
+  const moveCount = gameState.board?.move_count || 0;
+  const turnKey = `${gameState.game_id || ""}:${moveCount}:${currSymbol}`;
+
+  if (turnKey !== mpTurnTimerKey) {
+    mpTurnTimerKey = turnKey;
+    const timeoutSec = Math.max(1, Number(window.CaroMultiplayer?.turnTimeoutSec) || 30);
+    mpTurnDeadline = Date.now() + timeoutSec * 1000;
+    mpTurnAutoPlayedKey = null;
+  }
+
+  const updateTimerTick = () => {
+    if (!isMultiplayerActive || !gameState || gameState.status === "finished") {
+      clearMultiplayerTurnTimer();
+      return;
+    }
+    const remMs = Math.max(0, mpTurnDeadline - Date.now());
+    const remSec = Math.ceil(remMs / 1000);
+    const badge = document.getElementById("mp-hud-timer");
+    if (badge) {
+      badge.style.display = "inline-block";
+      badge.textContent = `⏱ ${remSec}s`;
+      badge.style.color = remSec <= 5 ? "#ef4444" : "";
+    }
+
+    if (remMs <= 0 && mpTurnAutoPlayedKey !== mpTurnTimerKey) {
+      const activeSym = gameState.current_player?.symbol;
+      if (isLocalHumanAllowedToMove()) {
+        mpTurnAutoPlayedKey = mpTurnTimerKey;
+        const autoCoord = chooseTacticalAutoMove(myMultiplayerSymbol);
+        updateMultiplayerHudStatus("⏱ Shot clock expired — auto-played tactical move!");
+        sendHumanMove(autoCoord.r, autoCoord.c);
+      } else if (
+        window.CaroMultiplayer?.isHost &&
+        activeSym &&
+        Date.now() - mpTurnDeadline >= 900 &&
+        clientEngine
+      ) {
+        const activePlayer = clientEngine.players.find(p => p.symbol === activeSym);
+        if (activePlayer && activePlayer.type === "human") {
+          mpTurnAutoPlayedKey = mpTurnTimerKey;
+          const autoCoord = chooseTacticalAutoMove(activeSym);
+          const meta = { row: autoCoord.r, col: autoCoord.c, latency_ms: 0, reasoning: "Shot clock timeout auto-move" };
+          if (clientEngine.playMove(autoCoord.r, autoCoord.c, meta)) {
+            const nextState = clientEngine.getState();
+            handleStateUpdate(nextState);
+            window.CaroMultiplayer.sendMove(autoCoord.r, autoCoord.c, "human", activeSym, nextState.board.moves.length);
+            scheduleHostAiMoveIfNeeded();
+          }
+        }
+      }
+    }
+  };
+
+  updateTimerTick();
+  if (!mpTurnTimerInterval) {
+    mpTurnTimerInterval = setInterval(updateTimerTick, 200);
+  }
+}
+
+function isAiOrDisconnectedPlayer(playerObj) {
+  if (!playerObj) return false;
+  if (playerObj.type !== "human") return true;
+  const rosterEntry = multiplayerRoster.find(r => r.symbol === playerObj.symbol);
+  return Boolean(rosterEntry && rosterEntry.disconnected);
+}
+
 function scheduleHostAiMoveIfNeeded() {
   if (!isMultiplayerActive || !window.CaroMultiplayer || !window.CaroMultiplayer.isHost) return;
   if (!clientEngine || clientEngine.status === "finished") return;
 
   const currPlayer = clientEngine.players.find(p => p.symbol === clientEngine.board.currentPlayer);
-  if (!currPlayer || currPlayer.type === "human") return;
+  if (!isAiOrDisconnectedPlayer(currPlayer)) return;
 
   setTimeout(() => {
     if (!isMultiplayerActive || !window.CaroMultiplayer.isHost) return;
     if (clientEngine.status === "finished") return;
     const aiPlayer = clientEngine.players.find(p => p.symbol === clientEngine.board.currentPlayer);
-    if (!aiPlayer || aiPlayer.type === "human") return;
+    if (!isAiOrDisconnectedPlayer(aiPlayer)) return;
+
+    if (!aiPlayer.agent && typeof clientEngine.createAgent === "function") {
+      aiPlayer.agent = clientEngine.createAgent("von", aiPlayer.symbol);
+    }
 
     clientEngine.step();
     const nextState = clientEngine.getState();
@@ -2151,7 +2749,7 @@ function startNextMultiplayerBattle() {
   if (!isMultiplayerActive || !clientEngine) return;
   clientEngine.battleNumber += 1;
   const playerTypes = multiplayerRoster.map(p => p.type);
-  const nextState = clientEngine.newGame(playerTypes, false);
+  const nextState = clientEngine.newGame(playerTypes, false, multiplayerRoster);
   userInteractedWithCamera = false;
   autoScaleCamera(true);
   handleStateUpdate(nextState);
@@ -2160,6 +2758,16 @@ function startNextMultiplayerBattle() {
 }
 
 function checkUrlForRoomInvite() {
+  // Auto-reconnect if this tab was already in an active room before a page refresh
+  try {
+    const savedRoom = sessionStorage.getItem("caro_active_room");
+    const savedName = sessionStorage.getItem("caro_player_name");
+    if (savedRoom && window.CaroMultiplayer) {
+      window.CaroMultiplayer.joinRoom(savedRoom, savedName || undefined).catch(() => {});
+      return;
+    }
+  } catch {}
+
   const params = new URLSearchParams(window.location.search);
   const room = params.get("room");
   if (room) {
@@ -2168,3 +2776,4 @@ function checkUrlForRoomInvite() {
     if (codeInput) codeInput.value = room.toUpperCase();
   }
 }
+

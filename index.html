@@ -136,6 +136,7 @@
       Waiting for players...
     </div>
     <div class="mp-hud-right">
+      <span class="mp-room-badge" id="mp-hud-timer" title="Per-turn shot clock" style="display: none; margin-right: 6px;">⏱ 30s</span>
       <button class="btn btn-ghost btn-xs" id="btn-hud-leave-room">Leave Room</button>
     </div>
   </div>
@@ -151,6 +152,7 @@
           <div class="replay-controls">
             <button class="btn btn-xs" onclick="stepReplay(-1)">Prev</button>
             <button class="btn btn-xs" onclick="stepReplay(1)">Next</button>
+            <button class="btn btn-xs" id="btn-share-replay" onclick="shareCurrentReplay()" title="Copy shareable stateless replay link">🔗 Share</button>
             <button class="btn btn-xs btn-danger" onclick="exitReplayMode()">Exit</button>
           </div>
         </div>

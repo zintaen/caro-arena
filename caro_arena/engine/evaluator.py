@@ -57,7 +57,7 @@ class TacticalEvaluator:
         }
 
     @classmethod
-    def evaluate_move(cls, board: CaroBoard, r: int, c: int, player: str, centroid: Tuple[float, float]) -> Dict[str, Any]:
+    def evaluate_move(cls, board: CaroBoard, r: int, c: int, player: str, centroid: Tuple[float, float] = (0.0, 0.0)) -> Dict[str, Any]:
         """Calculates tactical value and creates a natural language description."""
         # Simulate move for player (offense)
         board.stones[(r, c)] = player
@@ -92,6 +92,7 @@ class TacticalEvaluator:
 
         # Defense logic: evaluate threats from all opponents
         def_score = 0
+        has_immediate_block = False
         best_def_reasons = []
         
         if hasattr(board, "get_opponents"):
@@ -105,12 +106,14 @@ class TacticalEvaluator:
             del board.stones[(r, c)]
             
             opp_def_score = 0
+            opp_immediate = False
             opp_reasons = []
             
             for p in def_patterns:
                 cnt, ends = p["count"], p["open_ends"]
                 if cnt >= 5:
                     opp_def_score += 300000
+                    opp_immediate = True
                     opp_reasons.append("CRITICAL: Blocks opponent immediate 5-in-a-row")
                 elif cnt == 4 and ends >= 1:
                     opp_def_score += 40000
@@ -124,6 +127,7 @@ class TacticalEvaluator:
             
             if opp_def_score > def_score:
                 def_score = opp_def_score
+                has_immediate_block = opp_immediate
                 best_def_reasons = opp_reasons
                 
         reasons.extend(best_def_reasons)
@@ -139,7 +143,10 @@ class TacticalEvaluator:
         # 2-player (1v1): full 100% defense.
         num_opponents = len(opponents) if opponents else 1
         def_weight = 0.05 if num_opponents >= 2 else 1.0
-        total_score = off_score + def_score * def_weight + pos_bonus
+        weighted_def = def_score * def_weight
+        if has_immediate_block and weighted_def < 30000.0:
+            weighted_def = 30000.0
+        total_score = off_score + weighted_def + pos_bonus
 
         # Formulate concise strategic summary
         if not reasons:
@@ -156,6 +163,7 @@ class TacticalEvaluator:
             "off_score": off_score,
             "def_score": def_score,
             "total_score": round(total_score, 1),
+            "is_critical": total_score >= 20000.0,
             "summary": summary
         }
 

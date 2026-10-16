@@ -13,8 +13,11 @@ const DIRECTIONS = [
 const PLAYERS = ["A", "B", "C", "D", "E"];
 
 class CaroBoard {
-  constructor(playerSymbols) {
-    this.playerSymbols = playerSymbols || PLAYERS.slice(0, 4);
+  constructor(playerSymbolsOrSize, rule, maybeSymbols) {
+    const symbols = Array.isArray(playerSymbolsOrSize)
+      ? playerSymbolsOrSize
+      : (Array.isArray(maybeSymbols) ? maybeSymbols : PLAYERS.slice(0, 4));
+    this.playerSymbols = symbols.length >= 2 ? symbols.slice(0, PLAYERS.length) : PLAYERS.slice(0, 4);
     this.stones = new Map(); // "r,c" -> playerSymbol
     this.moves = [];
     this.eliminatedPlayers = [];
@@ -64,6 +67,8 @@ class CaroBoard {
   }
 
   makeMove(r, c, player, metadata) {
+    r = r || 0;
+    c = c || 0;
     if (!this.isLegalMove(r, c)) return false;
     const current = player || this.currentPlayer;
     this.stones.set(`${r},${c}`, current);
@@ -242,6 +247,7 @@ class TacticalEvaluator {
     }
 
     let defScore = 0;
+    let hasImmediateBlock = false;
     let bestDefReasons = [];
     const opponents = board.getOpponents(player);
 
@@ -251,10 +257,11 @@ class TacticalEvaluator {
       board.stones.delete(`${r},${c}`);
 
       let oppDefScore = 0;
+      let oppImmediate = false;
       const oppReasons = [];
       for (const p of defPatterns) {
         const cnt = p.count, ends = p.open_ends;
-        if (cnt >= 5) { oppDefScore += 300000; oppReasons.push("CRITICAL: Blocks opponent immediate 5-in-a-row"); }
+        if (cnt >= 5) { oppDefScore += 300000; oppImmediate = true; oppReasons.push("CRITICAL: Blocks opponent immediate 5-in-a-row"); }
         else if (cnt === 4 && ends >= 1) { oppDefScore += 40000; oppReasons.push("HIGH ALERT: Blocks opponent 4-in-a-row"); }
         else if (cnt === 3 && ends === 2) { oppDefScore += 15000; oppReasons.push("Defends against opponent Open 3 attack"); }
         else if (cnt === 3 && ends === 1) { oppDefScore += 600; oppReasons.push("Restricts opponent 3-stone line"); }
@@ -262,6 +269,7 @@ class TacticalEvaluator {
 
       if (oppDefScore > defScore) {
         defScore = oppDefScore;
+        hasImmediateBlock = oppImmediate;
         bestDefReasons = oppReasons;
       }
     }
@@ -279,7 +287,11 @@ class TacticalEvaluator {
       ? window.CaroSandboxConfig.defenseWeight
       : 0.05;
     const defWeight = numOpponents >= 2 ? configuredWeight : 1.0;
-    const totalScore = offScore + defScore * defWeight + posBonus;
+    let weightedDef = defScore * defWeight;
+    if (hasImmediateBlock && weightedDef < 30000) {
+      weightedDef = 30000;
+    }
+    const totalScore = offScore + weightedDef + posBonus;
 
     let summary = "";
     if (!reasons.length) {
@@ -501,6 +513,29 @@ class ClientStorage {
     }
   }
 
+  static getBattleSummaries() {
+    try {
+      const raw = localStorage.getItem("caro_arena_battle_summaries");
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        if (Array.isArray(parsed)) return parsed;
+      }
+      // Initialize chronologically (oldest to newest) from existing battles if summaries not yet stored
+      const existing = [...this.getBattles()].reverse();
+      return existing.map(b => ({
+        battle_id: b.battle_id,
+        started_at: b.started_at,
+        placements: (b.placements || []).map(p => ({ type: p.type, rank: p.rank }))
+      }));
+    } catch {
+      return [];
+    }
+  }
+
+  static getTotalBattlesCount() {
+    return this.getBattleSummaries().length;
+  }
+
   static sanitizeBattle(battle) {
     if (!battle) return null;
     const rawMoves = battle.moves_data || battle.moves || [];
@@ -522,7 +557,7 @@ class ClientStorage {
         player: p.player,
         symbol: p.symbol || p.player,
         name: p.name,
-        winning_line: p.winning_line ? p.winning_line.slice(0, 5) : null
+        winning_line: p.winning_line ? p.winning_line.slice() : null
       })),
       moves_data: sanitizedMoves
     };
@@ -533,10 +568,21 @@ class ClientStorage {
       const clean = this.sanitizeBattle(battle);
       if (!clean) return;
 
-      let list = this.getBattles();
+      // 1. Save lightweight summary chronologically so leaderboard never loses history past 20 battles
+      const summaries = this.getBattleSummaries().filter(s => s.battle_id !== clean.battle_id);
+      summaries.push({
+        battle_id: clean.battle_id,
+        started_at: clean.started_at,
+        placements: (clean.placements || []).map(p => ({ type: p.type, rank: p.rank }))
+      });
+      try {
+        localStorage.setItem("caro_arena_battle_summaries", JSON.stringify(summaries));
+      } catch {}
+
+      // 2. Save full replay record (keep maximum 20 battles to prevent localStorage quota bloat)
+      let list = this.getBattles().filter(b => b.battle_id !== clean.battle_id);
       list.unshift(clean);
 
-      // Keep maximum 20 battles in history (prevents quota bloat)
       if (list.length > 20) {
         list = list.slice(0, 20);
       }
@@ -548,7 +594,6 @@ class ClientStorage {
           localStorage.setItem("caro_arena_battles", JSON.stringify(list));
           saved = true;
         } catch (e) {
-          // If QuotaExceededError, cut list in half and retry
           if (list.length <= 1) {
             try { localStorage.removeItem("caro_arena_battles"); } catch {}
             break;
@@ -557,10 +602,21 @@ class ClientStorage {
         }
       }
 
-      this.updateLeaderboard(battle);
+      this.updateLeaderboard();
     } catch (e) {
       console.warn("ClientStorage: Failed to save battle without blocking game", e);
     }
+  }
+
+  static deleteBattle(battleId) {
+    if (!battleId) return;
+    try {
+      const list = this.getBattles().filter(b => b.battle_id !== battleId);
+      localStorage.setItem("caro_arena_battles", JSON.stringify(list));
+      const summaries = this.getBattleSummaries().filter(s => s.battle_id !== battleId);
+      localStorage.setItem("caro_arena_battle_summaries", JSON.stringify(summaries));
+      this.updateLeaderboard();
+    } catch {}
   }
 
   static getLeaderboard() {
@@ -574,15 +630,22 @@ class ClientStorage {
     }
   }
 
-  static updateLeaderboard(battle) {
+  static updateLeaderboard() {
     try {
       const statsMap = {};
-      const battles = this.getBattles();
-      for (const b of battles) {
+      // Iterate in chronological order (oldest -> newest) across all recorded battle summaries
+      const summaries = this.getBattleSummaries();
+      for (const b of summaries) {
         const placements = b.placements || [];
         const totalP = placements.length;
-        for (const pl of placements) {
+        const seenInBattle = new Set();
+        const sortedPlacements = [...placements].sort((x, y) => (x.rank || 999) - (y.rank || 999));
+
+        for (const pl of sortedPlacements) {
           const ptype = pl.type;
+          if (!ptype || seenInBattle.has(ptype)) continue;
+          seenInBattle.add(ptype);
+
           const rank = pl.rank;
           if (!statsMap[ptype]) {
             statsMap[ptype] = { points: 0, battles: 0, wins: 0, ranks_sum: 0, best_streak: 0, current_streak: 0 };
@@ -631,6 +694,7 @@ class ClientStorage {
   static clearHistory() {
     try {
       localStorage.removeItem("caro_arena_battles");
+      localStorage.removeItem("caro_arena_battle_summaries");
       localStorage.removeItem("caro_arena_leaderboard");
     } catch {}
   }
@@ -670,6 +734,9 @@ class ClientGameManager {
   }
 
   newGame(playerTypes, shouldShuffle = true, playerConfigs = null) {
+    if (this.status === "finished" && !playerConfigs) {
+      this.battleNumber += 1;
+    }
     if (playerTypes) this.selectedPlayerTypes = playerTypes;
     this.gameId = Math.random().toString(36).substring(2, 10);
     this.startedAt = Date.now();
@@ -715,7 +782,7 @@ class ClientGameManager {
   isHumanTurn() {
     if (this.status === "finished" || !this.board) return false;
     const info = this.getCurrentPlayerInfo();
-    return info !== null && info.type === "human";
+    return info !== null && info.type === "human" && !info.agent;
   }
 
   hasHumanPlayer() {
@@ -755,27 +822,43 @@ class ClientGameManager {
     return success;
   }
 
-  undoHumanMove() {
+  undoHumanMove(targetSymbol = null) {
     if (!this.board || this.board.moves.length === 0) return false;
     let lastHumanIdx = -1;
     for (let i = this.board.moves.length - 1; i >= 0; i--) {
       const m = this.board.moves[i];
       const p = this.players.find(pl => pl.symbol === m.player);
-      if (p && p.type === "human") {
+      if (p && p.type === "human" && (!targetSymbol || m.player === targetSymbol)) {
         lastHumanIdx = i;
         break;
       }
     }
     if (lastHumanIdx === -1) return false;
 
+    if (this.status === "finished") {
+      ClientStorage.deleteBattle(this.gameId);
+    }
+
     const keepMoves = this.board.moves.slice(0, lastHumanIdx);
     const symbols = this.players.map(p => p.symbol);
-    this.board = new CaroBoard(0, "standard", symbols);
+    this.board = new CaroBoard(symbols);
     for (const m of keepMoves) {
       this.board.makeMove(m.row, m.col, m.player, m.metadata);
     }
-    this.status = "playing";
-    this.lastMoveDetails = keepMoves.length ? keepMoves[keepMoves.length - 1] : null;
+    this.status = keepMoves.length ? "playing" : "ready";
+    this.endedAt = null;
+    if (keepMoves.length) {
+      const last = keepMoves[keepMoves.length - 1];
+      this.lastMoveDetails = {
+        player: last.player,
+        player_name: this.players.find(p => p.symbol === last.player)?.name || last.player,
+        row: last.row,
+        col: last.col,
+        meta: last.metadata || {}
+      };
+    } else {
+      this.lastMoveDetails = null;
+    }
     if (this.onStateChange) this.onStateChange(this.getState());
     return true;
   }
@@ -819,12 +902,14 @@ class ClientGameManager {
 
   persistGame() {
     try {
-      const playerOrder = this.players.map(p => ({ type: p.type, symbol: p.symbol }));
+      const playerOrder = this.players.map(p => ({ type: p.type, symbol: p.symbol, name: p.name }));
       const placements = this.board.placements.map(pl => {
-        const ptype = this.players.find(p => p.symbol === pl.player)?.type || "unknown";
+        const pObj = this.players.find(p => p.symbol === pl.player);
+        const ptype = pObj?.type || "unknown";
         return {
           symbol: pl.player,
           type: ptype,
+          name: pObj?.name || pl.player,
           rank: pl.rank,
           move_number: pl.move_number,
           winning_line: pl.winning_line
@@ -866,7 +951,6 @@ class ClientGameManager {
       if (this.nonStop) {
         // In non-stop mode, wait 1.2s to show victory line then start next battle!
         this.autoPlayTimer = setTimeout(() => {
-          this.battleNumber += 1;
           this.newGame(this.selectedPlayerTypes);
           this.isAutoPlaying = true;
           this.scheduleNextStep();
@@ -924,3 +1008,4 @@ window.CaroEngine = {
   ClientStorage,
   ClientGameManager
 };
+

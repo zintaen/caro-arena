@@ -1,12 +1,6 @@
 {
   "version": 2,
   "cleanUrls": true,
-  "routes": [
-    {
-      "src": "/(.*)",
-      "dest": "/$1"
-    }
-  ],
   "headers": [
     {
       "source": "/(.*)",
@@ -19,3 +13,4 @@
     }
   ]
 }
+

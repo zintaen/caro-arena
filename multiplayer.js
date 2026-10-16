@@ -11,7 +11,9 @@
   let myPlayerId = null;
   let myPlayerName = "Player";
   let isRoomHost = false;
+  let hostPlayerId = null;
   let myAssignedSlot = 0; // 0-indexed
+  let turnTimeoutSec = 30;
 
   // Room state synchronized among peers
   let roomSlots = [
@@ -29,6 +31,9 @@
   let onRemoteNextBattleCallback = null;
   let onRoomLeaveCallback = null;
   let onStatusMessageCallback = null;
+  let onStateSyncCallback = null;
+  let onHostMigratedCallback = null;
+  let getHostStateCallback = null;
 
   function getSavedCredentials() {
     try {
@@ -212,7 +217,7 @@
   }
 
   async function createRoom(hostName, initialSlots = null) {
-    leaveRoom();
+    leaveRoom(false);
     myPlayerName = hostName || myPlayerName;
     try {
       sessionStorage.setItem("caro_player_name", myPlayerName);
@@ -221,7 +226,13 @@
 
     currentRoomId = generateRoomCode();
     isRoomHost = true;
+    hostPlayerId = myPlayerId;
     myAssignedSlot = 0;
+    knownGuests.clear();
+
+    try {
+      sessionStorage.setItem("caro_active_room", currentRoomId);
+    } catch {}
 
     roomSlots = initialSlots || [
       { type: "human", name: myPlayerName, id: myPlayerId, ready: true },
@@ -235,8 +246,10 @@
     return currentRoomId;
   }
 
+  const knownGuests = new Map();
+
   async function joinRoom(roomId, playerName) {
-    leaveRoom();
+    leaveRoom(false);
     currentRoomId = (roomId || "").trim().toUpperCase();
     if (!currentRoomId) throw new Error("Invalid room code.");
 
@@ -244,11 +257,28 @@
     try {
       sessionStorage.setItem("caro_player_name", myPlayerName);
       localStorage.setItem("caro_player_name", myPlayerName);
+      sessionStorage.setItem("caro_active_room", currentRoomId);
     } catch {}
     isRoomHost = false;
+    myAssignedSlot = 1;
 
     await subscribeToRoom(currentRoomId);
     return currentRoomId;
+  }
+
+  function broadcastGameStateIfActive(targetRequesterId = null) {
+    if (!currentChannel || !inGame || typeof getHostStateCallback !== "function") return;
+    const hostState = getHostStateCallback();
+    if (!hostState || !hostState.roster) return;
+    currentChannel.send({
+      type: "broadcast",
+      event: "game_state_sync",
+      payload: Object.assign({}, hostState, {
+        roomId: currentRoomId,
+        hostId: hostPlayerId || myPlayerId,
+        targetId: targetRequesterId || null
+      })
+    });
   }
 
   async function subscribeToRoom(roomId) {
@@ -273,14 +303,16 @@
     });
 
     currentChannel.on("presence", { event: "join" }, ({ key, newPresences }) => {
-      if (onStatusMessageCallback && newPresences) {
+      if (newPresences) {
         newPresences.forEach(p => {
-          if (p.name && p.name !== myPlayerName) {
+          if (p.isHost && p.id) {
+            hostPlayerId = p.id;
+          }
+          if (onStatusMessageCallback && p.name && p.name !== myPlayerName) {
             onStatusMessageCallback(`${p.name} joined the room.`);
           }
         });
       }
-      // Re-sync lobby slots immediately when a new user arrives
       const state = currentChannel.presenceState();
       handlePresenceSync(state);
     });
@@ -291,14 +323,28 @@
           if (p.name) onStatusMessageCallback(`${p.name} left the room.`);
         });
       }
+      const wasHost = (key && key === hostPlayerId) || Boolean(leftPresences && leftPresences.some(p => p.isHost));
       handlePlayerLeft(key);
-      const state = currentChannel.presenceState();
-      handlePresenceSync(state);
+      if (wasHost) {
+        handleHostDisconnected(key);
+      }
+      if (currentChannel) {
+        const state = currentChannel.presenceState();
+        handlePresenceSync(state);
+      }
     });
 
     // 2. Broadcast events
     currentChannel.on("broadcast", { event: "player_join" }, ({ payload }) => {
       if (!isRoomHost || !payload?.id) return;
+      if (payload.id !== myPlayerId) {
+        const prev = knownGuests.get(payload.id);
+        knownGuests.set(payload.id, {
+          id: payload.id,
+          name: payload.name || prev?.name || "Friend",
+          joinedAt: prev?.joinedAt || Date.now()
+        });
+      }
       let slot = roomSlots.find(s => s.id === payload.id);
       if (!slot) {
         slot = roomSlots.find((s, idx) => idx > 0 && s.type === "human" && (!s.id || s.name.startsWith("Waiting")));
@@ -310,9 +356,74 @@
         broadcastLobbyUpdate();
         if (onLobbyChangeCallback) onLobbyChangeCallback(getLobbyState());
       }
+      if (inGame) {
+        broadcastGameStateIfActive(payload.id);
+      }
+    });
+
+    currentChannel.on("broadcast", { event: "request_lobby" }, ({ payload }) => {
+      if (!isRoomHost) return;
+      if (payload?.from && payload.from !== myPlayerId) {
+        const prev = knownGuests.get(payload.from);
+        knownGuests.set(payload.from, {
+          id: payload.from,
+          name: payload.name || prev?.name || "Friend",
+          joinedAt: prev?.joinedAt || Date.now()
+        });
+        let slot = roomSlots.find(s => s.id === payload.from);
+        if (!slot) {
+          slot = roomSlots.find((s, idx) => idx > 0 && s.type === "human" && (!s.id || s.name.startsWith("Waiting")));
+        }
+        if (slot) {
+          slot.id = payload.from;
+          if (payload.name) slot.name = payload.name;
+          slot.ready = true;
+        }
+      }
+      broadcastLobbyUpdate();
+      if (inGame) {
+        broadcastGameStateIfActive(payload?.from);
+      }
+    });
+
+    currentChannel.on("broadcast", { event: "request_game_state" }, ({ payload }) => {
+      if (!inGame) return;
+      // Host replies immediately; non-host active peers also reply if Host is the one reconnecting
+      if (isRoomHost || (payload?.from && payload.from === hostPlayerId)) {
+        broadcastGameStateIfActive(payload?.from);
+      }
+    });
+
+    currentChannel.on("broadcast", { event: "game_state_sync" }, ({ payload }) => {
+      if (!payload || !payload.roster) return;
+      if (payload.hostId) hostPlayerId = payload.hostId;
+      inGame = true;
+      if (onStateSyncCallback) onStateSyncCallback(payload);
+    });
+
+    currentChannel.on("broadcast", { event: "host_leave" }, ({ payload }) => {
+      const leftId = payload?.hostId || hostPlayerId;
+      if (leftId) {
+        handlePlayerLeft(leftId);
+        handleHostDisconnected(leftId);
+      }
+    });
+
+    currentChannel.on("broadcast", { event: "host_migrated" }, ({ payload }) => {
+      if (!payload?.newHostId) return;
+      hostPlayerId = payload.newHostId;
+      isRoomHost = (payload.newHostId === myPlayerId);
+      if (onHostMigratedCallback) {
+        onHostMigratedCallback({
+          newHostId: payload.newHostId,
+          newHostName: payload.newHostName,
+          isMe: isRoomHost
+        });
+      }
     });
 
     currentChannel.on("broadcast", { event: "lobby_update" }, ({ payload }) => {
+      if (payload?.hostId) hostPlayerId = payload.hostId;
       if (!isRoomHost && payload?.slots) {
         roomSlots = payload.slots;
         // Robust resolution of my assigned slot
@@ -330,6 +441,7 @@
 
     currentChannel.on("broadcast", { event: "game_start" }, ({ payload }) => {
       inGame = true;
+      if (payload?.hostId) hostPlayerId = payload.hostId;
       if (onGameStartCallback) onGameStartCallback(payload);
     });
 
@@ -353,7 +465,7 @@
         if (isRoomHost) {
           broadcastLobbyUpdate();
         } else {
-          // Send explicit join handshake to host
+          // Send explicit join & state sync handshakes to host
           currentChannel.send({
             type: "broadcast",
             event: "player_join",
@@ -364,30 +476,95 @@
             event: "request_lobby",
             payload: { from: myPlayerId, name: myPlayerName }
           });
+          currentChannel.send({
+            type: "broadcast",
+            event: "request_game_state",
+            payload: { from: myPlayerId, name: myPlayerName }
+          });
         }
       }
     });
+  }
 
-    // Host listens for lobby state requests from new joiners
-    if (isRoomHost) {
-      currentChannel.on("broadcast", { event: "request_lobby" }, ({ payload }) => {
-        if (payload?.from) {
-          let slot = roomSlots.find(s => s.id === payload.from);
-          if (!slot) {
-            slot = roomSlots.find((s, idx) => idx > 0 && s.type === "human" && (!s.id || s.name.startsWith("Waiting")));
-          }
-          if (slot) {
-            slot.id = payload.from;
-            if (payload.name) slot.name = payload.name;
-            slot.ready = true;
-          }
+  function requestStateSync() {
+    if (!currentChannel) return;
+    currentChannel.send({
+      type: "broadcast",
+      event: "request_game_state",
+      payload: { from: myPlayerId, name: myPlayerName }
+    });
+  }
+
+  function handleHostDisconnected(leftHostId) {
+    if (isRoomHost) return; // Already host
+
+    // Determine candidate human players in order from active game roster or roomSlots
+    const hostState = typeof getHostStateCallback === "function" ? getHostStateCallback() : null;
+    const activeRoster = hostState?.roster || [];
+    let candidateIds = [];
+
+    if (activeRoster.length > 0) {
+      candidateIds = activeRoster
+        .filter(r => r.type === "human" && r.playerId && r.playerId !== leftHostId)
+        .map(r => r.playerId);
+    }
+    if (candidateIds.length === 0) {
+      candidateIds = roomSlots
+        .filter(s => s.type === "human" && s.id && s.id !== leftHostId)
+        .map(s => s.id);
+    }
+
+    // Filter to currently present users if presence state is populated
+    if (currentChannel && typeof currentChannel.presenceState === "function") {
+      const pState = currentChannel.presenceState();
+      const presentKeys = new Set(Object.keys(pState));
+      if (presentKeys.size > 0) {
+        const presentCandidates = candidateIds.filter(id => presentKeys.has(id));
+        if (presentCandidates.length > 0) {
+          candidateIds = presentCandidates;
         }
-        broadcastLobbyUpdate();
-      });
+      }
+    }
+
+    const nextHostId = candidateIds[0] || myPlayerId;
+    if (nextHostId === myPlayerId) {
+      isRoomHost = true;
+      hostPlayerId = myPlayerId;
+      if (currentChannel && typeof currentChannel.track === "function") {
+        currentChannel.track({
+          id: myPlayerId,
+          name: myPlayerName,
+          isHost: true,
+          joinedAt: Date.now()
+        }).catch(() => {});
+      }
+      if (currentChannel) {
+        currentChannel.send({
+          type: "broadcast",
+          event: "host_migrated",
+          payload: {
+            roomId: currentRoomId,
+            newHostId: myPlayerId,
+            newHostName: myPlayerName
+          }
+        });
+      }
+      if (onStatusMessageCallback) {
+        onStatusMessageCallback(`Host left — ${myPlayerName} is now Room Host.`);
+      }
+      if (onHostMigratedCallback) {
+        onHostMigratedCallback({
+          newHostId: myPlayerId,
+          newHostName: myPlayerName,
+          leftHostId,
+          isMe: true
+        });
+      }
+      if (onLobbyChangeCallback) onLobbyChangeCallback(getLobbyState());
     }
   }
 
-  function handlePresenceSync(presenceState) {
+  function syncGuestSlotsFromPresence(presenceState) {
     const presentUsers = [];
     for (const key in presenceState) {
       const presences = presenceState[key];
@@ -396,30 +573,70 @@
       }
     }
 
-    if (isRoomHost) {
-      // Slot 0 is strictly Host
-      roomSlots[0].name = myPlayerName;
-      roomSlots[0].id = myPlayerId;
-      roomSlots[0].ready = true;
+    for (const u of presentUsers) {
+      if (u && u.isHost && u.id) {
+        hostPlayerId = u.id;
+      }
+    }
 
-      // Assign remaining human slots to connected guests
-      const guestUsers = presentUsers.filter(u => u.id !== myPlayerId);
-      let guestIndex = 0;
-      for (let i = 1; i < roomSlots.length; i++) {
-        if (roomSlots[i].type === "human") {
-          if (guestIndex < guestUsers.length) {
-            const user = guestUsers[guestIndex];
-            roomSlots[i].name = user.name;
-            roomSlots[i].id = user.id;
-            roomSlots[i].ready = true;
-          } else {
-            roomSlots[i].name = "Waiting for player...";
-            roomSlots[i].id = null;
-            roomSlots[i].ready = false;
-          }
-          guestIndex++;
+    if (!isRoomHost) return;
+
+    // Slot 0 is strictly Host
+    roomSlots[0].name = myPlayerName;
+    roomSlots[0].id = myPlayerId;
+    roomSlots[0].ready = true;
+
+    for (const u of presentUsers) {
+      if (u && u.id && u.id !== myPlayerId) {
+        const prev = knownGuests.get(u.id);
+        knownGuests.set(u.id, {
+          id: u.id,
+          name: u.name || prev?.name || "Friend",
+          joinedAt: u.joinedAt || prev?.joinedAt || Date.now()
+        });
+      }
+    }
+
+    const guestUsers = Array.from(knownGuests.values())
+      .sort((a, b) => (a.joinedAt || 0) - (b.joinedAt || 0));
+    const guestById = new Map(guestUsers.map(u => [u.id, u]));
+    const assignedIds = new Set([myPlayerId]);
+
+    // 1. Preserve existing slot assignments for guests still present
+    for (let i = 1; i < roomSlots.length; i++) {
+      if (roomSlots[i].type === "human") {
+        const existingId = roomSlots[i].id;
+        if (existingId && guestById.has(existingId) && !assignedIds.has(existingId)) {
+          const user = guestById.get(existingId);
+          roomSlots[i].name = user.name || roomSlots[i].name || "Friend";
+          roomSlots[i].id = user.id;
+          roomSlots[i].ready = true;
+          assignedIds.add(user.id);
+        } else {
+          roomSlots[i].name = "Waiting for player...";
+          roomSlots[i].id = null;
+          roomSlots[i].ready = false;
         }
       }
+    }
+
+    // 2. Assign any newly joined (unassigned) guests to open human slots
+    const unassignedGuests = guestUsers.filter(u => !assignedIds.has(u.id));
+    let nextGuestIdx = 0;
+    for (let i = 1; i < roomSlots.length && nextGuestIdx < unassignedGuests.length; i++) {
+      if (roomSlots[i].type === "human" && !roomSlots[i].id) {
+        const user = unassignedGuests[nextGuestIdx++];
+        roomSlots[i].name = user.name || "Friend";
+        roomSlots[i].id = user.id;
+        roomSlots[i].ready = true;
+        assignedIds.add(user.id);
+      }
+    }
+  }
+
+  function handlePresenceSync(presenceState) {
+    if (isRoomHost) {
+      syncGuestSlotsFromPresence(presenceState);
       broadcastLobbyUpdate();
     }
 
@@ -427,6 +644,7 @@
   }
 
   function handlePlayerLeft(playerId) {
+    knownGuests.delete(playerId);
     if (isRoomHost) {
       const slot = roomSlots.find(s => s.id === playerId);
       if (slot) {
@@ -444,6 +662,9 @@
     if (index === 0) return; // Slot 0 is always Host
 
     roomSlots[index] = Object.assign({}, roomSlots[index], slotConfig);
+    if (currentChannel && typeof currentChannel.presenceState === "function") {
+      syncGuestSlotsFromPresence(currentChannel.presenceState());
+    }
     broadcastLobbyUpdate();
     if (onLobbyChangeCallback) onLobbyChangeCallback(getLobbyState());
   }
@@ -456,7 +677,8 @@
       payload: {
         roomId: currentRoomId,
         slots: roomSlots,
-        hostName: myPlayerName
+        hostName: myPlayerName,
+        hostId: myPlayerId
       }
     });
   }
@@ -464,25 +686,9 @@
   function startGame() {
     if (!isRoomHost || !currentChannel) return;
 
-    // Ensure any open human slot is bound to a connected guest
-    const presenceUsers = [];
+    // Ensure any open human slot is bound to an unassigned connected guest
     if (typeof currentChannel.presenceState === "function") {
-      const ps = currentChannel.presenceState();
-      for (const k in ps) {
-        if (ps[k] && ps[k].length > 0) presenceUsers.push(ps[k][0]);
-      }
-    }
-    const guestUsers = presenceUsers.filter(u => u.id !== myPlayerId);
-    let guestIdx = 0;
-    for (let i = 1; i < roomSlots.length; i++) {
-      if (roomSlots[i].type === "human" && (!roomSlots[i].id || roomSlots[i].name.startsWith("Waiting"))) {
-        if (guestIdx < guestUsers.length) {
-          roomSlots[i].id = guestUsers[guestIdx].id;
-          roomSlots[i].name = guestUsers[guestIdx].name || "Friend";
-          roomSlots[i].ready = true;
-          guestIdx++;
-        }
-      }
+      syncGuestSlotsFromPresence(currentChannel.presenceState());
     }
 
     // Filter active players
@@ -505,18 +711,20 @@
     }));
 
     inGame = true;
+    hostPlayerId = myPlayerId;
     currentChannel.send({
       type: "broadcast",
       event: "game_start",
       payload: {
         roomId: currentRoomId,
+        hostId: myPlayerId,
         roster,
         battleNumber: 1
       }
     });
 
     if (onGameStartCallback) {
-      onGameStartCallback({ roomId: currentRoomId, roster, battleNumber: 1 });
+      onGameStartCallback({ roomId: currentRoomId, hostId: myPlayerId, roster, battleNumber: 1 });
     }
   }
 
@@ -547,23 +755,36 @@
     });
   }
 
-  function leaveRoom() {
+  function leaveRoom(userInitiated = true) {
     if (currentChannel) {
       try {
+        if (isRoomHost && currentRoomId) {
+          currentChannel.send({
+            type: "broadcast",
+            event: "host_leave",
+            payload: { hostId: myPlayerId, roomId: currentRoomId }
+          });
+        }
         currentChannel.unsubscribe();
       } catch {}
       currentChannel = null;
     }
+    knownGuests.clear();
     currentRoomId = null;
     isRoomHost = false;
+    hostPlayerId = null;
     inGame = false;
-    if (onRoomLeaveCallback) onRoomLeaveCallback();
+    if (userInitiated) {
+      try { sessionStorage.removeItem("caro_active_room"); } catch {}
+      if (onRoomLeaveCallback) onRoomLeaveCallback();
+    }
   }
 
   function getLobbyState() {
     return {
       roomId: currentRoomId,
       isHost: isRoomHost,
+      hostId: hostPlayerId,
       isOnline: Boolean(getClient()),
       myPlayerId,
       myPlayerName,
@@ -582,6 +803,9 @@
     if (callbacks.onRemoteNextBattle) onRemoteNextBattleCallback = callbacks.onRemoteNextBattle;
     if (callbacks.onRoomLeave) onRoomLeaveCallback = callbacks.onRoomLeave;
     if (callbacks.onStatusMessage) onStatusMessageCallback = callbacks.onStatusMessage;
+    if (callbacks.onStateSync) onStateSyncCallback = callbacks.onStateSync;
+    if (callbacks.onHostMigrated) onHostMigratedCallback = callbacks.onHostMigrated;
+    if (callbacks.getHostState) getHostStateCallback = callbacks.getHostState;
   }
 
   // Export to global scope
@@ -598,15 +822,20 @@
     startGame,
     sendMove,
     sendNextBattle,
+    requestStateSync,
     getLobbyState,
     setCallbacks,
     get isHost() { return isRoomHost; },
+    get hostId() { return hostPlayerId; },
     get isOnline() { return Boolean(getClient()); },
     get roomId() { return currentRoomId; },
     get inGame() { return inGame; },
     get myId() { return myPlayerId; },
+    get myAssignedSlot() { return myAssignedSlot; },
     get myName() { return myPlayerName; },
-    set myName(v) { myPlayerName = v; try { sessionStorage.setItem("caro_player_name", v); localStorage.setItem("caro_player_name", v); } catch {} }
+    set myName(v) { myPlayerName = v; try { sessionStorage.setItem("caro_player_name", v); localStorage.setItem("caro_player_name", v); } catch {} },
+    get turnTimeoutSec() { return turnTimeoutSec; },
+    set turnTimeoutSec(v) { turnTimeoutSec = Math.max(1, Number(v) || 30); }
   };
 
   init();
