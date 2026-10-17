@@ -640,6 +640,176 @@ function copyMovesCoordinateNotation() {
   showArenaToast(`Copied ${moves.length} move coordinates`);
   return text;
 }
+// ─────────────────────────────────────────
+// Replay Auto-Play & Speed Controls
+// ─────────────────────────────────────────
+let _replayAutoTimer = null;
+let _replaySpeedMult = 1; // 1x, 2x, 4x
+const REPLAY_SPEEDS = [1, 2, 4];
+
+function stopReplayAutoPlay() {
+  if (_replayAutoTimer) {
+    clearInterval(_replayAutoTimer);
+    _replayAutoTimer = null;
+  }
+  const btn = document.getElementById("btn-replay-autoplay");
+  if (btn) {
+    btn.classList.remove("btn-active");
+    btn.textContent = "▶ Play";
+  }
+}
+
+function toggleReplayAutoPlay() {
+  if (!isReplayMode) return false;
+  if (_replayAutoTimer) {
+    stopReplayAutoPlay();
+    return false;
+  }
+  if (replayIndex >= replayMoves.length) {
+    replayIndex = 0;
+    updateUI();
+  }
+  const btn = document.getElementById("btn-replay-autoplay");
+  if (btn) {
+    btn.classList.add("btn-active");
+    btn.textContent = "⏸ Pause";
+  }
+  const intervalMs = Math.max(120, Math.round(640 / _replaySpeedMult));
+  _replayAutoTimer = setInterval(() => {
+    if (!isReplayMode || replayIndex >= replayMoves.length) {
+      stopReplayAutoPlay();
+      return;
+    }
+    stepReplay(1);
+    if (replayIndex >= replayMoves.length) {
+      stopReplayAutoPlay();
+    }
+  }, intervalMs);
+  return true;
+}
+
+function cycleReplaySpeed() {
+  const curIdx = REPLAY_SPEEDS.indexOf(_replaySpeedMult);
+  _replaySpeedMult = REPLAY_SPEEDS[(curIdx + 1) % REPLAY_SPEEDS.length];
+  const btn = document.getElementById("btn-replay-speed");
+  if (btn) btn.textContent = `${_replaySpeedMult}x`;
+  if (_replayAutoTimer) {
+    stopReplayAutoPlay();
+    toggleReplayAutoPlay();
+  }
+  return _replaySpeedMult;
+}
+
+// ─────────────────────────────────────────
+// Share as Puzzle (?puzzle=...) Challenge Links
+// ─────────────────────────────────────────
+function encodePuzzlePayload(players, moves, title = "Community Challenge") {
+  const compact = {
+    t: String(title || "Community Challenge").slice(0, 40),
+    p: (players || []).map(p => [p.symbol, p.type, p.name || p.type]),
+    m: (moves || []).map(m => [m.row, m.col, m.player])
+  };
+  const json = JSON.stringify(compact);
+  const bytes = new TextEncoder().encode(json);
+  let bin = "";
+  for (let i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i]);
+  return btoa(bin).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+}
+
+function decodePuzzlePayload(encoded) {
+  const b64 = String(encoded || "").trim().replace(/-/g, "+").replace(/_/g, "/");
+  const pad = b64.length % 4 === 0 ? "" : "=".repeat(4 - (b64.length % 4));
+  const bin = atob(b64 + pad);
+  const bytes = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+  const compact = JSON.parse(new TextDecoder().decode(bytes));
+  return {
+    title: compact.t || "Community Challenge",
+    players: (compact.p || []).map(([symbol, type, name]) => ({ symbol, type, name })),
+    moves: (compact.m || []).map(([row, col, player], idx) => ({
+      row: Number(row) || 0,
+      col: Number(col) || 0,
+      player: player || "A",
+      move_number: idx + 1
+    }))
+  };
+}
+
+function getSharePuzzleUrl() {
+  const players = isReplayMode ? replayPlayers : (gameState?.players || []);
+  let moves = [];
+  if (isReplayMode) {
+    const cut = (replayIndex > 0 && replayIndex < replayMoves.length)
+      ? replayIndex
+      : Math.max(1, replayMoves.length - 1);
+    moves = replayMoves.slice(0, cut);
+  } else {
+    const allMoves = gameState?.board?.moves || [];
+    const cut = (gameState?.status === "finished" && allMoves.length > 1)
+      ? allMoves.length - 1
+      : allMoves.length;
+    moves = allMoves.slice(0, cut);
+  }
+  const encoded = encodePuzzlePayload(players, moves, `Challenge at move #${moves.length}`);
+  return `${window.location.origin}${window.location.pathname}?puzzle=${encoded}`;
+}
+
+function shareCurrentStateAsPuzzle() {
+  const url = getSharePuzzleUrl();
+  const btn = document.getElementById("btn-share-puzzle");
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(url).catch(() => {});
+  }
+  if (btn) {
+    const orig = btn.textContent;
+    btn.textContent = "Copied!";
+    setTimeout(() => { btn.textContent = orig; }, 2000);
+  }
+  showArenaToast("Copied interactive puzzle challenge link!");
+  return url;
+}
+
+function launchCustomPuzzleFromPayload(encoded) {
+  try {
+    const data = decodePuzzlePayload(encoded);
+    if (!data || !Array.isArray(data.moves)) return null;
+    if (isReplayMode) exitReplayMode();
+    if (!clientEngine && window.CaroEngine) {
+      clientEngine = new window.CaroEngine.ClientGameManager();
+      clientEngine.onStateChange = (state) => {
+        if (!useBackend()) handleStateUpdate(state);
+      };
+    }
+    if (!clientEngine) return null;
+    useClientEngineOverride = true;
+    enterArenaBattleground();
+
+    const srcPlayers = data.players && data.players.length >= 2
+      ? data.players
+      : [{ symbol: "A", type: "human", name: "Human" }, { symbol: "B", type: "von", name: "Von" }];
+    // Ensure whoever's turn is next is human-controllable so the solver can play immediately
+    const nextIdx = data.moves.length % srcPlayers.length;
+    const normalizedPlayers = srcPlayers.map((p, idx) => (
+      idx === nextIdx ? { symbol: p.symbol, type: "human", name: "You (Challenger)" } : p
+    ));
+
+    const branchedState = clientEngine.branchFromMoves(normalizedPlayers, data.moves, currentRuleVariant);
+    branchedState.puzzle = {
+      id: "custom-puzzle",
+      title: data.title || "Community Puzzle",
+      objective: "Find the winning continuation from this position"
+    };
+    userInteractedWithCamera = false;
+    autoScaleCamera(true);
+    handleStateUpdate(branchedState);
+    showArenaToast(`Puzzle Loaded: ${branchedState.puzzle.title}`);
+    return branchedState;
+  } catch (err) {
+    console.warn("Invalid puzzle payload:", err);
+    return null;
+  }
+}
+
 window.encodeReplayPayload = encodeReplayPayload;
 window.decodeReplayPayload = decodeReplayPayload;
 window.getShareReplayUrl = getShareReplayUrl;
@@ -648,8 +818,17 @@ window.toggleReplayHints = toggleReplayHints;
 window.playFromReplayState = playFromReplayState;
 window.copyMovesCoordinateNotation = copyMovesCoordinateNotation;
 window.downloadBoardSnapshot = downloadBoardSnapshot;
+window.toggleReplayAutoPlay = toggleReplayAutoPlay;
+window.stopReplayAutoPlay = stopReplayAutoPlay;
+window.cycleReplaySpeed = cycleReplaySpeed;
+window.encodePuzzlePayload = encodePuzzlePayload;
+window.decodePuzzlePayload = decodePuzzlePayload;
+window.getSharePuzzleUrl = getSharePuzzleUrl;
+window.shareCurrentStateAsPuzzle = shareCurrentStateAsPuzzle;
+window.launchCustomPuzzleFromPayload = launchCustomPuzzleFromPayload;
 
 function exitReplayMode() {
+  stopReplayAutoPlay();
   isReplayMode = false;
   replayMoves = [];
   replayIndex = 0;

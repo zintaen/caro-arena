@@ -154,7 +154,7 @@ document.addEventListener("DOMContentLoaded", async () => {
   })();
 
   // Default Start Page is the Lobby Start Screen unless already in a multiplayer room or URL deep-link
-  if (!hasSavedMpRoom && !urlParams.get("room") && !urlParams.get("replay_data") && !urlParams.get("replay") && !urlParams.get("autoplay") && !isMultiplayerActive) {
+  if (!hasSavedMpRoom && !urlParams.get("room") && !urlParams.get("replay_data") && !urlParams.get("replay") && !urlParams.get("puzzle") && !urlParams.get("autoplay") && !isMultiplayerActive) {
     showLobbyHomeScreen();
   }
 
@@ -189,6 +189,11 @@ document.addEventListener("DOMContentLoaded", async () => {
     await fetchState();
   }
 
+  const puzzleParam = urlParams.get("puzzle");
+  if (puzzleParam && typeof launchCustomPuzzleFromPayload === "function") {
+    launchCustomPuzzleFromPayload(puzzleParam);
+    return;
+  }
   const replayDataParam = urlParams.get("replay_data");
   if (replayDataParam) {
     enterArenaBattleground();
@@ -331,24 +336,34 @@ function handleStateUpdate(data) {
     boardSparks = [];
     highlightedMoveCoord = null;
     pendingConfirmCoord = null;
+    if (typeof activeCoachHint !== "undefined") activeCoachHint = null;
   } else if (newMoveCount > prevMoveCount) {
     pendingConfirmCoord = null;
+    if (typeof activeCoachHint !== "undefined") activeCoachHint = null;
   }
   rebuildSymbolMap();
 
-  // Trigger stone placement spring & shockwave ripple for newly played moves
+  // Trigger stone placement spring, shockwave ripple & playful speech bubble for newly played moves
   if (!wasInitialFetch && newMoveCount > prevMoveCount && Array.isArray(data.board?.moves)) {
+    ensureMovesHavePatterns(data.board.moves, data.players, data.board.rule_variant || currentRuleVariant || "freestyle");
     const startIdx = Math.max(prevMoveCount, newMoveCount - 2);
     for (let i = startIdx; i < newMoveCount; i++) {
       const m = data.board.moves[i];
       if (m) triggerStonePlacementFx(m.row, m.col, m.player);
     }
     const latestM = data.board.moves[newMoveCount - 1];
-    if (latestM && userInteractedWithCamera && !isDragging && canvas) {
-      const pt = boardToScreen(latestM.row, latestM.col);
-      const margin = 36;
-      if (pt.x < margin || pt.x > canvas.width - margin || pt.y < margin || pt.y > canvas.height - margin) {
-        panCameraToCoord(latestM.row, latestM.col);
+    if (latestM) {
+      const pat = normalizeMovePattern(latestM.metadata?.pattern);
+      if (pat?.label && typeof triggerCreatureSpeechBubble === "function") {
+        const meta = getPlayerMeta(latestM.player);
+        triggerCreatureSpeechBubble(latestM.player, meta.type, pat);
+      }
+      if (userInteractedWithCamera && !isDragging && canvas) {
+        const pt = boardToScreen(latestM.row, latestM.col);
+        const margin = 36;
+        if (pt.x < margin || pt.x > canvas.width - margin || pt.y < margin || pt.y > canvas.height - margin) {
+          panCameraToCoord(latestM.row, latestM.col);
+        }
       }
     }
   }
@@ -439,6 +454,23 @@ function handleStateUpdate(data) {
         }).catch(() => {});
       }
       if (typeof renderDailyPuzzleBadge === "function") renderDailyPuzzleBadge();
+    } else if (window.CaroGauntlet?.active && !isMultiplayerActive && symbolMap[winSym]?.type === "human") {
+      if (window.CaroGauntlet.stage >= window.CaroGauntlet.totalStages && window.CaroGauntlet.rewardedStage4ForGameId !== data.game_id) {
+        window.CaroGauntlet.rewardedStage4ForGameId = data.game_id;
+        if (window.CaroAuth?.adjustCranes) {
+          window.CaroAuth.adjustCranes(50, "gauntlet_champion").then(() => {
+            showArenaToast("👑 Gauntlet Champion! Boss Finale cleared — +50 Cranes jackpot!");
+            if (typeof renderLobbyHomeWalletAndThemes === "function") renderLobbyHomeWalletAndThemes();
+          }).catch(() => {});
+        }
+      } else {
+        if (window.CaroAuth?.adjustCranes) {
+          window.CaroAuth.adjustCranes(10, "solo_practice_win_1st").then(() => {
+            showArenaToast(`Gauntlet Stage ${window.CaroGauntlet.stage} cleared! +10 Cranes`);
+            if (typeof renderLobbyHomeWalletAndThemes === "function") renderLobbyHomeWalletAndThemes();
+          }).catch(() => {});
+        }
+      }
     } else if (!wasInitialFetch && window.CaroAuth?.adjustCranes && winSym) {
       // Award Cranes for 1st-place victory when local human wins
       if (isMultiplayerActive && myMultiplayerSymbol && winSym === myMultiplayerSymbol) {
@@ -569,7 +601,10 @@ function setupEventListeners() {
     });
   }
 
-  // Human Undo
+  // Human Hint & Undo
+  document.getElementById("btn-human-hint")?.addEventListener("click", () => {
+    if (typeof requestCoachHint === "function") requestCoachHint();
+  });
   document.getElementById("btn-undo-move")?.addEventListener("click", undoHumanMove);
 
   // Viewport & Board Toggles
@@ -682,6 +717,31 @@ function setupEventListeners() {
     });
   }
 
+  // Creature Mascot Hat selector in board footer
+  const hatSelect = document.getElementById("select-creature-hat");
+  if (hatSelect && window.CaroAuth?.getSelectedCreatureHat) {
+    hatSelect.value = window.CaroAuth.getSelectedCreatureHat();
+    hatSelect.addEventListener("change", async (e) => {
+      const targetHat = e.target.value;
+      if (window.CaroAuth.isCreatureHatUnlocked(targetHat)) {
+        window.CaroAuth.setSelectedCreatureHat(targetHat);
+        if (typeof renderLobbyHomeWalletAndThemes === "function") renderLobbyHomeWalletAndThemes();
+        updateUI();
+      } else {
+        try {
+          await window.CaroAuth.unlockCreatureHat(targetHat);
+          const meta = window.CaroAuth.CREATURE_HATS_CATALOG?.[targetHat];
+          showArenaToast(`Unlocked and equipped ${meta?.name || targetHat}`);
+          if (typeof renderLobbyHomeWalletAndThemes === "function") renderLobbyHomeWalletAndThemes();
+          updateUI();
+        } catch (err) {
+          showArenaToast(err.message);
+          hatSelect.value = window.CaroAuth.getSelectedCreatureHat();
+        }
+      }
+    });
+  }
+
   // Synthesized Sound Pack selector in board footer (Feature 8)
   const soundPackSelect = document.getElementById("select-sound-pack");
   if (soundPackSelect && window.CaroAudio) {
@@ -731,10 +791,13 @@ function setupEventListeners() {
   // Copy Move Coordinates button (Feature 10)
   document.getElementById("btn-copy-moves")?.addEventListener("click", copyMovesCoordinateNotation);
 
-  // Post-Match Rematch Vote & Next Puzzle buttons (Features 4 & 7)
+  // Post-Match Rematch Vote, Next Puzzle & Next Gauntlet Stage buttons
   document.getElementById("btn-rematch-vote")?.addEventListener("click", handleRematchAction);
   document.getElementById("btn-next-puzzle")?.addEventListener("click", () => {
     launchNextDailyPuzzle();
+  });
+  document.getElementById("btn-next-gauntlet")?.addEventListener("click", () => {
+    if (typeof advanceGauntletStage === "function") advanceGauntletStage();
   });
 
   document.getElementById("btn-zoom-in")?.addEventListener("click", () => zoomCamera(1.2));
@@ -856,6 +919,11 @@ function setupEventListeners() {
       return;
     }
 
+    if (e.key === "h" || e.key === "H") {
+      e.preventDefault();
+      if (typeof requestCoachHint === "function") requestCoachHint();
+      return;
+    }
     if (e.key === "z" || e.key === "Z" || e.key === "u" || e.key === "U") {
       e.preventDefault();
       undoHumanMove();
@@ -1383,7 +1451,9 @@ function updateTurnBanner() {
   const activeMoves = isReplayMode ? replayMoves.slice(0, replayIndex) : (gameState?.board?.moves || []);
   const lastMove = activeMoves.length > 0 ? activeMoves[activeMoves.length - 1] : null;
   const lastPat = normalizeMovePattern(lastMove?.metadata?.pattern);
-  const lastPatternLabel = lastPat?.label ? ` · ${lastPat.label}` : "";
+  const openingName = window.CaroEngine?.TacticalEvaluator?.detectOpeningName?.(activeMoves) || null;
+  const openingLabel = (openingName && activeMoves.length >= 2 && activeMoves.length <= 6) ? ` · ${openingName}` : "";
+  const lastPatternLabel = lastPat?.label ? ` · ${lastPat.label}` : openingLabel;
 
   if (isReplayMode) {
     dot.style.background = "#94a3b8";
@@ -1399,16 +1469,20 @@ function updateTurnBanner() {
   }
 
   const bn = gameState.series?.battle_number || gameState.battle_number || 1;
+  const gauntletPrefix = (window.CaroGauntlet?.active && !isMultiplayerActive)
+    ? `Gauntlet ${window.CaroGauntlet.stage}/${window.CaroGauntlet.totalStages}`
+    : `Battle #${bn}`;
+
   if (gameState.status === "finished") {
     const placements = gameState.board?.placements || [];
     if (placements.length > 0) {
       const winner = getPlayerMeta(placements[0].player);
       dot.style.background = winner.color;
-      text.textContent = `Battle #${bn} · ${winner.name} wins!`;
+      text.textContent = `${gauntletPrefix} · ${winner.name} wins!`;
       if (isMultiplayerActive) updateMultiplayerHudStatus(`Battle finished · ${winner.name} wins!`);
     } else {
       dot.style.background = "#94a3b8";
-      text.textContent = `Battle #${bn} · Draw`;
+      text.textContent = `${gauntletPrefix} · Draw`;
       if (isMultiplayerActive) updateMultiplayerHudStatus(`Battle finished · Draw`);
     }
   } else if (isMultiplayerActive) {
@@ -1432,16 +1506,16 @@ function updateTurnBanner() {
   } else if (gameState.is_human_turn) {
     const curr = getPlayerMeta(gameState.current_player?.symbol);
     dot.style.background = curr.color || "#d97706";
-    text.textContent = `Battle #${bn} · Your turn!${lastPatternLabel}`;
+    text.textContent = `${gauntletPrefix} · Your turn!${lastPatternLabel}`;
   } else if (gameState.is_thinking) {
     const curr = getPlayerMeta(gameState.current_player?.symbol);
     dot.style.background = curr.color;
-    text.textContent = `Battle #${bn} · ${gameState.thinking_player || curr.name} thinking...`;
+    text.textContent = `${gauntletPrefix} · ${gameState.thinking_player || curr.name} thinking...`;
   } else {
     const curr = getPlayerMeta(gameState.current_player?.symbol);
     dot.style.background = curr.color;
     const moveNum = (gameState.board?.move_count || 0) + 1;
-    text.textContent = `Battle #${bn} · Turn ${moveNum} · ${curr.name}${lastPatternLabel}`;
+    text.textContent = `${gauntletPrefix} · Turn ${moveNum} · ${curr.name}${lastPatternLabel}`;
   }
 }
 
@@ -1508,7 +1582,13 @@ function renderBattleRoster() {
   if (!el || !gameState) return;
 
   const bn = gameState.series?.battle_number || 1;
-  if (bnBadge) bnBadge.textContent = isReplayMode ? "Replay Mode" : `Battle #${bn}`;
+  if (bnBadge) {
+    bnBadge.textContent = isReplayMode
+      ? "Replay Mode"
+      : (window.CaroGauntlet?.active && !isMultiplayerActive
+          ? `Gauntlet ${window.CaroGauntlet.stage}/${window.CaroGauntlet.totalStages}`
+          : `Battle #${bn}`);
+  }
 
   const players = isReplayMode ? replayPlayers : (gameState.players || []);
   const placements = isReplayMode
@@ -1520,6 +1600,9 @@ function renderBattleRoster() {
   const activeMoves = isReplayMode ? replayMoves.slice(0, replayIndex) : (gameState.board?.moves || []);
   const current = isReplayMode ? null : gameState.current_player?.symbol;
   const isSpectatorInMp = isMultiplayerActive && !isReplayMode && window.CaroMultiplayer?.myRole === "spectator" && gameState.status !== "finished";
+  const evalThreats = (typeof getBoardEvalCache === "function" && gameState.status !== "finished")
+    ? (getBoardEvalCache()?.threatLines || [])
+    : [];
 
   el.innerHTML = players.map((p, idx) => {
     const meta = getPlayerMeta(p.symbol);
@@ -1552,18 +1635,36 @@ function renderBattleRoster() {
       statusClass = "";
     }
 
+    const underOpponentThreat = !isElim && statusClass !== "winner" && evalThreats.some(
+      t => t.player !== p.symbol && (t.tier === "critical" || t.tier === "warning")
+    );
+    let expression = "normal";
+    if (statusClass === "winner") expression = "winner";
+    else if (isElim) expression = "eliminated";
+    else if (underOpponentThreat) expression = "sweat";
+    else if (isThinking || isCurrent) expression = "focused";
+
     const moveCount = activeMoves.filter(m => m.player === p.symbol).length;
     const canRequestTakeover = isSpectatorInMp && idx > 0 && !isElim;
     const takeoverBtn = canRequestTakeover
       ? `<button class="btn btn-xs btn-ghost btn-roster-takeover" data-symbol="${escapeHtml(p.symbol)}" title="Request host approval to take over this player slot">Takeover</button>`
       : "";
     const creatureSvg = typeof getCreatureMascotSvg === "function"
-      ? getCreatureMascotSvg(p.type || meta.type || "laya", 34, { active: isCurrent, eliminated: isElim && statusClass !== "winner" })
+      ? getCreatureMascotSvg(p.type || meta.type || "laya", 34, {
+          active: isCurrent,
+          eliminated: isElim && statusClass !== "winner",
+          expression
+        })
+      : "";
+    const bubbleObj = typeof getActiveSpeechBubble === "function" ? getActiveSpeechBubble(p.symbol) : null;
+    const bubbleText = typeof bubbleObj === "string" ? bubbleObj : bubbleObj?.text;
+    const bubbleHtml = bubbleText
+      ? `<span class="creature-speech-bubble" role="status">${escapeHtml(bubbleText)}</span>`
       : "";
 
-    return `<div class="roster-slot ${statusClass}" style="--pc: ${escapeHtml(meta.fill)}">
+    return `<div class="roster-slot ${statusClass}" data-symbol="${escapeHtml(p.symbol)}" style="--pc: ${escapeHtml(meta.fill)}">
       <div class="roster-ident">
-        <span class="roster-creature">${creatureSvg}</span>
+        <span class="roster-creature">${creatureSvg}${bubbleHtml}</span>
         <span class="roster-dot" style="background: ${escapeHtml(meta.fill)}; display: none;"></span>
         <div class="roster-ident-stack">
           <div class="roster-ident-top">
@@ -1864,11 +1965,86 @@ function renderEvalPressureBar() {
   }
 }
 
+// ─────────────────────────────────────────
+// Post-Match Mini-Awards
+// ─────────────────────────────────────────
+function computeMatchAwards(moves, players, placements) {
+  if (!Array.isArray(moves) || moves.length === 0) return [];
+  const awards = [];
+  const attackCounts = {};
+  const blockCounts = {};
+
+  for (const m of moves) {
+    const sym = m.player;
+    const pat = normalizeMovePattern(m.metadata?.pattern);
+    const lbl = pat?.label || "";
+    if (lbl === "Block-4") {
+      blockCounts[sym] = (blockCounts[sym] || 0) + 1;
+    } else if (lbl) {
+      attackCounts[sym] = (attackCounts[sym] || 0) + 1;
+    }
+  }
+
+  let bestAttacker = null;
+  let bestAttackVal = 0;
+  for (const [sym, cnt] of Object.entries(attackCounts)) {
+    if (cnt > bestAttackVal) {
+      bestAttackVal = cnt;
+      bestAttacker = sym;
+    }
+  }
+  const firstPlace = (placements || []).find(pl => pl.rank === 1) || (placements || [])[0];
+  const winSym = firstPlace?.player || firstPlace?.symbol;
+  const tacticianSym = bestAttacker || winSym;
+  if (tacticianSym) {
+    const meta = getPlayerMeta(tacticianSym);
+    awards.push({
+      id: "tactician",
+      badge: "⚡ Tactician",
+      playerName: meta.name,
+      desc: bestAttackVal > 0 ? `${bestAttackVal} tactical strikes` : "Decisive line builder"
+    });
+  }
+
+  let bestBlocker = null;
+  let bestBlockVal = 0;
+  for (const [sym, cnt] of Object.entries(blockCounts)) {
+    if (cnt > bestBlockVal) {
+      bestBlockVal = cnt;
+      bestBlocker = sym;
+    }
+  }
+  if (bestBlocker && bestBlockVal >= 1) {
+    const meta = getPlayerMeta(bestBlocker);
+    awards.push({
+      id: "iron_wall",
+      badge: "🛡️ Iron Wall",
+      playerName: meta.name,
+      desc: `${bestBlockVal} critical Block-4 saves`
+    });
+  }
+
+  if (winSym && moves.length <= 24) {
+    const meta = getPlayerMeta(winSym);
+    awards.push({
+      id: "sprinter",
+      badge: "🏃 Sprinter",
+      playerName: meta.name,
+      desc: `Won in ${moves.length} moves`
+    });
+  }
+
+  return awards.slice(0, 3);
+}
+window.computeMatchAwards = computeMatchAwards;
+
 function updateRematchBar() {
   const bar = document.getElementById("rematch-bar");
   const statusText = document.getElementById("rematch-status-text");
+  const awardsStrip = document.getElementById("match-awards-strip");
   const btnRematch = document.getElementById("btn-rematch-vote");
   const btnNextPuzzle = document.getElementById("btn-next-puzzle");
+  const btnNextGauntlet = document.getElementById("btn-next-gauntlet");
   if (!bar) return;
 
   if (isReplayMode || !gameState || gameState.status !== "finished") {
@@ -1877,6 +2053,13 @@ function updateRematchBar() {
   }
 
   bar.style.display = "flex";
+  if (awardsStrip) {
+    const awards = computeMatchAwards(gameState.board?.moves || [], gameState.players || [], gameState.board?.placements || []);
+    awardsStrip.innerHTML = awards.map(a => (
+      `<span class="award-pill" title="${escapeHtml(a.desc)}">${escapeHtml(a.badge)} · ${escapeHtml(a.playerName)}</span>`
+    )).join("");
+  }
+
   if (gameState.puzzle) {
     if (statusText) {
       statusText.textContent = gameState.puzzle_solved
@@ -1885,10 +2068,42 @@ function updateRematchBar() {
     }
     if (btnRematch) btnRematch.textContent = "Retry puzzle";
     if (btnNextPuzzle) btnNextPuzzle.style.display = "inline-flex";
+    if (btnNextGauntlet) btnNextGauntlet.style.display = "none";
     return;
   }
 
   if (btnNextPuzzle) btnNextPuzzle.style.display = "none";
+
+  const placements = gameState.board?.placements || [];
+  const winSym = placements[0]?.player || placements[0]?.symbol;
+  const humanWon = Boolean(winSym && symbolMap[winSym]?.type === "human");
+
+  if (window.CaroGauntlet?.active && !isMultiplayerActive) {
+    const st = window.CaroGauntlet.stage;
+    const tot = window.CaroGauntlet.totalStages;
+    if (humanWon && st < tot) {
+      if (statusText) statusText.textContent = `Gauntlet Stage ${st}/${tot} cleared!`;
+      if (btnNextGauntlet) {
+        btnNextGauntlet.style.display = "inline-flex";
+        btnNextGauntlet.textContent = `Stage ${st + 1} →`;
+      }
+      if (btnRematch) btnRematch.textContent = "Replay stage";
+    } else if (humanWon && st >= tot) {
+      if (statusText) statusText.textContent = `👑 Gauntlet Champion! All ${tot} stages conquered (+50 Cranes)`;
+      if (btnNextGauntlet) {
+        btnNextGauntlet.style.display = "inline-flex";
+        btnNextGauntlet.textContent = "New Gauntlet";
+      }
+      if (btnRematch) btnRematch.textContent = "Rematch Boss";
+    } else {
+      if (statusText) statusText.textContent = `Gauntlet Stage ${st}/${tot} defeated — try again!`;
+      if (btnNextGauntlet) btnNextGauntlet.style.display = "none";
+      if (btnRematch) btnRematch.textContent = `Retry Stage ${st}`;
+    }
+    return;
+  }
+
+  if (btnNextGauntlet) btnNextGauntlet.style.display = "none";
 
   if (isMultiplayerActive && window.CaroMultiplayer) {
     const lobby = window.CaroMultiplayer.getLobbyState();
@@ -1907,7 +2122,6 @@ function updateRematchBar() {
         : (myVoted ? `Voted (${voteCount}/${humanCount})` : "Vote Rematch");
     }
   } else {
-    const placements = gameState.board?.placements || [];
     const winnerName = placements[0] ? getPlayerMeta(placements[0].player).name : "Draw";
     if (statusText) {
       statusText.textContent = `Match complete · ${winnerName} wins`;

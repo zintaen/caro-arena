@@ -262,6 +262,7 @@
               <button class="btn btn-ghost btn-xs lobby-preset-btn" id="btn-preset-human-3ai" type="button" title="Start 4-player battle with you against 3 AI engines">Human vs 3 AI</button>
               <button class="btn btn-ghost btn-xs lobby-preset-btn" id="btn-preset-4ai-watch" type="button" title="Watch all 4 AI engines battle each other">4-AI showcase</button>
               <button class="btn btn-ghost btn-xs lobby-preset-btn lobby-puzzle-btn" id="btn-preset-daily-puzzle" type="button" title="Solve today's tactical Caro puzzle for +15 Cranes">Daily puzzle (+15)</button>
+              <button class="btn btn-ghost btn-xs lobby-preset-btn lobby-gauntlet-btn" id="btn-preset-gauntlet" type="button" title="Climb the 4-stage AI boss ladder for +50 Cranes">Gauntlet (+50)</button>
             </div>
           </div>
 
@@ -290,7 +291,7 @@
             </div>
           </div>
 
-          <!-- Compact Side-by-Side Board Themes & Stone Finishes -->
+          <!-- Compact Side-by-Side Board Themes, Stone Finishes & Creature Hats -->
           <div class="lobby-card lobby-themes-card">
             <div class="lobby-cosmetics-split">
               <div class="lobby-cosmetic-col">
@@ -308,6 +309,14 @@
                 <div class="lobby-themes-grid" id="lobby-home-stones-grid">
                   <!-- Populated by app.js -->
                 </div>
+              </div>
+            </div>
+            <div class="lobby-hats-section">
+              <div class="lobby-card-header">
+                <h2 class="lobby-card-title">Creature hats</h2>
+              </div>
+              <div class="lobby-hats-grid" id="lobby-home-hats-grid">
+                <!-- Populated by lobby-ui.js -->
               </div>
             </div>
           </div>
@@ -403,10 +412,13 @@
             <span id="replay-analysis-pill" class="replay-analysis-pill" style="display: none;"></span>
           </div>
           <div class="replay-controls">
+            <button class="btn btn-xs" id="btn-replay-autoplay" onclick="toggleReplayAutoPlay()" title="Auto-play replay moves">▶ Play</button>
+            <button class="btn btn-xs" id="btn-replay-speed" onclick="cycleReplaySpeed()" title="Cycle replay playback speed">1x</button>
             <button class="btn btn-xs" onclick="stepReplay(-1)">Prev</button>
             <button class="btn btn-xs" onclick="stepReplay(1)">Next</button>
             <button class="btn btn-xs btn-primary" id="btn-replay-branch" onclick="playFromReplayState()" title="Branch from this turn and play against AI">Play from here</button>
             <button class="btn btn-xs" id="btn-replay-hints" onclick="toggleReplayHints()" title="Toggle top 3 engine candidate overlays and missed-defense check">Hints</button>
+            <button class="btn btn-xs" id="btn-share-puzzle" onclick="shareCurrentStateAsPuzzle()" title="Share current board state as an interactive puzzle link">Puzzle link</button>
             <button class="btn btn-xs" id="btn-replay-snapshot" onclick="downloadBoardSnapshot()" title="Save board snapshot as PNG">Save PNG</button>
             <button class="btn btn-xs" id="btn-share-replay" onclick="shareCurrentReplay()" title="Copy shareable replay link">Share</button>
             <button class="btn btn-xs btn-danger" onclick="exitReplayMode()">Exit</button>
@@ -426,6 +438,7 @@
         <div id="rematch-bar" class="rematch-bar" style="display: none;" role="region" aria-label="Post-match actions">
           <div class="rematch-bar-left">
             <span class="rematch-status-text" id="rematch-status-text">Battle finished</span>
+            <span id="match-awards-strip" class="match-awards-strip"></span>
             <span class="rematch-votes-pill" id="rematch-votes-pill" style="display: none;">0 votes</span>
           </div>
           <div class="rematch-bar-actions">
@@ -435,16 +448,20 @@
             </label>
             <button class="btn btn-primary btn-xs" id="btn-rematch-vote" type="button">Rematch</button>
             <button class="btn btn-secondary btn-xs" id="btn-next-puzzle" type="button" style="display: none;">Next puzzle</button>
+            <button class="btn btn-primary btn-xs" id="btn-next-gauntlet" type="button" style="display: none;">Next stage →</button>
           </div>
         </div>
 
-        <!-- Human turn indicator with Undo -->
+        <!-- Human turn indicator with Hint & Undo -->
         <div id="human-turn-bar" class="human-turn-bar" style="display: none;" role="status" aria-live="polite">
           <div class="human-turn-content">
             <span class="pulse-icon" aria-hidden="true">●</span>
             <span class="human-prompt-text" id="human-prompt-text">Your turn: click any empty cell or use arrow keys + Enter to place a stone</span>
           </div>
-          <button class="btn btn-xs btn-outline" id="btn-undo-move" title="Undo your last move">Undo</button>
+          <div class="human-turn-actions" style="display: inline-flex; align-items: center; gap: 6px;">
+            <button class="btn btn-xs btn-outline" id="btn-human-hint" type="button" title="Ask Coach for the top tactical move (H)">💡 Hint</button>
+            <button class="btn btn-xs btn-outline" id="btn-undo-move" type="button" title="Undo your last move">Undo</button>
+          </div>
         </div>
 
         <div class="canvas-wrap" id="canvas-wrap">
@@ -492,11 +509,19 @@
               <option value="shell">Shell &amp; Slate (60)</option>
               <option value="mono">High-Contrast Rings (50)</option>
             </select>
+            <select id="select-creature-hat" class="board-theme-select" title="Creature mascot hat">
+              <option value="none">No Hat</option>
+              <option value="sprout">Leaf Sprout (25)</option>
+              <option value="shades">Pixel Shades (40)</option>
+              <option value="wizard">Star Cone (50)</option>
+              <option value="crown">Party Crown (75)</option>
+            </select>
             <select id="select-sound-pack" class="board-theme-select" title="Synthesized stone sound pack">
               <option value="wood">Wood Clack</option>
               <option value="slate">Slate &amp; Shell</option>
               <option value="tactile">Tactile Switch</option>
               <option value="synth">Soft Synth</option>
+              <option value="chimes">Mood Chimes</option>
             </select>
             <button type="button" class="btn-shortcuts-help" id="btn-open-shortcuts" title="Keyboard shortcuts (?)" aria-label="Keyboard shortcuts">?</button>
           </div>
@@ -889,6 +914,7 @@
       <div class="mp-view shortcuts-grid-view">
         <div class="shortcut-row"><kbd>↑</kbd> <kbd>↓</kbd> <kbd>←</kbd> <kbd>→</kbd><span>Move board target reticle</span></div>
         <div class="shortcut-row"><kbd>Enter</kbd> / <kbd>Space</kbd><span>Place stone at target cell</span></div>
+        <div class="shortcut-row"><kbd>H</kbd><span>Ask Coach for tactical move hint</span></div>
         <div class="shortcut-row"><kbd>Z</kbd> / <kbd>U</kbd><span>Undo last human move (local matches)</span></div>
         <div class="shortcut-row"><kbd>+</kbd> / <kbd>-</kbd><span>Zoom board in or out</span></div>
         <div class="shortcut-row"><kbd>C</kbd><span>Recenter board on active cluster</span></div>

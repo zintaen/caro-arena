@@ -306,13 +306,130 @@ function renderLobbyHomeWalletAndThemes() {
     });
   }
 
+  // Update board footer Creature Hat selector & Lobby Creature Hats grid
+  const hatSel = document.getElementById("select-creature-hat");
+  const selectedHat = window.CaroAuth.getSelectedCreatureHat?.() || "none";
+  const hatCatalogObj = window.CaroAuth.CREATURE_HATS_CATALOG || {};
+  const hatCatalog = Object.values(hatCatalogObj);
+  if (hatSel && hatCatalog.length > 0) {
+    Array.from(hatSel.options).forEach(opt => {
+      const item = hatCatalog.find(h => h.id === opt.value);
+      if (!item) return;
+      const unlocked = window.CaroAuth.isCreatureHatUnlocked(item.id);
+      opt.textContent = unlocked
+        ? `${item.name}`
+        : `${item.name} (${item.cost} Cranes)`;
+    });
+    hatSel.value = selectedHat;
+  }
+
+  const hatGrid = document.getElementById("lobby-home-hats-grid");
+  if (hatGrid && hatCatalog.length > 0) {
+    hatGrid.innerHTML = "";
+    hatCatalog.forEach(item => {
+      const unlocked = window.CaroAuth.isCreatureHatUnlocked(item.id);
+      const isSelected = selectedHat === item.id;
+      const card = document.createElement("div");
+      card.className = `hat-cosmetic-card ${isSelected ? "active-theme" : ""}`;
+      card.dataset.hatId = item.id;
+      const previewSvg = typeof getCreatureMascotSvg === "function"
+        ? getCreatureMascotSvg("human", 26, { hat: item.id, active: false })
+        : "";
+      card.innerHTML = `
+        <div class="theme-cosmetic-top">
+          <span class="hat-cosmetic-preview">${previewSvg}</span>
+          <div class="theme-cosmetic-text">
+            <span class="theme-cosmetic-name">${escapeHtml(item.name)}</span>
+            <span class="theme-cosmetic-desc">${escapeHtml(item.desc || "")}</span>
+          </div>
+        </div>
+        <div class="theme-cosmetic-status ${isSelected ? "active" : (unlocked ? "unlocked" : "locked")}">
+          ${isSelected ? "Equipped" : (unlocked ? "Equip" : `${item.cost} Cranes`)}
+        </div>
+      `;
+      card.addEventListener("click", async () => {
+        if (window.CaroAuth.isCreatureHatUnlocked(item.id)) {
+          window.CaroAuth.setSelectedCreatureHat(item.id);
+          renderLobbyHomeWalletAndThemes();
+          renderLobbyCreaturesParade();
+          if (typeof updateUI === "function" && !isOnLobbyStartScreen) updateUI();
+          showArenaToast(`Equipped ${item.name}`);
+        } else {
+          try {
+            await window.CaroAuth.unlockCreatureHat(item.id);
+            renderLobbyHomeWalletAndThemes();
+            renderLobbyCreaturesParade();
+            if (typeof updateUI === "function" && !isOnLobbyStartScreen) updateUI();
+            showArenaToast(`Unlocked and equipped ${item.name}`);
+          } catch (err) {
+            showArenaToast(err.message);
+          }
+        }
+      });
+      hatGrid.appendChild(card);
+    });
+  }
+
+  renderLobbyCreaturesParade();
+
   if (typeof renderAuthCranesLedger === "function") {
     renderAuthCranesLedger();
   }
 }
 
-async function launchPresetBattle(playerTypes, autoPlay = true) {
+function renderLobbyCreaturesParade() {
+  const paradeEl = document.getElementById("lobby-creatures-parade");
+  if (paradeEl && typeof getCreatureMascotSvg === "function") {
+    paradeEl.innerHTML = ["laya", "jev", "von", "mojev", "human"]
+      .map((m, i) => `<span class="parade-creature" title="${m.toUpperCase()}">${getCreatureMascotSvg(m, 28, { delay: `-${(i * 1.15).toFixed(2)}s`, active: true })}</span>`)
+      .join("");
+  }
+}
+
+// ─────────────────────────────────────────
+// Solo Gauntlet / Boss Ladder Mode
+// ─────────────────────────────────────────
+const GAUNTLET_STAGES = [
+  { stage: 1, title: "Stage 1/4 · Laya (Warm-Up)", players: ["human", "laya"] },
+  { stage: 2, title: "Stage 2/4 · Jev (Flanker)", players: ["human", "jev"] },
+  { stage: 3, title: "Stage 3/4 · Von (Tactician)", players: ["human", "von"] },
+  { stage: 4, title: "Stage 4/4 · Boss Finale (vs 3 AI)", players: ["human", "laya", "jev", "von"] }
+];
+
+window.CaroGauntlet = {
+  active: false,
+  stage: 1,
+  totalStages: GAUNTLET_STAGES.length,
+  rewardedStage4ForGameId: null,
+  getStageConfig(stageNum = this.stage) {
+    return GAUNTLET_STAGES.find(s => s.stage === stageNum) || GAUNTLET_STAGES[0];
+  }
+};
+
+async function launchGauntletStage(stageNum = 1) {
+  const cfg = window.CaroGauntlet.getStageConfig(stageNum);
+  window.CaroGauntlet.active = true;
+  window.CaroGauntlet.stage = cfg.stage;
+  await launchPresetBattle(cfg.players, true, true);
+  showArenaToast(`Gauntlet ${cfg.title} — Win to advance!`);
+  return cfg;
+}
+
+async function advanceGauntletStage() {
+  if (!window.CaroGauntlet.active) return null;
+  if (window.CaroGauntlet.stage < window.CaroGauntlet.totalStages) {
+    return launchGauntletStage(window.CaroGauntlet.stage + 1);
+  }
+  return launchGauntletStage(1);
+}
+window.launchGauntletStage = launchGauntletStage;
+window.advanceGauntletStage = advanceGauntletStage;
+
+async function launchPresetBattle(playerTypes, autoPlay = true, keepGauntlet = false) {
   if (!Array.isArray(playerTypes) || playerTypes.length < 2) return;
+  if (!keepGauntlet && window.CaroGauntlet) {
+    window.CaroGauntlet.active = false;
+  }
   const setTypes = new Set(playerTypes);
   document.querySelectorAll("#roster-config .roster-toggle").forEach(label => {
     const cb = label.querySelector("input");
@@ -349,12 +466,7 @@ function setupLobbyHomeScreenUI() {
   });
 
   // Quick-Start Solo Presets
-  const paradeEl = document.getElementById("lobby-creatures-parade");
-  if (paradeEl && typeof getCreatureMascotSvg === "function") {
-    paradeEl.innerHTML = ["laya", "jev", "von", "mojev", "human"]
-      .map((m, i) => `<span class="parade-creature" title="${m.toUpperCase()}">${getCreatureMascotSvg(m, 28, { delay: `-${(i * 1.15).toFixed(2)}s`, active: true })}</span>`)
-      .join("");
-  }
+  renderLobbyCreaturesParade();
 
   document.getElementById("btn-preset-1v1-von")?.addEventListener("click", () => {
     launchPresetBattle(["human", "von"], true);
@@ -366,7 +478,11 @@ function setupLobbyHomeScreenUI() {
     launchPresetBattle(["laya", "jev", "von", "mojev"], true);
   });
   document.getElementById("btn-preset-daily-puzzle")?.addEventListener("click", () => {
+    if (window.CaroGauntlet) window.CaroGauntlet.active = false;
     launchDailyPuzzle();
+  });
+  document.getElementById("btn-preset-gauntlet")?.addEventListener("click", () => {
+    launchGauntletStage(1);
   });
 
   const handleDailyBonusClaim = async () => {

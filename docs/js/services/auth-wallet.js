@@ -29,6 +29,8 @@
   const UNLOCKED_THEMES_KEY = "caro_arena_unlocked_themes";
   const STONE_STYLE_KEY = "caro_arena_stone_style";
   const UNLOCKED_STONES_KEY = "caro_arena_unlocked_stones";
+  const CREATURE_HAT_KEY = "caro_arena_creature_hat";
+  const UNLOCKED_HATS_KEY = "caro_arena_unlocked_hats";
   const CRANES_LEDGER_PREFIX = "caro_arena_cranes_ledger";
   const MAX_PIN_ATTEMPTS = 5;
   const LOCKOUT_DURATION_MS = 5 * 60 * 1000; // 5 minutes
@@ -47,6 +49,14 @@
     mono: { id: "mono", name: "High-Contrast Rings", cost: 50, desc: "Crisp tournament rings with center pip" }
   };
 
+  const CREATURE_HATS_CATALOG = {
+    none: { id: "none", name: "Bare Creature", cost: 0, desc: "Classic bare creature", icon: "🙂" },
+    sprout: { id: "sprout", name: "Leaf Sprout", cost: 25, desc: "Fresh spring leaf on top", icon: "🌸" },
+    shades: { id: "shades", name: "Cool Shades", cost: 40, desc: "Dark pixel sunglasses", icon: "🕶️" },
+    wizard: { id: "wizard", name: "Wizard Hat", cost: 50, desc: "Starry arcane cone", icon: "🎩" },
+    crown: { id: "crown", name: "Champion Crown", cost: 75, desc: "Royal golden crown", icon: "👑" }
+  };
+
   let authChangeCallbacks = [];
 
   function getCranesLedgerStorageKey() {
@@ -58,6 +68,7 @@
     const r = String(reason || "match_reward").trim();
     if (r === "daily_login_bonus") return "Daily check-in bonus";
     if (r === "match_reward" || r === "battle_victory") return "Battle victory reward";
+    if (r === "gauntlet_champion") return "Solo Gauntlet Boss clear";
     if (r === "wager_entry" || r.startsWith("wager_entry")) return "Room entry wager";
     if (r === "wager_pot_win" || r.startsWith("wager_pot")) return "Room wager pot won";
     if (r.startsWith("unlock_theme_")) {
@@ -67,6 +78,10 @@
     if (r.startsWith("unlock_stone_")) {
       const sid = r.replace("unlock_stone_", "");
       return `Unlocked ${STONE_STYLES_CATALOG[sid]?.name || sid} stones`;
+    }
+    if (r.startsWith("unlock_hat_")) {
+      const hid = r.replace("unlock_hat_", "");
+      return `Unlocked ${CREATURE_HATS_CATALOG[hid]?.name || hid} accessory`;
     }
     return r.replace(/_/g, " ").replace(/^\w/, c => c.toUpperCase());
   }
@@ -636,6 +651,66 @@
     return { unlocked: true, styleId, cranes: newBalance };
   }
 
+  function getUnlockedCreatureHats() {
+    try {
+      const current = getCurrentUser();
+      const key = `${UNLOCKED_HATS_KEY}_${current?.user_id || "guest"}`;
+      const raw = localStorage.getItem(key);
+      const parsed = raw ? JSON.parse(raw) : ["none"];
+      if (!Array.isArray(parsed)) return ["none"];
+      if (!parsed.includes("none")) parsed.unshift("none");
+      return parsed;
+    } catch {
+      return ["none"];
+    }
+  }
+
+  function isCreatureHatUnlocked(hatId) {
+    if (!hatId || hatId === "none") return true;
+    return getUnlockedCreatureHats().includes(hatId);
+  }
+
+  function getSelectedCreatureHat() {
+    try {
+      const saved = localStorage.getItem(CREATURE_HAT_KEY) || "none";
+      return CREATURE_HATS_CATALOG[saved] && isCreatureHatUnlocked(saved) ? saved : "none";
+    } catch {
+      return "none";
+    }
+  }
+
+  function setSelectedCreatureHat(hatId) {
+    if (!CREATURE_HATS_CATALOG[hatId]) return "none";
+    if (!isCreatureHatUnlocked(hatId)) return getSelectedCreatureHat();
+    try {
+      localStorage.setItem(CREATURE_HAT_KEY, hatId);
+    } catch {}
+    return hatId;
+  }
+
+  async function unlockCreatureHat(hatId) {
+    const entry = CREATURE_HATS_CATALOG[hatId];
+    if (!entry) throw new Error("Unknown creature accessory.");
+    if (isCreatureHatUnlocked(hatId)) {
+      setSelectedCreatureHat(hatId);
+      return { unlocked: true, hatId, cranes: getCranesBalance() };
+    }
+    const balance = getCranesBalance();
+    if (balance < entry.cost) {
+      throw new Error(`Need ${entry.cost} Cranes to unlock ${entry.name} (you have ${balance}).`);
+    }
+    const newBalance = await adjustCranes(-entry.cost, `unlock_hat_${hatId}`);
+    try {
+      const current = getCurrentUser();
+      const key = `${UNLOCKED_HATS_KEY}_${current?.user_id || "guest"}`;
+      const unlocked = getUnlockedCreatureHats();
+      if (!unlocked.includes(hatId)) unlocked.push(hatId);
+      localStorage.setItem(key, JSON.stringify(unlocked));
+    } catch {}
+    setSelectedCreatureHat(hatId);
+    return { unlocked: true, hatId, cranes: newBalance };
+  }
+
   function logout() {
     setSessionUser(null);
   }
@@ -671,7 +746,13 @@
     isStoneStyleUnlocked,
     getSelectedStoneStyle,
     setSelectedStoneStyle,
-    unlockStoneStyle
+    unlockStoneStyle,
+    CREATURE_HATS_CATALOG,
+    getUnlockedCreatureHats,
+    isCreatureHatUnlocked,
+    getSelectedCreatureHat,
+    setSelectedCreatureHat,
+    unlockCreatureHat
   };
 
 })();

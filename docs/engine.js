@@ -288,6 +288,7 @@ class ClientGameManager {
       if (this.board.isGameOver()) {
         this.status = "finished";
         this.endedAt = Date.now();
+        if (!this.nonStop) this.isAutoPlaying = false;
         this.recordSeriesResult();
         this.persistGame();
       } else {

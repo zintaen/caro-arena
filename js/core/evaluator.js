@@ -309,5 +309,59 @@ class TacticalEvaluator {
     scored.sort((a, b) => b.total_score - a.total_score);
     return scored.slice(0, topK);
   }
+
+  /**
+   * Recognizes classic early-game Caro / Gomoku opening formations from the first 2-6 moves.
+   */
+  static detectOpeningName(moves) {
+    if (!Array.isArray(moves) || moves.length < 2) return null;
+    const early = moves.slice(0, Math.min(6, moves.length));
+    const m0 = early[0];
+    const m1 = early[1];
+    const dr1 = Math.abs(m1.row - m0.row);
+    const dc1 = Math.abs(m1.col - m0.col);
+
+    // Check 4-player spread vs tight cluster if >= 4 moves
+    if (early.length >= 4) {
+      const uniquePlayers = new Set(early.slice(0, 4).map(m => m.player)).size;
+      const rows = early.slice(0, 4).map(m => m.row);
+      const cols = early.slice(0, 4).map(m => m.col);
+      const span = Math.max(...rows) - Math.min(...rows) + (Math.max(...cols) - Math.min(...cols));
+      if (uniquePlayers >= 3 && span >= 5) {
+        return "Four-Corner Clash";
+      }
+    }
+
+    if ((dr1 === 1 && dc1 === 2) || (dr1 === 2 && dc1 === 1)) {
+      return "Knight's Approach";
+    }
+    if (dr1 === 1 && dc1 === 1) {
+      if (early.length >= 3) {
+        const m2 = early[2];
+        const dr2 = Math.abs(m2.row - m0.row);
+        const dc2 = Math.abs(m2.col - m0.col);
+        if (dr2 === 1 && dc2 === 1) return "Diagonal Star Opening";
+        if (dr2 + dc2 === 1) return "Slant Wedge";
+      }
+      return "Diagonal Star Opening";
+    }
+    if (dr1 + dc1 === 1) {
+      if (early.length >= 3) {
+        const m2 = early[2];
+        const dr2 = Math.abs(m2.row - m0.row);
+        const dc2 = Math.abs(m2.col - m0.col);
+        if (dr2 + dc2 === 1) return "Direct Star Opening";
+        if (dr2 === 1 && dc2 === 1) return "Direct Bridge";
+      }
+      return "Direct Star Opening";
+    }
+    if ((dr1 === 2 && dc1 === 0) || (dr1 === 0 && dc1 === 2)) {
+      return "Long Bridge";
+    }
+    if (dr1 === 2 && dc1 === 2) {
+      return "Cross-Wing";
+    }
+    return "Center Cluster";
+  }
 }
 

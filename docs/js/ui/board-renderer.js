@@ -193,12 +193,125 @@ function initRoomMoodSwitcher() {
   }
 }
 
+const _activeSpeechBubbles = new Map(); // symbol -> { text, tier, expiresAt }
+let activeCoachHint = null; // { row, col, reason, expiresAt }
+
+const CREATURE_BANTER_LINES = {
+  laya: {
+    win: ["5-in-a-row! ✨", "starlight victory! 🌟"],
+    critical: ["check in 1! ✨", "unstoppable line!"],
+    fork: ["double threat! ⚡", "two ways to win!"],
+    defense: ["nope, blocked! 🛡️", "saw that coming!"],
+    build: ["building up! ✨", "connecting..."]
+  },
+  jev: {
+    win: ["calculated. 🏆", "Q.E.D. 📐"],
+    critical: ["mate in 1. 📐", "inevitable."],
+    fork: ["forked! ⚡", "pick your poison."],
+    defense: ["denied. 🛡️", "neutralized."],
+    build: ["expanding grid.", "pressure rising."]
+  },
+  von: {
+    win: ["gg ez! 🏆", "sharpest blade! 🦊"],
+    critical: ["one turn left! 🎯", "try stopping this!"],
+    fork: ["trapped ya! ⚡", "double-3 fork!"],
+    defense: ["nice try! 🛡️", "blocked cold!"],
+    build: ["slicing in!", "on the attack!"]
+  },
+  mojev: {
+    win: ["boom! 5-in-a-row! 🔥", "chaos reigns! 🏆"],
+    critical: ["uh oh, open-4! 🔥", "incoming!"],
+    fork: ["chaos fork! ⚡", "double trouble!"],
+    defense: ["my line now! 🛡️", "yoink! blocked!"],
+    build: ["heating up! 🔥", "plotting..."]
+  },
+  human: {
+    win: ["victory! 🏆", "5-in-a-row! 🎉"],
+    critical: ["open-4! 🔥", "unstoppable!"],
+    fork: ["forked 'em! ⚡", "double threat!"],
+    defense: ["clutch save! 🛡️", "not today!"],
+    build: ["nice line! ⚡", "pressing on!"]
+  }
+};
+
+function triggerCreatureSpeechBubble(symbol, modelType, patternObj) {
+  if (!symbol || !patternObj || !patternObj.label) return;
+  const m = String(modelType || "laya").toLowerCase();
+  const bank = CREATURE_BANTER_LINES[m] || CREATURE_BANTER_LINES.laya;
+  const tier = patternObj.tier || "build";
+  const pool = bank[tier] || bank.build;
+  const line = pool[Math.floor(Math.random() * pool.length)] || patternObj.label;
+  const entry = {
+    text: `${line}`,
+    label: patternObj.label,
+    tier,
+    expiresAt: Date.now() + 3200
+  };
+  _activeSpeechBubbles.set(symbol, entry);
+  return entry;
+}
+window.triggerCreatureSpeechBubble = triggerCreatureSpeechBubble;
+
+function getActiveSpeechBubble(symbol) {
+  const entry = _activeSpeechBubbles.get(symbol);
+  if (!entry) return null;
+  if (Date.now() > entry.expiresAt) {
+    _activeSpeechBubbles.delete(symbol);
+    return null;
+  }
+  return entry;
+}
+window.getActiveSpeechBubble = getActiveSpeechBubble;
+
+function getCreatureHatSvg(hatId) {
+  if (!hatId || hatId === "none") return "";
+  if (hatId === "sprout") {
+    return `<g class="creature-hat hat-sprout">
+      <path d="M32 10 Q32 2 39 2 Q39 9 32 10 Z" fill="#22c55e" stroke="#15803d" stroke-width="1.5"/>
+      <path d="M32 10 Q32 3 25 4 Q25 10 32 10 Z" fill="#4ade80" stroke="#15803d" stroke-width="1.5"/>
+      <path d="M32 12 L32 8" stroke="#15803d" stroke-width="2" stroke-linecap="round"/>
+    </g>`;
+  }
+  if (hatId === "shades") {
+    return `<g class="creature-hat hat-shades">
+      <path d="M10 31 L54 31" stroke="#16130f" stroke-width="3" stroke-linecap="round"/>
+      <rect x="13" y="28" width="16" height="10" rx="2.5" fill="#16130f" stroke="#ffffff" stroke-width="1.2"/>
+      <rect x="35" y="28" width="16" height="10" rx="2.5" fill="#16130f" stroke="#ffffff" stroke-width="1.2"/>
+      <path d="M16 30 L20 36" stroke="#38bdf8" stroke-width="1.6" stroke-linecap="round"/>
+      <path d="M38 30 L42 36" stroke="#38bdf8" stroke-width="1.6" stroke-linecap="round"/>
+    </g>`;
+  }
+  if (hatId === "wizard") {
+    return `<g class="creature-hat hat-wizard">
+      <ellipse cx="32" cy="12" rx="20" ry="4.5" fill="#4f46e5" stroke="#1e1b4b" stroke-width="1.8"/>
+      <path d="M17 12 L33 -6 L47 12 Z" fill="#6366f1" stroke="#1e1b4b" stroke-width="1.8" stroke-linejoin="round"/>
+      <circle cx="32" cy="5" r="2.2" fill="#facc15"/>
+      <circle cx="26" cy="9" r="1.4" fill="#fde047"/>
+    </g>`;
+  }
+  if (hatId === "crown") {
+    return `<g class="creature-hat hat-crown">
+      <path d="M17 13 L19 1 L26 8 L32 0 L38 8 L45 1 L47 13 Z" fill="#facc15" stroke="#b45309" stroke-width="1.8" stroke-linejoin="round"/>
+      <circle cx="32" cy="8" r="1.8" fill="#ef4444"/>
+      <circle cx="23" cy="9" r="1.4" fill="#3b82f6"/>
+      <circle cx="41" cy="9" r="1.4" fill="#10b981"/>
+    </g>`;
+  }
+  return "";
+}
+
 function getCreatureMascotSvg(modelType = "laya", size = 40, opts = {}) {
   const m = String(modelType || "laya").toLowerCase();
   const delay = opts.delay || (-((m.charCodeAt(0) * 1.37) % 4.8).toFixed(2) + "s");
-  const isEliminated = Boolean(opts.eliminated);
+  const isEliminated = Boolean(opts.eliminated) || opts.expression === "eliminated";
   const isActive = Boolean(opts.active);
+  const expression = isEliminated ? "eliminated" : (opts.expression || "normal");
   const bobClass = isActive ? "idle-bob" : "";
+
+  let hatId = opts.hat;
+  if (hatId === undefined && (m === "human" || opts.useSelectedHat)) {
+    hatId = window.CaroAuth?.getSelectedCreatureHat?.() || "none";
+  }
 
   let shapeSvg = "";
   let eyeY = 33;
@@ -206,44 +319,62 @@ function getCreatureMascotSvg(modelType = "laya", size = 40, opts = {}) {
   let rightX = 42;
 
   if (m === "jev") {
-    // Electric Violet Squircle
     shapeSvg = `<g fill="#6B4EFF" stroke-linejoin="round"><rect x="6" y="7" width="52" height="52" rx="16"></rect></g>`;
     eyeY = 33; leftX = 22; rightX = 42;
   } else if (m === "von") {
-    // Vibrant Emerald Rounded Triangle
     shapeSvg = `<g fill="#00A870" stroke="#00A870" stroke-width="9" stroke-linejoin="round"><path d="M32 10 L57 54 L7 54 Z"></path></g>`;
     eyeY = 40; leftX = 23; rightX = 41;
   } else if (m === "mojev") {
-    // Coral-Crimson Circle Creature
     shapeSvg = `<g fill="#F2442E" stroke-linejoin="round"><circle cx="32" cy="33" r="27"></circle></g>`;
     eyeY = 33; leftX = 22; rightX = 42;
   } else if (m === "human") {
-    // Sunny Tangerine Hexagon Creature
     shapeSvg = `<g fill="#FF7A1A" stroke="#FF7A1A" stroke-width="10" stroke-linejoin="round"><path d="M57.0 33.0 L44.5 52.9 L19.5 52.9 L7.0 33.0 L19.5 13.1 L44.5 13.1 Z"></path></g>`;
     eyeY = 34; leftX = 22; rightX = 42;
   } else {
-    // Laya: Bright Cyan Rounded Star Creature
     shapeSvg = `<g fill="#00B2D6" stroke="#00B2D6" stroke-width="8" stroke-linejoin="round"><path d="M32.0 8.0 L41.1 22.5 L57.7 26.7 L46.7 39.8 L47.9 56.8 L32.0 50.5 L16.1 56.8 L17.3 39.8 L6.3 26.7 L22.9 22.5 Z"></path></g>`;
     eyeY = 36; leftX = 23; rightX = 41;
   }
 
-  const eyesSvg = isEliminated
-    ? `<g stroke="#fff" stroke-width="3.2" stroke-linecap="round">
-         <path d="M${leftX - 4} ${eyeY - 4} L${leftX + 4} ${eyeY + 4} M${leftX + 4} ${eyeY - 4} L${leftX - 4} ${eyeY + 4}"/>
-         <path d="M${rightX - 4} ${eyeY - 4} L${rightX + 4} ${eyeY + 4} M${rightX + 4} ${eyeY - 4} L${rightX - 4} ${eyeY + 4}"/>
-       </g>`
-    : `<g class="creature-blink" style="animation-delay:${delay}">
-         <ellipse cx="${leftX}" cy="${eyeY}" rx="6.6" ry="7.6" fill="#fff"></ellipse>
-         <ellipse cx="${rightX}" cy="${eyeY}" rx="6.6" ry="7.6" fill="#fff"></ellipse>
-         <g class="creature-pupil">
-           <circle cx="${leftX}" cy="${eyeY}" r="3.7" fill="#16130f"></circle>
-           <circle cx="${leftX + 1.2}" cy="${eyeY - 1.3}" r="1.15" fill="#fff"></circle>
-           <circle cx="${rightX}" cy="${eyeY}" r="3.7" fill="#16130f"></circle>
-           <circle cx="${rightX + 1.2}" cy="${eyeY - 1.3}" r="1.15" fill="#fff"></circle>
-         </g>
-       </g>`;
+  let eyesSvg = "";
+  if (expression === "eliminated") {
+    eyesSvg = `<g stroke="#fff" stroke-width="3.2" stroke-linecap="round">
+      <path d="M${leftX - 4} ${eyeY - 4} L${leftX + 4} ${eyeY + 4} M${leftX + 4} ${eyeY - 4} L${leftX - 4} ${eyeY + 4}"/>
+      <path d="M${rightX - 4} ${eyeY - 4} L${rightX + 4} ${eyeY + 4} M${rightX + 4} ${eyeY - 4} L${rightX - 4} ${eyeY + 4}"/>
+    </g>`;
+  } else if (expression === "winner" || expression === "starry") {
+    eyesSvg = `<g class="creature-blink" style="animation-delay:${delay}">
+      <ellipse cx="${leftX}" cy="${eyeY}" rx="7" ry="8" fill="#fff"></ellipse>
+      <ellipse cx="${rightX}" cy="${eyeY}" rx="7" ry="8" fill="#fff"></ellipse>
+      <g class="creature-pupil">
+        <path d="M${leftX} ${eyeY - 5} L${leftX + 1.6} ${eyeY - 1.6} L${leftX + 5} ${eyeY} L${leftX + 1.6} ${eyeY + 1.6} L${leftX} ${eyeY + 5} L${leftX - 1.6} ${eyeY + 1.6} L${leftX - 5} ${eyeY} L${leftX - 1.6} ${eyeY - 1.6} Z" fill="#f59e0b"/>
+        <path d="M${rightX} ${eyeY - 5} L${rightX + 1.6} ${eyeY - 1.6} L${rightX + 5} ${eyeY} L${rightX + 1.6} ${eyeY + 1.6} L${rightX} ${eyeY + 5} L${rightX - 1.6} ${eyeY + 1.6} L${rightX - 5} ${eyeY} L${rightX - 1.6} ${eyeY - 1.6} Z" fill="#f59e0b"/>
+      </g>
+    </g>`;
+  } else {
+    const pupilR = expression === "sweat" ? 2.6 : 3.7;
+    const browsSvg = expression === "focused"
+      ? `<g stroke="#16130f" stroke-width="2.6" stroke-linecap="round">
+           <path d="M${leftX - 6} ${eyeY - 9} L${leftX + 5} ${eyeY - 6.5}"/>
+           <path d="M${rightX + 6} ${eyeY - 9} L${rightX - 5} ${eyeY - 6.5}"/>
+         </g>`
+      : "";
+    const sweatSvg = expression === "sweat"
+      ? `<path d="M52 18 C55 23, 55 27, 52 27 C49 27, 49 23, 52 18 Z" fill="#38bdf8" stroke="#0284c7" stroke-width="1.2"/>`
+      : "";
+    eyesSvg = `<g class="creature-blink" style="animation-delay:${delay}">
+      <ellipse cx="${leftX}" cy="${eyeY}" rx="6.6" ry="7.6" fill="#fff"></ellipse>
+      <ellipse cx="${rightX}" cy="${eyeY}" rx="6.6" ry="7.6" fill="#fff"></ellipse>
+      <g class="creature-pupil">
+        <circle cx="${leftX}" cy="${eyeY}" r="${pupilR}" fill="#16130f"></circle>
+        <circle cx="${leftX + 1.2}" cy="${eyeY - 1.3}" r="1.15" fill="#fff"></circle>
+        <circle cx="${rightX}" cy="${eyeY}" r="${pupilR}" fill="#16130f"></circle>
+        <circle cx="${rightX + 1.2}" cy="${eyeY - 1.3}" r="1.15" fill="#fff"></circle>
+      </g>
+    </g>${browsSvg}${sweatSvg}`;
+  }
 
-  return `<svg viewBox="0 0 64 64" width="${size}" height="${size}" aria-hidden="true" class="creature-svg ${bobClass}" style="${isEliminated ? "opacity:0.45;filter:grayscale(0.5);" : ""}">${shapeSvg}${eyesSvg}</svg>`;
+  const hatSvg = getCreatureHatSvg(hatId);
+  return `<svg viewBox="0 -6 64 70" width="${size}" height="${size}" aria-hidden="true" data-expression="${expression}" data-hat="${hatId || "none"}" class="creature-svg ${bobClass}" style="${isEliminated ? "opacity:0.45;filter:grayscale(0.5);" : ""}">${shapeSvg}${eyesSvg}${hatSvg}</svg>`;
 }
 window.getCreatureMascotSvg = getCreatureMascotSvg;
 
@@ -628,6 +759,85 @@ function drawHighlightedMoveBeacon(cs, now = performance.now()) {
   ctx.restore();
 }
 
+function requestCoachHint() {
+  if (!window.CaroEngine?.TacticalEvaluator || !gameState?.board) return null;
+  const evalCache = getBoardEvalCache();
+  const boardObj = evalCache?.boardObj || reconstructBoardFromState(gameState);
+  if (!boardObj) return null;
+
+  const sym = (isMultiplayerActive ? myMultiplayerSymbol : gameState?.current_player?.symbol)
+    || gameState?.board?.current_player || "A";
+
+  let best = { row: 0, col: 0, total_score: 100, summary: "Center opening" };
+  if (boardObj.stones.size > 0) {
+    const cands = window.CaroEngine.TacticalEvaluator.getRankedCandidates(boardObj, sym, 1, 2) || [];
+    if (cands[0]) best = cands[0];
+  }
+
+  const score = Number(best.total_score ?? best.score) || 0;
+  const tag = score >= 80000
+    ? "Winning move!"
+    : score >= 15000
+      ? "Critical block / threat"
+      : (best.summary || "Top tactical spot");
+  const label = `💡 Coach: (${best.row}, ${best.col}) · ${tag}`;
+
+  activeCoachHint = {
+    row: best.row,
+    col: best.col,
+    label,
+    expiresAt: performance.now() + 4500
+  };
+
+  if (typeof window.CaroAudio !== "undefined") window.CaroAudio.playSelect();
+  if (typeof showArenaToast === "function") showArenaToast(label);
+  renderBoard();
+  startFxAnimation();
+  return activeCoachHint;
+}
+window.requestCoachHint = requestCoachHint;
+
+function drawCoachHintOverlay(cs, nowPerf = performance.now()) {
+  if (!activeCoachHint) return;
+  if (nowPerf >= activeCoachHint.expiresAt) {
+    activeCoachHint = null;
+    return;
+  }
+  const pt = boardToScreen(activeCoachHint.row, activeCoachHint.col);
+  const pulse = prefersReducedMotion() ? 0.5 : (Math.sin(nowPerf / 140) + 1) / 2;
+
+  ctx.save();
+  ctx.strokeStyle = "#f59e0b";
+  ctx.shadowColor = "#fbbf24";
+  ctx.shadowBlur = 12 * camera.zoom;
+  ctx.lineWidth = 2.8 * camera.zoom;
+  ctx.setLineDash([5 * camera.zoom, 3 * camera.zoom]);
+  ctx.beginPath();
+  ctx.arc(pt.x, pt.y, cs * (0.44 + pulse * 0.08), 0, Math.PI * 2);
+  ctx.stroke();
+  ctx.setLineDash([]);
+
+  const tagText = `💡 (${activeCoachHint.row}, ${activeCoachHint.col})`;
+  ctx.font = `700 ${Math.max(10, Math.round(10.5 * camera.zoom))}px var(--font-sans, sans-serif)`;
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
+  const w = ctx.measureText(tagText).width + 16;
+  const h = 20;
+  const tagY = pt.y - cs * 0.85;
+
+  ctx.fillStyle = "rgba(180, 83, 9, 0.95)";
+  ctx.shadowBlur = 6;
+  ctx.beginPath();
+  if (ctx.roundRect) ctx.roundRect(pt.x - w / 2, tagY - h / 2, w, h, 999);
+  else ctx.rect(pt.x - w / 2, tagY - h / 2, w, h);
+  ctx.fill();
+
+  ctx.fillStyle = "#ffffff";
+  ctx.shadowBlur = 0;
+  ctx.fillText(tagText, pt.x, tagY);
+  ctx.restore();
+}
+
 let fxAnimId = null;
 function hasActiveBoardAnimations() {
   if (prefersReducedMotion()) {
@@ -638,6 +848,7 @@ function hasActiveBoardAnimations() {
     showLasers ||
     (hoverCoord && isLocalHumanAllowedToMove()) ||
     pendingConfirmCoord !== null ||
+    activeCoachHint !== null ||
     cameraTarget.active ||
     boardRipples.length > 0 ||
     boardSparks.length > 0 ||
@@ -748,6 +959,11 @@ function renderBoard() {
   } else {
     const analysisPill = document.getElementById("replay-analysis-pill");
     if (analysisPill) analysisPill.style.display = "none";
+  }
+
+  // Coach Hint Overlay
+  if (activeCoachHint && !isReplayMode) {
+    drawCoachHintOverlay(cs, nowPerf);
   }
 
   // Human hover ghost with alignment guide crosshair

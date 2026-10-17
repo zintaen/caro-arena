@@ -9,7 +9,17 @@
     wood: { id: "wood", name: "Kaya Wood", desc: "Warm resonant wooden clack" },
     slate: { id: "slate", name: "Slate & Shell", desc: "Crisp mineral snap on stone" },
     tactile: { id: "tactile", name: "Soft Tactile", desc: "Low, muted studio thud" },
-    synth: { id: "synth", name: "Clean Synth", desc: "Pure harmonic bell tone" }
+    synth: { id: "synth", name: "Clean Synth", desc: "Pure harmonic bell tone" },
+    chimes: { id: "chimes", name: "Mood Chimes", desc: "Pentatonic notes matched to room mood" }
+  };
+
+  const MOOD_SCALES = {
+    lavender: [349.23, 392.00, 440.00, 523.25, 587.33], // F major pentatonic
+    buttercup: [392.00, 440.00, 493.88, 587.33, 659.25], // G major pentatonic
+    mint: [261.63, 293.66, 329.63, 392.00, 440.00], // C major pentatonic
+    sky: [293.66, 329.63, 369.99, 440.00, 493.88], // D major pentatonic
+    peach: [440.00, 493.88, 554.37, 659.25, 739.99], // A major pentatonic
+    cream: [329.63, 369.99, 415.30, 493.88, 554.37]  // E major pentatonic
   };
 
   class CaroAudioSynthesizer {
@@ -75,6 +85,32 @@
       return this.soundPack;
     }
 
+    playMoodChime(playerType = "human") {
+      if (!this.enabled) return;
+      this.ensureContext();
+      if (!this.ctx) return;
+      const t = this.ctx.currentTime;
+      let moodId = "lavender";
+      try {
+        moodId = localStorage.getItem("caro_arena_room_mood") || "lavender";
+      } catch {}
+      const scale = MOOD_SCALES[moodId] || MOOD_SCALES.lavender;
+      const idxMap = { laya: 0, jev: 1, von: 2, mojev: 3, human: 4 };
+      const noteFreq = scale[idxMap[playerType] ?? 2];
+      [1, 2].forEach((mult, idx) => {
+        const osc = this.ctx.createOscillator();
+        const g = this.ctx.createGain();
+        osc.type = idx === 0 ? "sine" : "triangle";
+        osc.frequency.setValueAtTime(noteFreq * mult, t);
+        g.gain.setValueAtTime(idx === 0 ? 0.24 : 0.08, t);
+        g.gain.exponentialRampToValueAtTime(0.001, t + 0.26);
+        osc.connect(g);
+        g.connect(this.masterGain);
+        osc.start(t);
+        osc.stop(t + 0.28);
+      });
+    }
+
     /**
      * Tactile Go/Caro stone click sound tailored to the active soundPack.
      */
@@ -93,6 +129,11 @@
       };
       const baseFreq = pitchMap[playerType] || 440;
       const pack = this.getSoundPack();
+
+      if (pack === "chimes") {
+        this.playMoodChime(playerType);
+        return;
+      }
 
       if (pack === "slate") {
         // Crisp mineral snap + tight high stone ring
@@ -306,6 +347,14 @@
       gain.connect(this.masterGain);
       osc.start(t);
       osc.stop(t + 0.07);
+    }
+
+    playSelect() {
+      this.playBeep(true);
+    }
+
+    playClick() {
+      this.playBeep(false);
     }
 
     /**

@@ -993,3 +993,66 @@
   background: var(--ink);
   color: #ffffff;
 }
+
+/* Playful Creature Speech Bubbles & Post-Match Mini-Awards */
+.roster-creature {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+.creature-speech-bubble {
+  position: absolute;
+  bottom: calc(100% + 4px);
+  left: 50%;
+  transform: translateX(-35%);
+  background: #ffffff;
+  color: var(--ink);
+  border: 2px solid var(--ink);
+  border-radius: 999px;
+  padding: 2px 8px;
+  font: 800 0.62rem/1.2 var(--font-sans);
+  white-space: nowrap;
+  z-index: 30;
+  box-shadow: 0 3px 0 rgba(22, 19, 15, 0.2);
+  pointer-events: none;
+  animation: bubblePop 0.24s var(--ease-spring);
+}
+
+.creature-speech-bubble::after {
+  content: "";
+  position: absolute;
+  top: 100%;
+  left: 34%;
+  border-width: 4px 4px 0;
+  border-style: solid;
+  border-color: var(--ink) transparent transparent;
+}
+
+@keyframes bubblePop {
+  from { transform: translateX(-35%) scale(0.5); opacity: 0; }
+  to { transform: translateX(-35%) scale(1); opacity: 1; }
+}
+
+.match-awards-strip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  flex-wrap: wrap;
+}
+
+.award-pill {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: #ffffff;
+  border: 1.5px solid rgba(22, 19, 15, 0.14);
+  color: var(--ink);
+  font: 700 0.65rem/1.2 var(--font-sans);
+  white-space: nowrap;
+  box-shadow: 0 1px 2px rgba(22, 19, 15, 0.06);
+}
+
